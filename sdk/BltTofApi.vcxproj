@@ -1,0 +1,233 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|Win32">
+      <Configuration>Debug</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|Win32">
+      <Configuration>Release</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{C201A570-1FFF-44A3-8E24-C7DF4E64FA60}</ProjectGuid>
+    <TargetFrameworkVersion>v4.0</TargetFrameworkVersion>
+    <RootNamespace>Blt_Tof_Api</RootNamespace>
+    <ProjectName>BltTofApi</ProjectName>
+    <WindowsTargetPlatformVersion>10.0.17763.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <CLRSupport>false</CLRSupport>
+    <CharacterSet>Unicode</CharacterSet>
+    <PlatformToolset>v141</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <CLRSupport>false</CLRSupport>
+    <CharacterSet>Unicode</CharacterSet>
+    <PlatformToolset>v141</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <CLRSupport>false</CLRSupport>
+    <CharacterSet>Unicode</CharacterSet>
+    <PlatformToolset>v141</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <CLRSupport>false</CLRSupport>
+    <CharacterSet>Unicode</CharacterSet>
+    <PlatformToolset>v141</PlatformToolset>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings">
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <OutDir>$(ProjectDir)..\lib\Win_x86_debug\</OutDir>
+    <IntDir>$(ProjectDir)obj\Win_x86_debug\</IntDir>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <OutDir>$(ProjectDir)..\lib\Win_x64_debug\</OutDir>
+    <IntDir>$(ProjectDir)obj\Win_x64_debug\</IntDir>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <OutDir>$(ProjectDir)..\lib\Win_x86\</OutDir>
+    <IntDir>$(ProjectDir)obj\Win_x86\</IntDir>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <OutDir>$(ProjectDir)..\lib\Win_x64\</OutDir>
+    <IntDir>$(ProjectDir)obj\Win_x64\</IntDir>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <Optimization>Disabled</Optimization>
+      <SDLCheck>true</SDLCheck>
+      <AdditionalIncludeDirectories>.;..\inc\;inc\;..\common\</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>nBTA_WO_ETH;nBTA_WO_USB;BTA_WO_UART;nBTA_WO_STREAM;nWO_LIBJPEG;nAPI_TESTING;PLAT_WINDOWS;_CRT_SECURE_NO_WARNINGS;COMPILING_DLL;WIN32;_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <CompileAsManaged>false</CompileAsManaged>
+      <CompileAs>CompileAsCpp</CompileAs>
+    </ClCompile>
+    <Link>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalLibraryDirectories>lib\win_x86\;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>pthreadVC2.lib;WS2_32.lib;libusb-1.0.lib;jpeg.lib;turbojpeg.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+    <PostBuildEvent>
+      <Command>copy /Y "lib\win_x86\*.dll" "$(OutDir)"</Command>
+    </PostBuildEvent>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <Optimization>Disabled</Optimization>
+      <SDLCheck>true</SDLCheck>
+      <AdditionalIncludeDirectories>.;..\inc\;inc\;..\common\</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>nBTA_WO_ETH;nBTA_WO_USB;BTA_WO_UART;nBTA_WO_STREAM;nWO_LIBJPEG;nAPI_TESTING;PLAT_WINDOWS;_CRT_SECURE_NO_WARNINGS;COMPILING_DLL;WIN32;_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <CompileAsManaged>false</CompileAsManaged>
+      <CompileAs>CompileAsCpp</CompileAs>
+    </ClCompile>
+    <Link>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalLibraryDirectories>lib\win_x64\;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>pthreadVC2.lib;WS2_32.lib;libusb-1.0.lib;jpeg.lib;turbojpeg.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+    <PostBuildEvent>
+      <Command>copy /Y "lib\win_x64\*.dll" "$(OutDir)"</Command>
+    </PostBuildEvent>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <Optimization>MaxSpeed</Optimization>
+      <SDLCheck>true</SDLCheck>
+      <AdditionalIncludeDirectories>.;..\inc\;inc\;..\common\</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>nBTA_WO_ETH;nBTA_WO_USB;BTA_WO_UART;nBTA_WO_STREAM;nWO_LIBJPEG;nAPI_TESTING;PLAT_WINDOWS;_CRT_SECURE_NO_WARNINGS;COMPILING_DLL;WIN32;NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <CompileAsManaged>false</CompileAsManaged>
+      <CompileAs>CompileAsCpp</CompileAs>
+    </ClCompile>
+    <Link>
+      <GenerateDebugInformation>false</GenerateDebugInformation>
+      <AdditionalLibraryDirectories>lib\win_x86\;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>pthreadVC2.lib;WS2_32.lib;libusb-1.0.lib;jpeg.lib;turbojpeg.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+    <PostBuildEvent>
+      <Command>copy /Y "lib\win_x86\*.dll" "$(OutDir)"</Command>
+    </PostBuildEvent>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <Optimization>MaxSpeed</Optimization>
+      <SDLCheck>true</SDLCheck>
+      <AdditionalIncludeDirectories>.;..\inc\;inc\;..\common\</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>nBTA_WO_ETH;nBTA_WO_USB;BTA_WO_UART;nBTA_WO_STREAM;nWO_LIBJPEG;nAPI_TESTING;PLAT_WINDOWS;_CRT_SECURE_NO_WARNINGS;COMPILING_DLL;WIN32;NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <CompileAsManaged>false</CompileAsManaged>
+      <CompileAs>CompileAsCpp</CompileAs>
+    </ClCompile>
+    <Link>
+      <GenerateDebugInformation>false</GenerateDebugInformation>
+      <AdditionalLibraryDirectories>lib\win_x64\;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>pthreadVC2.lib;WS2_32.lib;libusb-1.0.lib;jpeg.lib;turbojpeg.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+    <PostBuildEvent>
+      <Command>copy /Y "lib\win_x64\*.dll" "$(OutDir)"</Command>
+    </PostBuildEvent>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClInclude Include="..\common\bta_jpg.h" />
+    <ClInclude Include="..\common\bta_oshelper.h" />
+    <ClInclude Include="..\common\bvq_queue.h" />
+    <ClInclude Include="..\common\circular_buffer.h" />
+    <ClInclude Include="..\common\crc16.h" />
+    <ClInclude Include="..\common\crc32.h" />
+    <ClInclude Include="..\common\crc7.h" />
+    <ClInclude Include="..\common\pthread_helper.h" />
+    <ClInclude Include="..\common\sockets_helper.h" />
+    <ClInclude Include="..\common\timing_helper.h" />
+    <ClInclude Include="..\common\undistort.h" />
+    <ClInclude Include="..\common\utils.h" />
+    <ClInclude Include="..\inc\bta.h" />
+    <ClInclude Include="..\inc\bta_discovery.h" />
+    <ClInclude Include="..\inc\bta_ext.h" />
+    <ClInclude Include="..\inc\bta_flash_update.h" />
+    <ClInclude Include="..\inc\bta_frame.h" />
+    <ClInclude Include="..\inc\bta_status.h" />
+    <ClInclude Include="bta_eth.h" />
+    <ClInclude Include="bta_eth_helper.h" />
+    <ClInclude Include="bta_grabbing.h" />
+    <ClInclude Include="bta_stream.h" />
+    <ClInclude Include="bta_uart.h" />
+    <ClInclude Include="bta_uart_helper.h" />
+    <ClInclude Include="bta_usb.h" />
+    <ClInclude Include="bta_helper.h" />
+    <ClInclude Include="configuration.h" />
+    <ClInclude Include="inc\jerror.h" />
+    <ClInclude Include="inc\jmorecfg.h" />
+    <ClInclude Include="inc\jpeglib.h" />
+    <ClInclude Include="inc\libusb.h" />
+    <ClInclude Include="inc\pthread.h" />
+    <ClInclude Include="inc\sched.h" />
+    <ClInclude Include="inc\semaphore.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="..\common\bta_jpg.c" />
+    <ClCompile Include="..\common\bta_oshelper.c" />
+    <ClCompile Include="..\common\bvq_queue.c" />
+    <ClCompile Include="..\common\circular_buffer.c" />
+    <ClCompile Include="..\common\crc16.c" />
+    <ClCompile Include="..\common\crc32.c" />
+    <ClCompile Include="..\common\crc7.c" />
+    <ClCompile Include="..\common\pthread_helper.c" />
+    <ClCompile Include="..\common\sockets_helper.c" />
+    <ClCompile Include="..\common\timing_helper.c" />
+    <ClCompile Include="..\common\undistort.c" />
+    <ClCompile Include="..\common\utils.c" />
+    <ClCompile Include="bta_eth.c" />
+    <ClCompile Include="bta_eth_helper.c" />
+    <ClCompile Include="bta_frame_queueing.c" />
+    <ClCompile Include="bta_grabbing.c" />
+    <ClCompile Include="bta_helper.c" />
+    <ClCompile Include="bta_stream.c" />
+    <ClCompile Include="bta_uart.c" />
+    <ClCompile Include="bta_uart_helper.c" />
+    <ClCompile Include="bta_usb.c" />
+    <ClCompile Include="bta.c" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="Makefile" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

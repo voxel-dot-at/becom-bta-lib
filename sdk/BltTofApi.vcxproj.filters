@@ -1,0 +1,192 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="sdk">
+      <UniqueIdentifier>{2311c191-ce65-4f7d-9498-61cf238c455f}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="inc">
+      <UniqueIdentifier>{b6c07833-6b78-4c98-a973-ff700d7ba5a2}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="common">
+      <UniqueIdentifier>{fcd20c0d-dcbb-406f-9e83-a7ab376803ff}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="sdk\inc">
+      <UniqueIdentifier>{a4a9c116-a084-4edd-a7e4-80e00c3daf6f}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="..\inc\bta_flash_update.h">
+      <Filter>inc</Filter>
+    </ClInclude>
+    <ClInclude Include="..\inc\bta_frame.h">
+      <Filter>inc</Filter>
+    </ClInclude>
+    <ClInclude Include="..\inc\bta_status.h">
+      <Filter>inc</Filter>
+    </ClInclude>
+    <ClInclude Include="..\inc\bta.h">
+      <Filter>inc</Filter>
+    </ClInclude>
+    <ClInclude Include="..\inc\bta_discovery.h">
+      <Filter>inc</Filter>
+    </ClInclude>
+    <ClInclude Include="..\common\bta_oshelper.h">
+      <Filter>common</Filter>
+    </ClInclude>
+    <ClInclude Include="..\common\crc7.h">
+      <Filter>common</Filter>
+    </ClInclude>
+    <ClInclude Include="..\common\crc16.h">
+      <Filter>common</Filter>
+    </ClInclude>
+    <ClInclude Include="..\common\crc32.h">
+      <Filter>common</Filter>
+    </ClInclude>
+    <ClInclude Include="..\common\bvq_queue.h">
+      <Filter>common</Filter>
+    </ClInclude>
+    <ClInclude Include="bta_eth.h">
+      <Filter>sdk</Filter>
+    </ClInclude>
+    <ClInclude Include="bta_eth_helper.h">
+      <Filter>sdk</Filter>
+    </ClInclude>
+    <ClInclude Include="bta_stream.h">
+      <Filter>sdk</Filter>
+    </ClInclude>
+    <ClInclude Include="bta_uart.h">
+      <Filter>sdk</Filter>
+    </ClInclude>
+    <ClInclude Include="bta_uart_helper.h">
+      <Filter>sdk</Filter>
+    </ClInclude>
+    <ClInclude Include="bta_usb.h">
+      <Filter>sdk</Filter>
+    </ClInclude>
+    <ClInclude Include="..\common\bta_jpg.h">
+      <Filter>common</Filter>
+    </ClInclude>
+    <ClInclude Include="..\common\undistort.h">
+      <Filter>common</Filter>
+    </ClInclude>
+    <ClInclude Include="inc\jerror.h">
+      <Filter>sdk\inc</Filter>
+    </ClInclude>
+    <ClInclude Include="inc\jmorecfg.h">
+      <Filter>sdk\inc</Filter>
+    </ClInclude>
+    <ClInclude Include="inc\jpeglib.h">
+      <Filter>sdk\inc</Filter>
+    </ClInclude>
+    <ClInclude Include="inc\pthread.h">
+      <Filter>sdk\inc</Filter>
+    </ClInclude>
+    <ClInclude Include="inc\sched.h">
+      <Filter>sdk\inc</Filter>
+    </ClInclude>
+    <ClInclude Include="inc\semaphore.h">
+      <Filter>sdk\inc</Filter>
+    </ClInclude>
+    <ClInclude Include="..\common\utils.h">
+      <Filter>common</Filter>
+    </ClInclude>
+    <ClInclude Include="configuration.h">
+      <Filter>sdk</Filter>
+    </ClInclude>
+    <ClInclude Include="bta_grabbing.h">
+      <Filter>sdk</Filter>
+    </ClInclude>
+    <ClInclude Include="bta_helper.h">
+      <Filter>sdk</Filter>
+    </ClInclude>
+    <ClInclude Include="..\inc\bta_ext.h">
+      <Filter>inc</Filter>
+    </ClInclude>
+    <ClInclude Include="..\common\sockets_helper.h">
+      <Filter>common</Filter>
+    </ClInclude>
+    <ClInclude Include="..\common\timing_helper.h">
+      <Filter>common</Filter>
+    </ClInclude>
+    <ClInclude Include="..\common\pthread_helper.h">
+      <Filter>common</Filter>
+    </ClInclude>
+    <ClInclude Include="..\common\circular_buffer.h">
+      <Filter>common</Filter>
+    </ClInclude>
+    <ClInclude Include="inc\libusb.h">
+      <Filter>sdk\inc</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="..\common\bta_oshelper.c">
+      <Filter>common</Filter>
+    </ClCompile>
+    <ClCompile Include="..\common\crc7.c">
+      <Filter>common</Filter>
+    </ClCompile>
+    <ClCompile Include="..\common\crc16.c">
+      <Filter>common</Filter>
+    </ClCompile>
+    <ClCompile Include="..\common\crc32.c">
+      <Filter>common</Filter>
+    </ClCompile>
+    <ClCompile Include="bta_eth.c">
+      <Filter>sdk</Filter>
+    </ClCompile>
+    <ClCompile Include="bta_eth_helper.c">
+      <Filter>sdk</Filter>
+    </ClCompile>
+    <ClCompile Include="bta_stream.c">
+      <Filter>sdk</Filter>
+    </ClCompile>
+    <ClCompile Include="bta_uart.c">
+      <Filter>sdk</Filter>
+    </ClCompile>
+    <ClCompile Include="bta_uart_helper.c">
+      <Filter>sdk</Filter>
+    </ClCompile>
+    <ClCompile Include="bta_usb.c">
+      <Filter>sdk</Filter>
+    </ClCompile>
+    <ClCompile Include="..\common\bvq_queue.c">
+      <Filter>common</Filter>
+    </ClCompile>
+    <ClCompile Include="..\common\bta_jpg.c">
+      <Filter>common</Filter>
+    </ClCompile>
+    <ClCompile Include="..\common\undistort.c">
+      <Filter>common</Filter>
+    </ClCompile>
+    <ClCompile Include="..\common\utils.c">
+      <Filter>common</Filter>
+    </ClCompile>
+    <ClCompile Include="bta_helper.c">
+      <Filter>sdk</Filter>
+    </ClCompile>
+    <ClCompile Include="bta_grabbing.c">
+      <Filter>sdk</Filter>
+    </ClCompile>
+    <ClCompile Include="bta.c">
+      <Filter>sdk</Filter>
+    </ClCompile>
+    <ClCompile Include="bta_frame_queueing.c">
+      <Filter>sdk</Filter>
+    </ClCompile>
+    <ClCompile Include="..\common\sockets_helper.c">
+      <Filter>common</Filter>
+    </ClCompile>
+    <ClCompile Include="..\common\timing_helper.c">
+      <Filter>common</Filter>
+    </ClCompile>
+    <ClCompile Include="..\common\pthread_helper.c">
+      <Filter>common</Filter>
+    </ClCompile>
+    <ClCompile Include="..\common\circular_buffer.c">
+      <Filter>common</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="Makefile" />
+  </ItemGroup>
+</Project>
