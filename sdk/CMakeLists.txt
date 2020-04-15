@@ -4,8 +4,8 @@ include_directories ("${PROJECT_SOURCE_DIR}/inc"  "${PROJECT_SOURCE_DIR}/common"
 
 # inherits version information from top-level CmakeLists.txt
 
+use_c99()
 
-  message("plat a " ${PLAT_APPLE})
 set(COMMON_SRC ../common/bta_byte_queue.c ../common/bta_jpg.c ../common/bta_oshelper.c 
                 ../common/bvq_queue.c ../common/circular_buffer.c ../common/crc16.c ../common/crc32.c ../common/crc7.c ../common/ping.c ../common/pthread_helper.c ../common/sockets_helper.c ../common/timing_helper.c ../common/undistort.c ../common/utils.c)
 
