@@ -12,8 +12,6 @@ set(bta_VERSION_MINOR 0)
 set(bta_VERSION_PATCH 5)
 set(bta_VERSION_STRING ${bta_VERSION_MAJOR}.${bta_VERSION_MINOR}.${bta_VERSION_PATCH})
 
-add_definitions(-DBTA_WO_USB)
-
 file(GLOB HEADERS "inc/*.h" )
 
 include_directories ("${PROJECT_SOURCE_DIR}" "${PROJECT_SOURCE_DIR}/ktm_607")
@@ -125,9 +123,12 @@ if(NOT MSVC)
     message("libusb inc dir " ${LIBUSB_INCLUDE_DIR})
     message("libusb lib     " ${LIBUSB_LIBRARIES})
 
-    include_directories( ${LIBUSB_INCLUDE_DIR})
-    link_libraries( ${LIBUSB_LIBRARIES})
-
+    if(LIBJPEG_FOUND)
+      include_directories( ${LIBUSB_INCLUDE_DIR})
+      link_libraries( ${LIBUSB_LIBRARIES})
+    else()
+      add_definitions( -DBTA_WO_USB )
+    endif()
 
     pkg_check_modules( LIBJPEG libjpeg )
     if(LIBJPEG_FOUND)
