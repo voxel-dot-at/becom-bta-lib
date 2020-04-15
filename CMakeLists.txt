@@ -12,6 +12,8 @@ set(bta_VERSION_MINOR 0)
 set(bta_VERSION_PATCH 5)
 set(bta_VERSION_STRING ${bta_VERSION_MAJOR}.${bta_VERSION_MINOR}.${bta_VERSION_PATCH})
 
+add_definitions(-DBTA_WO_USB)
+
 file(GLOB HEADERS "inc/*.h" )
 
 include_directories ("${PROJECT_SOURCE_DIR}" "${PROJECT_SOURCE_DIR}/ktm_607")
