@@ -10,7 +10,8 @@
 #elif defined PLAT_LINUX
 #   include <semaphore.h>
 #   include <errno.h>
-#elif defined PLAT_APPLE
+#endif
+#if defined PLAT_APPLE
 #   include <dispatch/dispatch.h>
 #endif
 

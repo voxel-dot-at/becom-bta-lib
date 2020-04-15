@@ -1,20 +1,21 @@
-#include <memory>
-#include <stdexcept>
-#include <string.h>
-#include <timing_helper.h>
-#include <iostream>
 
 #include "ping.h"
 
-
-#if defined PLAT_WINDOWS
+#if defined PLAT_WINDOWS || defined PLAT_APPLE
 #elif defined PLAT_LINUX
+#    include <memory>
+#    include <stdexcept>
+#    include <string.h>
+#    include <timing_helper.h>
+#    include <iostream>
+
 #   define _popen popen
 #   define _pclose pclose
 #else
 #   error "unsupported platform ping.cpp"
 #endif
 
+#if defined PLAT_LINUX
 
 std::string exec(const char* cmd) {
     const int bufferSize = 128;
@@ -78,3 +79,5 @@ int ping(uint8_t *ipAddr, uint8_t ipAddrLen, int requiredSuccesses, int msecsTim
     }
     return 0;
 }
+
+#endif // PLAT_LINUX

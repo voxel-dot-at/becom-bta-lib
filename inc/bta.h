@@ -132,6 +132,8 @@ typedef void (BTA_CALLCONV *FN_BTA_FrameArrivedEx2)(BTA_Handle handle, BTA_Frame
 #define BTA_PRAGMA_ALIGN __declspec(align(BTA_CONFIG_STRUCT_STRIDE))
 #elif defined PLAT_LINUX
 #define BTA_PRAGMA_ALIGN __attribute__((aligned(BTA_CONFIG_STRUCT_STRIDE)))
+#elif defined PLAT_APPLE
+#define BTA_PRAGMA_ALIGN __attribute__((aligned(BTA_CONFIG_STRUCT_STRIDE)))
 #endif
 ///     @brief  Configuration structure to be passed with BTAopen
 typedef struct BTA_Config {

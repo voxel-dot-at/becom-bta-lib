@@ -195,9 +195,9 @@ typedef struct BTA_Data4DescBase {
     uint32_t dataLen;
 } BTA_Data4DescBase;
 
-const uint16_t btaData4DescriptorTypeEof = 0xfffe;
+static const uint16_t btaData4DescriptorTypeEof = 0xfffe;
+static const uint16_t btaData4DescriptorTypeFrameInfoV1 = 0x0001;
 
-const uint16_t btaData4DescriptorTypeFrameInfoV1 = 0x0001;
 typedef struct BTA_Data4DescFrameInfoV1 {
     uint16_t descriptorType;
     uint16_t descriptorLen;
@@ -211,7 +211,7 @@ typedef struct BTA_Data4DescFrameInfoV1 {
 } BTA_Data4DescFrameInfoV1;
 
 
-const uint16_t btaData4DescriptorTypeTofV1 = 0x0002;
+static const uint16_t btaData4DescriptorTypeTofV1 = 0x0002;
 typedef struct BTA_Data4DescTofV1 {
     uint16_t descriptorType;
     uint16_t descriptorLen;
@@ -229,7 +229,7 @@ typedef struct BTA_Data4DescTofV1 {
 } BTA_Data4DescTofV1;
 
 
-const uint16_t btaData4DescriptorTypeTofWithMetadataV1 = 0x0003;
+static const uint16_t btaData4DescriptorTypeTofWithMetadataV1 = 0x0003;
 typedef struct BTA_Data4DescTofWithMetadataV1 {
     uint16_t descriptorType;
     uint16_t descriptorLen;
@@ -237,7 +237,7 @@ typedef struct BTA_Data4DescTofWithMetadataV1 {
 } BTA_Data4DescTofWithMetadataV1;
 
 
-const uint16_t btaData4DescriptorTypeColorV1 = 0x0004;
+static const uint16_t btaData4DescriptorTypeColorV1 = 0x0004;
 typedef struct BTA_Data4DescColorV1 {
     uint16_t descriptorType;
     uint16_t descriptorLen;

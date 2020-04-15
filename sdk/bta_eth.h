@@ -32,7 +32,7 @@
 
 
 
-#ifdef PLAT_LINUX
+#if defined(PLAT_LINUX) || defined(PLAT_APPLE)
 #   define SOCKET              int
 #   define DWORD               unsigned long
 #   define byte                unsigned char

@@ -5,7 +5,7 @@
 
 #ifdef PLAT_WINDOWS
 #   include "libusb.h"
-#elif defined PLAT_LINUX
+#elif defined PLAT_LINUX || defined PLAT_APPLE
 #   include "libusb-1.0/libusb.h"
 #   include <time.h>
 #else

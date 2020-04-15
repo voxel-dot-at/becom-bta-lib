@@ -27,6 +27,8 @@
 #   include <sys/select.h>
 #   include <sys/time.h>
 #   include <sys/types.h>
+#   include <sys/socket.h>
+#   include <netdb.h>
 #   include <stdbool.h>
 #endif
 
@@ -80,7 +82,7 @@ static const uint8_t ipAddrLenToVer[BTA_ETH_IP_ADDR_LEN_TO_VER_LEN] = { BTA_ETH_
 static const uint32_t timeoutDefault = 4000;
 static const uint32_t timeoutHuge = 120000;
 static const uint32_t timeoutBigger = 30000;
-static const uint32_t timeoutBig = 15000;
+// static const uint32_t timeoutBig = 15000;
 static const uint32_t timeoutSmall = 1000;
 static const uint32_t timeoutTiny = 50;
 
@@ -96,7 +98,7 @@ static const int udpDataQueueLenPrealloc = 500;
 #ifdef PLAT_WINDOWS
 #   define ERROR_TRY_AGAIN WSAETIMEDOUT
 #   define ERROR_IN_PROGRESS WSAEWOULDBLOCK
-#elif defined PLAT_LINUX
+#elif defined PLAT_LINUX || defined PLAT_APPLE
 #   define closesocket(x) close(x)
 #   define ioctlsocket ioctl
 #   define ERROR_TRY_AGAIN EAGAIN
