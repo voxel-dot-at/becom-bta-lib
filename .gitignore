@@ -1,0 +1,11 @@
+
+# binaries
+*.o
+*.a
+*.lo
+
+# editor stuff
+*~
+
+# output directories
+dist/
