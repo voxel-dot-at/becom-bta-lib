@@ -58,6 +58,87 @@ endmacro(use_c99)
 set( CMAKE_CONFIGURATION_TYPES "Debug;Release" )
 
 ################################################################################
+# Install options
+################################################################################
+MESSAGE(STATUS "CMAKE_INSTALL_PREFIX: " ${CMAKE_INSTALL_PREFIX})
+
+set(INSTALL_LIB_DIR lib/ CACHE PATH "Installation directory for libraries")
+set(INSTALL_BIN_DIR bin/ CACHE PATH "Installation directory for executables")
+set(INSTALL_INCLUDE_DIR include/${PROJECT_NAME} CACHE PATH "Installation directory for header files")
+if(WIN32 AND NOT CYGWIN)
+  set(DEF_INSTALL_CMAKE_DIR cmake)
+else()
+  set(DEF_INSTALL_CMAKE_DIR lib/cmake/${PROJECT_NAME})
+endif()
+set(INSTALL_CMAKE_DIR ${DEF_INSTALL_CMAKE_DIR} CACHE PATH "Installation directory for CMake files")
+message(INFO "install dir " ${INSTALL_CMAKE_DIR})
+
+
+################################################################################
+# generate cmake config file 
+################################################################################
+include(CMakePackageConfigHelpers)
+
+set(cmake_dir "${CMAKE_CURRENT_BINARY_DIR}/cmake")
+set(project_config "${cmake_dir}/${PROJECT_NAME}Config.cmake") #output
+set(version_config "${cmake_dir}/${PROJECT_NAME}ConfigVersion.cmake") #output
+
+#Targets name
+set(targets_export_name "${PROJECT_NAME}Targets")
+set(namespace "bta")
+
+# Set version required to config
+write_basic_package_version_file(
+   "${version_config}" VERSION ${bta_VERSION_STRING} COMPATIBILITY SameMajorVersion
+)
+configure_package_config_file("cmake/btaConfig.cmake.in"
+    "${project_config}"
+    INSTALL_DESTINATION "${INSTALL_CMAKE_DIR}"
+)
+install(
+    FILES "${project_config}" "${version_config}"
+    DESTINATION "${INSTALL_CMAKE_DIR}"
+)
+
+
+#Target install
+install(
+    EXPORT "${targets_export_name}"
+    NAMESPACE "${namespace}"
+    DESTINATION "${INSTALL_CMAKE_DIR}/"
+)
+
+
+#######################################
+# Generating .pc file for pkg-config
+#######################################
+SET(PKG_CONFIG_REQUIRES "") 
+SET(PKG_CONFIG_LIBDIR
+    "\${prefix}/lib/"
+)
+SET(PKG_CONFIG_INCLUDEDIR
+    "\${prefix}/include/${PROJECT_NAME}"
+)
+SET(PKG_CONFIG_LIBS
+    "-L\${libdir} -l${PROJECT_NAME}"
+)
+SET(PKG_CONFIG_CFLAGS
+    "-I\${includedir}"
+)
+
+CONFIGURE_FILE(
+  "${CMAKE_CURRENT_SOURCE_DIR}/cmake/pkg-config.cmake"
+  "${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}.pc"
+)
+
+install(
+    FILES "${CMAKE_BINARY_DIR}/${PROJECT_NAME}.pc"
+    DESTINATION lib/pkgconfig
+)
+
+
+
+################################################################################
 # Build config windows - unix - arm
 ################################################################################
 message (STATUS "MSVC: " ${MSVC})
@@ -116,12 +197,11 @@ endif()
 
 if(NOT MSVC)
     find_package(PkgConfig)
-    # pkg_search_module(Eigen3 REQUIRED eigen3)
-    # include_directories(${Eigen3_INCLUDE_DIRS})
 
     pkg_check_modules( LIBUSB libusb-1.0 )
     message("libusb inc dir " ${LIBUSB_INCLUDE_DIR})
     message("libusb lib     " ${LIBUSB_LIBRARIES})
+    message("libusb lib     " ${LIBUSB})
 
     if(LIBJPEG_FOUND)
       include_directories( ${LIBUSB_INCLUDE_DIR})
@@ -146,4 +226,3 @@ endif()
 
 # add_subdirectory (common) 
 add_subdirectory (sdk) 
-
