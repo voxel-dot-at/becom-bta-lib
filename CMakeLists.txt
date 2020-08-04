@@ -79,6 +79,7 @@ message(INFO "install dir " ${INSTALL_CMAKE_DIR})
 ################################################################################
 include(CMakePackageConfigHelpers)
 
+# define temporary build dir and files 
 set(cmake_dir "${CMAKE_CURRENT_BINARY_DIR}/cmake")
 set(project_config "${cmake_dir}/${PROJECT_NAME}Config.cmake") #output
 set(version_config "${cmake_dir}/${PROJECT_NAME}ConfigVersion.cmake") #output
@@ -99,15 +100,6 @@ install(
     FILES "${project_config}" "${version_config}"
     DESTINATION "${INSTALL_CMAKE_DIR}"
 )
-
-
-#Target install
-install(
-    EXPORT "${targets_export_name}"
-    NAMESPACE "${namespace}"
-    DESTINATION "${INSTALL_CMAKE_DIR}/"
-)
-
 
 #######################################
 # Generating .pc file for pkg-config
@@ -135,7 +127,6 @@ install(
     FILES "${CMAKE_BINARY_DIR}/${PROJECT_NAME}.pc"
     DESTINATION lib/pkgconfig
 )
-
 
 
 ################################################################################
