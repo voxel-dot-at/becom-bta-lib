@@ -483,7 +483,8 @@ static void *readFramesRunFunction(void *handle) {
     const uint8_t preamble3[4] = { 0xff, 0xff, 0x0, 0x3 };
     const uint8_t preamble4[4] = { 0xff, 0xff, 0x0, 0x4 };
     const int maxHeaderSize = 500;
-    uint8_t bufHeader[maxHeaderSize] = { 0 };
+    uint8_t bufHeader[maxHeaderSize];
+    memset(bufHeader, 0, maxHeaderSize);
     uint64_t timeLastSuccess = BTAgetTickCount64();
     while (!inst->abortReadFramesThread && !inst->closing) {
         int bytesRead;
