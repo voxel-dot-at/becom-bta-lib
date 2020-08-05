@@ -4,25 +4,45 @@ include_directories ("${PROJECT_SOURCE_DIR}/inc"  "${PROJECT_SOURCE_DIR}/common"
 
 # inherits version information from top-level CmakeLists.txt
 
-use_c99()
+# use_c99()
 
-set(COMMON_SRC ../common/bta_byte_queue.c ../common/bta_jpg.c ../common/bta_oshelper.c 
-                ../common/bvq_queue.c ../common/circular_buffer.c ../common/crc16.c ../common/crc32.c ../common/crc7.c ../common/ping.cc ../common/pthread_helper.c ../common/sockets_helper.c ../common/timing_helper.c ../common/undistort.c ../common/utils.c)
+set(COMMON_SRC
+  ../common/bta_byte_queue.c
+  ../common/bta_jpg.c
+  ../common/bta_oshelper.c 
+  ../common/bvq_queue.c
+  ../common/circular_buffer.c
+  ../common/crc16.c
+  ../common/crc32.c
+  ../common/crc7.c
+  ../common/ping.cc
+  ../common/pthread_helper.c
+  ../common/sockets_helper.c
+  ../common/timing_helper.c
+  ../common/undistort.c
+  ../common/utils.c
+  )
 
 file(GLOB HEADERS ../inc/*.h)
 
 message("headers" ${HEADERS} )
 
 set(USB_SRC "")
-if (LIBUSB_FOUND) 
+if (LIBUSB_FOUND AND NOT BTA_WO_USB) 
   set(USB_SRC bta_usb.c)
 endif()
 
-message("usb" ${USB_SRC} )
+message(" usb sources: " ${USB_SRC} )
 
-add_library(bta SHARED ${COMMON_SRC}
-   bta.c bta_eth_helper.c	bta_grabbing.c bta_stream.c		bta_uart_helper.c
-  bta_eth.c		bta_frame_queueing.c	bta_helper.c bta_uart.c ${USB_SRC} )
+add_library(bta SHARED
+  bta.c bta_eth_helper.c bta_grabbing.c bta_stream.c
+  bta_uart_helper.c
+  bta_eth.c
+  bta_frame_queueing.c
+  bta_helper.c bta_uart.c
+  ${COMMON_SRC}
+  ${USB_SRC}
+  )
 
 target_link_libraries( bta ${LIBS} ${LIBUSB_LIBRARIES})
 

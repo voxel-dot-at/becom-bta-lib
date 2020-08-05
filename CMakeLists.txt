@@ -14,6 +14,9 @@ set(bta_VERSION_STRING ${bta_VERSION_MAJOR}.${bta_VERSION_MINOR}.${bta_VERSION_P
 
 file(GLOB HEADERS "inc/*.h" )
 
+set(CMAKE_CXX_STANDARD 11)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
 include_directories ("${PROJECT_SOURCE_DIR}" "${PROJECT_SOURCE_DIR}/ktm_607")
 
 # set install directory to local if not specified otherwise:
@@ -190,10 +193,17 @@ if(NOT MSVC)
     find_package(PkgConfig)
 
     pkg_check_modules( LIBUSB libusb-1.0 )
-    message("libusb inc dir " ${LIBUSB_INCLUDE_DIR})
-    message("libusb lib     " ${LIBUSB_LIBRARIES})
-    message("libusb lib     " ${LIBUSB})
-
+    if( NOT LIBUSB_FOUND)
+      set(BTA_WO_USB ON)
+      message("libusb not found.")
+    else()
+      message("libusb inc dir " ${LIBUSB_INCLUDE_DIR})
+      message("libusb lib     " ${LIBUSB_LIBRARIES})
+    endif()
+    if( BTA_WO_USB )
+      message("will not build USB support.")
+    endif()
+    
     if(LIBJPEG_FOUND)
       include_directories( ${LIBUSB_INCLUDE_DIR})
       link_libraries( ${LIBUSB_LIBRARIES})
