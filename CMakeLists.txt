@@ -19,6 +19,13 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 include_directories ("${PROJECT_SOURCE_DIR}" "${PROJECT_SOURCE_DIR}/ktm_607")
 
+# user selectable options:
+if(NOT MSVC)
+  option(BTA_WO_USB "disable usb support" OFF)
+endif()
+option(BTA_WO_JPEG "disable jpeg support" OFF)
+
+
 # set install directory to local if not specified otherwise:
 if(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
   
@@ -201,14 +208,14 @@ if(NOT MSVC)
       message("libusb lib     " ${LIBUSB_LIBRARIES})
     endif()
     if( BTA_WO_USB )
-      message("will not build USB support.")
+      message("will not build USB support. " ${BTA_WO_USB} )
     endif()
     
     if(LIBJPEG_FOUND)
       include_directories( ${LIBUSB_INCLUDE_DIR})
       link_libraries( ${LIBUSB_LIBRARIES})
     else()
-      add_definitions( -DBTA_WO_USB )
+      add_definitions( -DBTA_WO_JPEG )
     endif()
 
     pkg_check_modules( LIBJPEG libjpeg )
