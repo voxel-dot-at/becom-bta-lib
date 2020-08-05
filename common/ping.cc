@@ -6,9 +6,12 @@
 #    include <memory>
 #    include <stdexcept>
 #    include <string.h>
-#    include <timing_helper.h>
 #    include <iostream>
 
+extern "C" {
+#    include <timing_helper.h>
+}
+#   include <stdio.h>
 #   define _popen popen
 #   define _pclose pclose
 #else
