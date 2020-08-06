@@ -91,6 +91,10 @@ message(INFO "install dir " ${INSTALL_CMAKE_DIR})
 # generate cmake config file 
 ################################################################################
 include(CMakePackageConfigHelpers)
+set(PROJECT_VERSION ${bta_VERSION_STRING})
+set(PROJECT_VERSION_MAJOR ${bta_VERSION_MAJOR})
+set(PROJECT_VERSION_MINOR ${bta_VERSION_MINOR})
+set(PROJECT_VERSION_PATCH ${bta_VERSION_PATCH})
 
 # define temporary build dir and files 
 set(cmake_dir "${CMAKE_CURRENT_BINARY_DIR}/cmake")
