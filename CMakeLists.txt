@@ -25,6 +25,9 @@ if(NOT MSVC)
 endif()
 option(BTA_WO_JPEG "disable jpeg support" OFF)
 
+option(BTA_WO_UART "disable uart transport" OFF)
+option(BTA_WO_USB "disable usb transport" OFF)
+option(BTA_WO_ETH "disable eth transport" OFF)
 
 # set install directory to local if not specified otherwise:
 if(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
