@@ -12,8 +12,9 @@
 //#include <fcntl.h>
 //#include <share.h>
 //#include <sys\stat.h>
-#elif defined PLAT_LINUX
+#elif defined PLAT_LINUX || defined PLAT_APPLE
 //#   include <sys/ioctl.h>
+#include <stdio.h>
 #include <unistd.h>
 #endif
 
@@ -24,7 +25,7 @@ void BTAmsleep(uint32_t milliseconds) {
     }
 #   ifdef PLAT_WINDOWS
     Sleep(milliseconds);
-#   elif defined PLAT_LINUX
+#   elif defined PLAT_LINUX || defined PLAT_APPLE
     while (milliseconds > 100000) {
         sleep(1);
         milliseconds -= 1000;
@@ -60,9 +61,10 @@ void BTAmsleep(uint32_t milliseconds) {
 uint32_t BTAgetTickCount() {
 #   ifdef PLAT_WINDOWS
     return GetTickCount();
-#   elif defined PLAT_LINUX
+#   elif defined PLAT_LINUX || defined PLAT_APPLE
     struct timespec ts;
     if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+        perror("BTAgetTickCount failed: ");
         // what can I do?
         return 0;
     }
@@ -77,7 +79,7 @@ uint32_t BTAgetTickCount() {
 uint64_t BTAgetTickCount64() {
 #   ifdef PLAT_WINDOWS
     return GetTickCount64();
-#   elif defined PLAT_LINUX
+#   elif defined PLAT_LINUX || defined PLAT_APPLE
     struct timespec ts;
     if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
         // what can I do?
@@ -97,7 +99,7 @@ uint64_t BTAgetTickCountNano() {
     QueryPerformanceFrequency(&frequency);
     QueryPerformanceCounter(&start);
     return (uint64_t)((double)(start.QuadPart) / frequency.QuadPart * 1000000000);
-#   elif defined PLAT_LINUX
+#   elif defined PLAT_LINUX || defined PLAT_APPLE
     struct timespec ts;
     if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
         // what can I do?
@@ -131,7 +133,7 @@ BTA_Status BTAgetTimeSpec(struct timespec *ts) {
     ts->tv_sec = (*(LONGLONG *)(&ft) - PTW32_TIMESPEC_TO_FILETIME_OFFSET) / 10000000;
     ts->tv_nsec = (int)((*(LONGLONG *)(&ft) - PTW32_TIMESPEC_TO_FILETIME_OFFSET - ((LONGLONG)ts->tv_sec * (LONGLONG)10000000)) * 100);
     return BTA_StatusOk;
-#   elif defined PLAT_LINUX
+#   elif defined PLAT_LINUX || defined PLAT_APPLE
     if (clock_gettime(CLOCK_REALTIME, ts) != 0) {
         return BTA_StatusRuntimeError;
     }

@@ -15,7 +15,7 @@
 
 
 #ifdef PLAT_WINDOWS
-#elif defined PLAT_LINUX
+#elif defined PLAT_LINUX || defined PLAT_APPLE
 #endif
 
 #include <string.h>

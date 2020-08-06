@@ -296,7 +296,7 @@ BTA_Status BTAETHopen(BTA_Config *config, BTA_WrapperInst *winst) {
 
     // Wait for connections to establish
     uint8_t dataOk, controlOk;
-    uint32_t endTime = BTAgetTickCount() + 5000;
+    uint32_t endTime = BTAgetTickCount() + 25000;
     do {
         BTAmsleep(22);
         dataOk = 1;
@@ -310,6 +310,8 @@ BTA_Status BTAETHopen(BTA_Config *config, BTA_WrapperInst *winst) {
             controlOk = inst->udpControlConnectionStatus == 16 || inst->tcpControlConnectionStatus == 16;
         }
         BTAunlockMutex(inst->controlMutex);
+        // printf("inst->udpControlConnectionStatus %d\n", inst->udpControlConnectionStatus);
+        // printf("inst->tcpControlConnectionStatus %d\n", inst->tcpControlConnectionStatus);
     } while ((!dataOk || !controlOk) && BTAgetTickCount() < endTime);
 
     // see if all desired connections or minimum required connections are up
@@ -911,7 +913,7 @@ static void *connectionMonitorRunFunction(void *handle) {
     int err;
 #   ifdef PLAT_WINDOWS
         WSADATA wsaData;
-#   elif defined PLAT_LINUX
+#   elif defined PLAT_LINUX || defined PLAT_APPLE
         char buf[7];
 #   endif
     //DWORD bufferSizeData = 200 * 1000 * 1000;
@@ -941,7 +943,7 @@ static void *connectionMonitorRunFunction(void *handle) {
             struct addrinfo *addrInfoTemp;
 #           ifdef PLAT_WINDOWS
                 err = getaddrinfo("", "", &hints, &addrInfo);
-#           elif defined PLAT_LINUX
+#           elif defined PLAT_LINUX || defined PLAT_APPLE
                 sprintf(buf,"%d", inst->udpDataPort);
                 hints.ai_flags = AI_PASSIVE;
                 err = getaddrinfo(0, (char*)buf, &hints, &addrInfo);
@@ -1174,7 +1176,8 @@ static void *connectionMonitorRunFunction(void *handle) {
                         err = getLastSocketError();
                         closesocket(inst->tcpControlSocket);
                         inst->tcpControlSocket = INVALID_SOCKET;
-                        BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_WARNING, BTA_StatusWarning, "TCP control: Could not establish connection, error: %d", err);
+                        char* fault = strerror(err);
+                        BTAinfoEventHelperIS(winst->infoEventInst, VERBOSE_WARNING, BTA_StatusWarning, "TCP control: Could not establish connection, error: %d %s", err, fault);
                     }
                 }
                 else {
@@ -3375,7 +3378,7 @@ static void *discoveryRunFunction(BTA_DiscoveryInst *inst) {
     struct addrinfo *addrInfoTemp;
 #   ifdef PLAT_WINDOWS
     err = getaddrinfo("", "", &hints, &addrInfo);
-#   elif defined PLAT_LINUX
+#   elif defined PLAT_LINUX || defined PLAT_APPLE
     char buf[10];
     sprintf(buf, "%d", inst->broadcastPort);
     hints.ai_flags = AI_PASSIVE;

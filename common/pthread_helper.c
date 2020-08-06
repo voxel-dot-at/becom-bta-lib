@@ -7,7 +7,7 @@
 
 #ifdef PLAT_WINDOWS
 #   include <semaphore.h>
-#elif defined PLAT_LINUX
+#elif defined PLAT_LINUX || defined PLAT_APPLE
 #   include <semaphore.h>
 #   include <errno.h>
 #endif
@@ -340,7 +340,7 @@ BTA_Status BTAwaitSemaphoreTimed(void *semaphore, int msecsTimeout) {
         if (result != 0) {
 #           ifdef PLAT_WINDOWS
                 return BTA_StatusTimeOut;
-#           elif defined PLAT_LINUX
+#           elif defined PLAT_LINUX || defined PLAT_APPLE
                 int err = errno;
                 if (err == ETIMEDOUT) {
                     return BTA_StatusTimeOut;

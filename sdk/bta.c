@@ -2380,7 +2380,7 @@ BTA_Status BTA_CALLCONV BTAunitToString(BTA_Unit unit, char *unitString, uint16_
     }
 #ifdef PLAT_WINDOWS
     strcpy_s((char *)unitString, unitStringLen, unitStringTemp);
-#elif defined PLAT_LINUX
+#elif defined PLAT_LINUX || defined PLAT_APPLE
     strcpy((char *)unitString, unitStringTemp);
 #endif
     return BTA_StatusOk;
