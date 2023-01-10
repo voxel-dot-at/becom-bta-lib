@@ -49,7 +49,7 @@ BTA_Status BTAfLargeOpen(const char* filename, const char *mode, void **file) {
             return BTA_StatusRuntimeError;
         }
         return BTA_StatusOk;
-    #elif defined PLAT_LINUX
+    #elif defined PLAT_LINUX || defined PLAT_APPLE
         return BTAfopen(filename, mode, file);
     #endif
 }
@@ -65,7 +65,7 @@ BTA_Status BTAfLargeClose(void *file) {
             return BTA_StatusRuntimeError;
         }
         return BTA_StatusOk;
-    #elif defined PLAT_LINUX
+    #elif defined PLAT_LINUX ||	defined	PLAT_APPLE
         return BTAfclose(file);
     #endif
 }
@@ -82,7 +82,7 @@ BTA_Status BTAfLargeTell(void *file, uint64_t *position) {
             return BTA_StatusRuntimeError;
         }
         *position = pos;
-    #elif defined PLAT_LINUX
+    #elif defined PLAT_LINUX ||	defined	PLAT_APPLE
         *position = ftell((FILE *)file);
         if (*position < 0) {
             *position = 0;
@@ -108,7 +108,7 @@ BTA_Status BTAfLargeSeek(void *file, int64_t offset, BTA_SeekOrigin origin, uint
         if (position) {
             *position = pos;
         }
-    #elif defined PLAT_LINUX
+    #elif defined PLAT_LINUX ||	defined	PLAT_APPLE
         int err = fseek((FILE *)file, offset, origin);
         if (err < 0) {
             return BTA_StatusRuntimeError;
@@ -141,7 +141,7 @@ BTA_Status BTAfLargeRead(void *file, void *buffer, uint32_t bytesToReadCount, ui
             return BTA_StatusOutOfMemory;
         }
         return BTA_StatusOk;
-    #elif defined PLAT_LINUX
+    #elif defined PLAT_LINUX ||	defined	PLAT_APPLE
         return BTAfread(file, buffer, bytesToReadCount, bytesReadCount);
     #endif
 }
@@ -166,7 +166,7 @@ BTA_Status BTAfLargeWrite(void *file, void *buffer, uint32_t bufferLen, uint32_t
             return BTA_StatusOutOfMemory;
         }
         return BTA_StatusOk;
-    #elif defined PLAT_LINUX
+    #elif defined PLAT_LINUX ||	defined	PLAT_APPLE
         return BTAfwrite(file, buffer, bufferLen, bytesWrittenCount);
     #endif
 }
@@ -224,7 +224,7 @@ BTA_Status BTAfopen(const char* filename, const char *mode, void **file) {
             return BTA_StatusRuntimeError;
         }
         return BTA_StatusOk;
-    #elif defined PLAT_LINUX
+    #elif defined PLAT_LINUX ||	defined	PLAT_APPLE
         *file = fopen(filename, mode);
         if (!*file) {
             return BTA_StatusUnknown;
