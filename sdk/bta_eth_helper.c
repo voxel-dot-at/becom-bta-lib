@@ -7,8 +7,6 @@
 #include <string.h>
 #include <stdio.h>
 
-#include <bta_jpg.h>
-#include "configuration.h"
 #include <assert.h>
 
 #ifdef PLAT_WINDOWS

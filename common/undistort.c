@@ -17,9 +17,9 @@ void initUndistortRectifyMapPh(BTA_IntrinsicData *intData, uint16_t *xy) {
     double ir4 = 1 / intData->fy;
     double ir5 = -intData->cy / intData->fy;
 
-    const double k4 = 0.;
-    const double k5 = 0.;
-    const double k6 = 0.;
+    const double k4 = 0.0;
+    const double k5 = 0.0;
+    const double k6 = 0.0;
 
     uint16_t *xyTemp = xy;
     for (int row = 0; row < intData->yRes; row++)
@@ -158,7 +158,7 @@ static BTA_Status addUndistortionMap(BTA_WrapperInst *winst, BTA_IntrinsicData *
     if (!inst) {
         return BTA_StatusInvalidParameter;
     }
-    BTA_UndistortionMap *map = (BTA_UndistortionMap *)malloc(sizeof(BTA_UndistortionMap));
+    BTA_UndistortionMap *map = (BTA_UndistortionMap *)calloc(1, sizeof(BTA_UndistortionMap));
     if (!map) {
         return BTA_StatusOutOfMemory;
     }
@@ -171,7 +171,7 @@ static BTA_Status addUndistortionMap(BTA_WrapperInst *winst, BTA_IntrinsicData *
     }
     initUndistortRectifyMapPh(intData, map->xy);
     if (!inst->undistortionMaps) {
-        inst->undistortionMaps = (BTA_UndistortionMap **)malloc(sizeof(BTA_UndistortionMap *));
+        inst->undistortionMaps = (BTA_UndistortionMap **)calloc(1, sizeof(BTA_UndistortionMap *));
         inst->undistortionMapsLen = 1;
     }
     else {
@@ -199,7 +199,7 @@ static BTA_Status addEmptyUndistortionMap(BTA_WrapperInst *winst, uint16_t xRes,
     if (!inst) {
         return BTA_StatusInvalidParameter;
     }
-    BTA_UndistortionMap *map = (BTA_UndistortionMap *)malloc(sizeof(BTA_UndistortionMap));
+    BTA_UndistortionMap *map = (BTA_UndistortionMap *)calloc(1, sizeof(BTA_UndistortionMap));
     if (!map) {
         return BTA_StatusOutOfMemory;
     }
@@ -207,7 +207,7 @@ static BTA_Status addEmptyUndistortionMap(BTA_WrapperInst *winst, uint16_t xRes,
     map->yRes = yRes;
     map->xy = 0;
     if (!inst->undistortionMaps) {
-        inst->undistortionMaps = (BTA_UndistortionMap **)malloc(sizeof(BTA_UndistortionMap *));
+        inst->undistortionMaps = (BTA_UndistortionMap **)calloc(1, sizeof(BTA_UndistortionMap *));
         inst->undistortionMapsLen = 1;
     }
     else {
@@ -234,7 +234,8 @@ BTA_Status BTAundistortClose(BTA_WrapperInst *winst) {
     BTA_UndistortInst *inst = (BTA_UndistortInst *)winst->undistortInst;
     winst->undistortInst = 0;
     if (!inst) {
-        return BTA_StatusInvalidParameter;
+        // not even opened
+        return BTA_StatusOk;
     }
     if (inst) {
         for (int i = 0; i < inst->undistortionMapsLen; i++) {
@@ -292,7 +293,7 @@ static void tryToLoadMap(BTA_WrapperInst *winst, uint16_t xRes, uint16_t yRes) {
             // It is defined, that the RGB stream to distort comes from lens index 1, thus only
             // check lens parameters at index 1
             addUndistortionMap(winst, intData[1]);
-            BTAinfoEventHelperII(winst->infoEventInst, VERBOSE_INFO, BTA_StatusInformation, "Loaded undistortion data for RGB %dx%d", xRes, yRes);
+            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_INFO, BTA_StatusInformation, "Loaded undistortion data for RGB %dx%d", xRes, yRes);
             BTAfreeIntrinsicData(&intData, intDataLen);
             return;
         }
@@ -303,7 +304,7 @@ static void tryToLoadMap(BTA_WrapperInst *winst, uint16_t xRes, uint16_t yRes) {
     if (status == BTA_StatusOk) {
         if (xRes == intDataTemp.xRes && yRes == intDataTemp.yRes) {
             addUndistortionMap(winst, &intDataTemp);
-            BTAinfoEventHelperII(winst->infoEventInst, VERBOSE_INFO, BTA_StatusInformation, "Loaded undistortion data for RGB %dx%d (legacy format)", xRes, yRes);
+            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_INFO, BTA_StatusInformation, "Loaded undistortion data for RGB %dx%d (legacy format)", xRes, yRes);
             return;
         }
     }

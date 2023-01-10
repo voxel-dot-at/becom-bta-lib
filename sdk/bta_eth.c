@@ -5,6 +5,7 @@
 #include <bta_flash_update.h>
 #include <bta_frame.h>
 #include <bta_status.h>
+#include <mth_math.h>
 #include "configuration.h"
 
 #include "bta_eth.h"
@@ -13,21 +14,19 @@
 #include <timing_helper.h>
 #include <pthread_helper.h>
 #include <sockets_helper.h>
-#include <bta_jpg.h>
 #include <utils.h>
 
-
 #ifdef PLAT_WINDOWS
-
 #elif defined PLAT_LINUX
+#   include <sys/time.h>
 #   include <netdb.h>
 #   include <netinet/in.h>
+#   include <ifaddrs.h>
 #   define u_long uint32_t
 #elif defined PLAT_APPLE
 #   include <sys/select.h>
 #   include <sys/time.h>
 #   include <sys/types.h>
-#   include <sys/socket.h>
 #   include <netdb.h>
 #   include <stdbool.h>
 #endif
@@ -42,10 +41,11 @@
 
 //////////////////////////////////////////////////////////////////////////////////
 // Local prototypes
-static void *discoveryRunFunction(BTA_DiscoveryInst *inst);
+static BTA_Status writeOrCheckDeviceUdpDataSettings(BTA_WrapperInst *winst);
 
 static void *udpReadRunFunction(void *handle);
 static void *parseFramesRunFunction(void *handle);
+static void *shmReadRunFunction(void *handle);
 
 static BTA_FrameToParse *getNewer(BTA_FrameToParse **framesToParse, int framesToParseLen, BTA_FrameToParse *ftpRef);
 static BTA_FrameToParse *getOldest(BTA_FrameToParse **framesToParse, int framesToParseLen);
@@ -56,9 +56,15 @@ static BTA_Status sendRetrReqGap(BTA_WrapperInst *winst, BTA_FrameToParse *frame
 
 static void *connectionMonitorRunFunction(void *handle);
 static BTA_Status sendKeepAliveMsg(BTA_WrapperInst *inst);
-static BTA_Status BTAETHgetDeviceType(BTA_WrapperInst *winst, BTA_DeviceType *deviceType);
 
 static BTA_Status readRegister(BTA_WrapperInst *winst, uint32_t address, uint32_t *data, uint32_t *registerCount, uint32_t timeout);
+
+static SOCKET openDiscoveryRcvSocket(uint16_t *callbackPort, BTA_InfoEventInst *infoEventInst);
+static void fillDiscoveryBuffer(uint8_t  buffer[64], uint16_t deviceType, uint8_t callbackIpAddr[4], uint16_t callbackPort);
+static BTA_Status openDiscoverySendSockets(uint16_t broadcastPort, SOCKET *sockets, int *socketsCount, BTA_InfoEventInst *infoEventInst);
+static BTA_Status sendDiscoveryMessage(SOCKET *sockets, int socketsCount, uint8_t *buffer, uint32_t bufferLen, uint8_t *broadcastIpAddr, uint16_t broadcastPort, BTA_InfoEventInst *infoEventInst);
+static BTA_Status closeSockets(SOCKET *sockets, int socketsCount);
+static BTA_DeviceInfo *parseDiscoveryResponse(uint8_t *responsePayload, uint32_t responseLen, void* deviceListMutex, BTA_DeviceInfo **deviceList, uint16_t deviceListCount, BTA_InfoEventInst *infoEventInst);
 
 static BTA_Status receiveControlResponse(BTA_WrapperInst *inst, uint8_t *request, uint8_t **data, uint32_t *dataLen, uint32_t timeout, FN_BTA_ProgressReport progressReport);
 // receiveControlResponse_2 is only needed in discovery where we don't have an instance. could be worked around..
@@ -67,8 +73,8 @@ static BTA_Status receiveControlResponse_2(uint8_t *request, uint8_t **data, uin
                                            uint32_t *keepAliveMsgTimestamp, float lpKeepAliveMsgInterval, BTA_InfoEventInst *infoEventInst);
 
 static BTA_Status receive(uint8_t *data, uint32_t *length,
-                            uint8_t *udpControlConnectionStatus, SOCKET *udpControlSocket, uint8_t *udpControlCallbackIpAddr, uint16_t udpControlCallbackPort, uint8_t *tcpControlConnectionStatus, SOCKET *tcpControlSocket,
-                            uint32_t timeout, uint32_t *keepAliveMsgTimestamp, float lpKeepAliveMsgInterval, BTA_InfoEventInst *infoEventInst);
+                          uint8_t *udpControlConnectionStatus, SOCKET *udpControlSocket, uint8_t *udpControlCallbackIpAddr, uint16_t udpControlCallbackPort, uint8_t *tcpControlConnectionStatus, SOCKET *tcpControlSocket,
+                          uint32_t timeout, uint32_t *keepAliveMsgTimestamp, float lpKeepAliveMsgInterval, BTA_InfoEventInst *infoEventInst);
 
 static BTA_Status transmit(BTA_WrapperInst *inst, uint8_t *data, uint32_t length, uint32_t timeout);
 // transmit_2 is only needed in discovery where we don't have an instance. could be worked around..
@@ -82,8 +88,8 @@ static const uint8_t ipAddrLenToVer[BTA_ETH_IP_ADDR_LEN_TO_VER_LEN] = { BTA_ETH_
 static const uint32_t timeoutDefault = 4000;
 static const uint32_t timeoutHuge = 120000;
 static const uint32_t timeoutBigger = 30000;
-// static const uint32_t timeoutBig = 15000;
-static const uint32_t timeoutSmall = 1000;
+//static const uint32_t timeoutBig = 15000;
+//static const uint32_t timeoutSmall = 1000;
 static const uint32_t timeoutTiny = 50;
 
 #define RETR_REQ_PACKET_COUNT_MAX 128
@@ -110,19 +116,38 @@ static const int udpDataQueueLenPrealloc = 500;
 BTA_Status BTAETHopen(BTA_Config *config, BTA_WrapperInst *winst) {
     BTA_Status status;
     if (!config || !winst) {
-        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusInvalidParameter, "BTAopen Eth: Parameters config or handle missing");
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusConfigParamError, "BTAopen Eth: config or handle missing");
+        return BTA_StatusInvalidParameter;
+    }
+
+    int configTest = !!config->udpDataIpAddr + !!config->udpDataIpAddrLen + !!config->udpDataPort;
+    if (configTest != 0 && configTest != 3) {
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusConfigParamError, "BTAopen Eth: Please use all or none of udpDataIpAddr, udpDataIpAddrLen and udpDataPort");
+        return BTA_StatusInvalidParameter;
+    }
+    if (config->udpDataIpAddr && config->udpDataAutoConfig) {
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusConfigParamError, "BTAopen Eth: UDP data connection information is given, but udpDataAutoConfig is set");
+        return BTA_StatusInvalidParameter;
+    }
+    configTest = !!config->tcpDeviceIpAddr + !!config->tcpDeviceIpAddrLen + !!config->tcpControlPort;
+    if (configTest != 0 && configTest != 3) {
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusConfigParamError, "BTAopen Eth: Please use all or none of tcpDeviceIpAddr, tcpDeviceIpAddrLen and tcpControlPort");
+        return BTA_StatusInvalidParameter;
+    }
+    configTest = !!config->udpControlOutIpAddr + !!config->udpControlOutIpAddrLen + !!config->udpControlPort;
+    if (configTest != 0 && configTest != 3) {
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusConfigParamError, "BTAopen Eth: Please use all or none of udpControlOutIpAddr, udpControlOutIpAddrLen and udpControlPort");
         return BTA_StatusInvalidParameter;
     }
 
     if (!config->tcpDeviceIpAddr && !config->udpControlOutIpAddr && !config->udpDataIpAddr) {
-        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusInvalidParameter, "BTAopen Eth: Parameters tcpDeviceIpAddr, udpControlOutIpAddr and udpDataIpAddr missing");
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusConfigParamError, "BTAopen Eth: Set at least one prameter out of tcpDeviceIpAddr, udpControlOutIpAddr and udpDataIpAddr");
         return BTA_StatusInvalidParameter;
     }
 
     winst->inst = calloc(1, sizeof(BTA_EthLibInst));
     BTA_EthLibInst *inst = (BTA_EthLibInst *)winst->inst;
     if (!inst) {
-        BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusOutOfMemory, "BTAopen Eth: Cannot allocate %d", sizeof(BTA_EthLibInst));
         return BTA_StatusOutOfMemory;
     }
 
@@ -133,31 +158,16 @@ BTA_Status BTAETHopen(BTA_Config *config, BTA_WrapperInst *winst) {
     inst->lpDataStreamPacketWaitTimeout = 50;
     // 100 is apparently too small, not enough time to get an answer with a switch on windows with 50 fps DistAmp
     // 150 seems to be a minimum. at high frame-rates a second request is futile. with big frames the answer won't come faster (sender is so busy with big frames)
-    inst->lpRetrReqIntervalMin = 150;
-    inst->lpDataStreamRetrReqMaxAttempts = 3;
+    inst->lpRetrReqIntervalMin = 50;
+    inst->lpDataStreamRetrReqMaxAttempts = 5;
 
     if (config->pon) {
         // TODO: support when merging USB with ETH
-        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WARNING, BTA_StatusWarning, "BTAopen Eth: Parameter pon ignored, not supported");
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WARNING, BTA_StatusConfigParamError, "BTAopen Eth: Parameter pon ignored, not supported");
     }
     if (config->serialNumber) {
         // TODO: support when merging USB with ETH
-        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WARNING, BTA_StatusWarning, "BTAopen Eth: Parameter serialNumber ignored, not supported");
-    }
-
-
-    status = BTAundistortInit(winst);
-    if (status != BTA_StatusOk) {
-        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, status, "BTAopen Eth: Error initializing undistort");
-        BTAETHclose(winst);
-        return status;
-    }
-
-    status = BTAjpgInit(winst);
-    if (status != BTA_StatusOk) {
-        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, status, "BTAopen Eth: Error initializing jpg");
-        BTAETHclose(winst);
-        return status;
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WARNING, BTA_StatusConfigParamError, "BTAopen Eth: Parameter serialNumber ignored, not supported");
     }
 
     status = BTAinitMutex(&inst->controlMutex);
@@ -167,25 +177,66 @@ BTA_Status BTAETHopen(BTA_Config *config, BTA_WrapperInst *winst) {
         return status;
     }
 
-    uint8_t udpDataWanted = config->udpDataIpAddr && config->udpDataPort;
+#   ifdef PLAT_WINDOWS
+    WSADATA wsaData;
+    int err = WSAStartup(MAKEWORD(2, 2), &wsaData);
+    if (err != NO_ERROR) {
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusWarning, "Error in WSAStartup, error: %d", err);
+        BTAETHclose(winst);
+        return BTA_StatusRuntimeError;
+    }
+#   endif
+
+    uint8_t udpDataWanted = (config->udpDataIpAddr && config->udpDataPort) || config->udpDataAutoConfig;
+    uint8_t shmDataWanted = !!config->shmDataEnabled;
     uint8_t udpControlWanted = config->udpControlOutIpAddr && config->udpControlPort;
     uint8_t tcpControlWanted = config->tcpDeviceIpAddr && config->tcpControlPort;
     if (!udpDataWanted && !udpControlWanted && !tcpControlWanted) {
-        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusInvalidParameter, "BTAopen Eth: No connection information. Aborting.");
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusConfigParamError, "BTAopen Eth: No connection information. Aborting.");
+        BTAETHclose(winst);
+        return BTA_StatusInvalidParameter;
+    }
+
+#   ifndef PLAT_LINUX
+    if (shmDataWanted) {
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusConfigParamError, "BTAopen Eth: Shm data Only supported on linux systems");
+        BTAETHclose(winst);
+        return BTA_StatusNotSupported;
+    }
+#   endif
+    if (shmDataWanted && udpDataWanted) {
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusConfigParamError, "BTAopen Eth: Shm data and UDP data shouldn't be used simultaneously. Aborting.");
+        BTAETHclose(winst);
+        return BTA_StatusInvalidParameter;
+    }
+    if (shmDataWanted && !udpControlWanted && !tcpControlWanted) {
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusConfigParamError, "BTAopen Eth: Shm relies on a control connection. Aborting.");
+        BTAETHclose(winst);
+        return BTA_StatusInvalidParameter;
+    }
+    if (shmDataWanted && config->frameQueueMode != BTA_QueueModeDoNotQueue) {
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusConfigParamError, "BTAopen Eth: Shm data: Please use frameArrived. Queue is not supported yet. Aborting.");
         BTAETHclose(winst);
         return BTA_StatusInvalidParameter;
     }
 
     if (!config->frameArrived && !config->frameArrivedEx && !config->frameArrivedEx2 && config->frameQueueMode == BTA_QueueModeDoNotQueue && udpDataWanted) {
         // No way to get frames without queueing or callback
-        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusInvalidParameter, "BTAopen Eth: A data interface connection is given, but queueing and frameArrived callback are disabled");
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusConfigParamError, "BTAopen Eth: A data interface connection is given, but queueing and frameArrived callback are disabled");
         BTAETHclose(winst);
         return BTA_StatusInvalidParameter;
     }
 
+    inst->udpDataAutoConfig = config->udpDataAutoConfig > 0 ? 1 : 0;
     if (config->udpDataIpAddr) {
         if (config->udpDataIpAddrLen != 4) {
-            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusInvalidParameter, "BTAopen Eth: Only IPv4 supported, set udpDataIpAddrLen = 4");
+            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusConfigParamError, "BTAopen Eth: Only IPv4 supported, set udpDataIpAddrLen = 4");
+            BTAETHclose(winst);
+            return BTA_StatusInvalidParameter;
+        }        
+        if (!BTAisLocalIpAddrOrMulticast(config->udpDataIpAddr, config->udpDataIpAddrLen)) {
+            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusConfigParamError, "BTAopen Eth: udpDataIpAddr %d.%d.%d.%d cannot be used because it's not a local or multicast address",
+                                   config->udpDataIpAddr[0], config->udpDataIpAddr[1], config->udpDataIpAddr[2], config->udpDataIpAddr[3]);
             BTAETHclose(winst);
             return BTA_StatusInvalidParameter;
         }
@@ -196,18 +247,20 @@ BTA_Status BTAETHopen(BTA_Config *config, BTA_WrapperInst *winst) {
             return BTA_StatusOutOfMemory;
         }
         memcpy(inst->udpDataIpAddr, config->udpDataIpAddr, inst->udpDataIpAddrLen);
-        if (inst->udpDataIpAddrLen >= BTA_ETH_IP_ADDR_LEN_TO_VER_LEN) {
-            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusInvalidParameter, "BTAopen Eth: Invalid length: udpDataIpAddrLen");
-            BTAETHclose(winst);
-            return BTA_StatusInvalidParameter;
-        }
         inst->udpDataIpAddrVer = ipAddrLenToVer[inst->udpDataIpAddrLen];
     }
     inst->udpDataPort = config->udpDataPort;
 
     if (config->udpControlOutIpAddr) {
         if (config->udpControlOutIpAddrLen != 4) {
-            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusInvalidParameter, "BTAopen Eth: Only IPv4 supported, set udpControlOutIpAddrLen = 4");
+            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusConfigParamError, "BTAopen Eth: Only IPv4 supported, set udpControlOutIpAddrLen = 4");
+            BTAETHclose(winst);
+            return BTA_StatusInvalidParameter;
+        }
+        status = BTAgetMatchingLocalAddress(config->udpControlOutIpAddr, config->udpControlOutIpAddrLen, 0);
+        if (status != BTA_StatusOk) {
+            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusConfigParamError, "BTAopen Eth: udpControlOutIpAddr %d.%d.%d.%d cannot be used because it's not in my subnet",
+                               config->udpControlOutIpAddr[0], config->udpControlOutIpAddr[1], config->udpControlOutIpAddr[2], config->udpControlOutIpAddr[3]);
             BTAETHclose(winst);
             return BTA_StatusInvalidParameter;
         }
@@ -218,18 +271,13 @@ BTA_Status BTAETHopen(BTA_Config *config, BTA_WrapperInst *winst) {
             return BTA_StatusOutOfMemory;
         }
         memcpy(inst->udpControlDeviceIpAddr, config->udpControlOutIpAddr, inst->udpControlDeviceIpAddrLen);
-        if (inst->udpControlDeviceIpAddrLen >= BTA_ETH_IP_ADDR_LEN_TO_VER_LEN) {
-            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusInvalidParameter, "BTAopen Eth: Invalid length: udpControlDeviceIpAddrLen");
-            BTAETHclose(winst);
-            return BTA_StatusInvalidParameter;
-        }
         inst->udpControlDeviceIpAddrVer = ipAddrLenToVer[inst->udpControlDeviceIpAddrLen];
     }
     inst->udpControlPort = config->udpControlPort;
 
     if (config->udpControlInIpAddr) {
         if (config->udpControlInIpAddrLen != 4) {
-            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusInvalidParameter, "BTAopen Eth: Only IPv4 supported, set udpControlInIpAddrLen = 4");
+            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusConfigParamError, "BTAopen Eth: Only IPv4 supported, set udpControlInIpAddrLen = 4");
             BTAETHclose(winst);
             return BTA_StatusInvalidParameter;
         }
@@ -240,18 +288,20 @@ BTA_Status BTAETHopen(BTA_Config *config, BTA_WrapperInst *winst) {
             return BTA_StatusOutOfMemory;
         }
         memcpy(inst->udpControlCallbackIpAddr, config->udpControlInIpAddr, inst->udpControlCallbackIpAddrLen);
-        if (inst->udpControlCallbackIpAddrLen >= BTA_ETH_IP_ADDR_LEN_TO_VER_LEN) {
-            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusInvalidParameter, "BTAopen Eth: Invalid length: udpControlCallbackIpAddrLen");
-            BTAETHclose(winst);
-            return BTA_StatusInvalidParameter;
-        }
         inst->udpControlCallbackIpAddrVer = ipAddrLenToVer[inst->udpControlCallbackIpAddrLen];
     }
     inst->udpControlCallbackPort = config->udpControlCallbackPort;
 
     if (config->tcpDeviceIpAddr) {
         if (config->tcpDeviceIpAddrLen != 4) {
-            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusInvalidParameter, "BTAopen Eth: Only IPv4 supported, set tcpDeviceIpAddrLen = 4");
+            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusConfigParamError, "BTAopen Eth: Only IPv4 supported, set tcpDeviceIpAddrLen = 4");
+            BTAETHclose(winst);
+            return BTA_StatusInvalidParameter;
+        }
+        status = BTAgetMatchingLocalAddress(config->tcpDeviceIpAddr, config->tcpDeviceIpAddrLen, 0);
+        if (status != BTA_StatusOk) {
+            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusConfigParamError, "BTAopen Eth: udpControlOutIpAddr %d.%d.%d.%d cannot be used because it's not in my subnet",
+                               config->tcpDeviceIpAddr[0], config->tcpDeviceIpAddr[1], config->tcpDeviceIpAddr[2], config->tcpDeviceIpAddr[3]);
             BTAETHclose(winst);
             return BTA_StatusInvalidParameter;
         }
@@ -263,18 +313,12 @@ BTA_Status BTAETHopen(BTA_Config *config, BTA_WrapperInst *winst) {
         }
         memcpy(inst->tcpDeviceIpAddr, config->tcpDeviceIpAddr, inst->tcpDeviceIpAddrLen);
     }
-    //inst->tcpDataPort = config->tcpDataPort;
     inst->tcpControlPort = config->tcpControlPort;
 
     inst->udpDataSocket = INVALID_SOCKET;
     inst->udpControlSocket = INVALID_SOCKET;
     inst->tcpControlSocket = INVALID_SOCKET;
 
-
-    // Activate first data connection
-    if (udpDataWanted) {
-        inst->udpDataConnectionStatus = 1;
-    }
 
     // Activate first control connection
     if (udpControlWanted) {
@@ -286,6 +330,11 @@ BTA_Status BTAETHopen(BTA_Config *config, BTA_WrapperInst *winst) {
         inst->tcpControlConnectionStatus = 1;
     }
 
+    // Activate data connection
+    if (udpDataWanted) {
+        inst->udpDataConnectionStatus = 1;
+    }
+
     // Start connection monitor thread
     status = BTAcreateThread(&(inst->connectionMonitorThread), &connectionMonitorRunFunction, (void *)winst, 0);
     if (status != BTA_StatusOk) {
@@ -294,48 +343,42 @@ BTA_Status BTAETHopen(BTA_Config *config, BTA_WrapperInst *winst) {
         return status;
     }
 
-    // Wait for connections to establish
-    uint8_t dataOk, controlOk;
-    uint32_t endTime = BTAgetTickCount() + 25000;
-    do {
-        BTAmsleep(22);
-        dataOk = 1;
-        if (udpDataWanted) {
-            dataOk = inst->udpDataConnectionStatus == 16;
-        }
+    // Wait for connections to establish. the timeout shall depend on the number of active control interfaces plus margin
+    uint32_t endTime = BTAgetTickCount() + (udpControlWanted * timeoutDefault + tcpControlWanted * timeoutDefault) + 1000;
+    while (1) {
+        BTAmsleep(250);
         // lock in order to see if the connection is really up (not only pending alive msg)
         BTAlockMutex(inst->controlMutex);
-        controlOk = 1;
-        if (udpControlWanted || tcpControlWanted) {
-            controlOk = inst->udpControlConnectionStatus == 16 || inst->tcpControlConnectionStatus == 16;
-        }
+        uint8_t controlOk = (!udpControlWanted && !tcpControlWanted) || inst->udpControlConnectionStatus == 16 || inst->tcpControlConnectionStatus == 16;
         BTAunlockMutex(inst->controlMutex);
-        // printf("inst->udpControlConnectionStatus %d\n", inst->udpControlConnectionStatus);
-        // printf("inst->tcpControlConnectionStatus %d\n", inst->tcpControlConnectionStatus);
-    } while ((!dataOk || !controlOk) && BTAgetTickCount() < endTime);
-
-    // see if all desired connections or minimum required connections are up
-    if (!dataOk || !controlOk) {
-        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusDeviceUnreachable, "BTAopen Eth: Timeout, aborting connecting to the device");
-        BTAETHclose(winst);
-        return BTA_StatusDeviceUnreachable;
+        uint8_t dataOk = !udpDataWanted || inst->udpDataConnectionStatus == 16;
+        if (controlOk && dataOk) {
+            break;
+        }
+        if (BTAgetTickCount() > endTime) {
+            if (inst->udpDataAutoConfig != -1) {  // in case autoconfig is not supported, don't produce a second infoEvent
+                BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusDeviceUnreachable, "BTAopen Eth: timeout connecting to the device, see log");
+            }
+            BTAETHclose(winst);
+            return BTA_StatusDeviceUnreachable;
+        }
     }
 
     if (inst->udpControlConnectionStatus == 16 || inst->tcpControlConnectionStatus == 16) {
         status = BTAETHsetFrameMode(winst, config->frameMode);
         if (status != BTA_StatusOk) {
-            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "BTAopen Eth: Error in BTAsetFrameMode");
+            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "BTAopen Eth: Error in BTAsetFrameMode: %s", BTAstatusToString2(status));
         }
     }
 
     if (udpDataWanted) {
-        status = circular_buf_init(udpDataQueueLen, &inst->packetsToParseQueue);
+        status = BCBinit(udpDataQueueLen, &inst->packetsToParseQueue);
         if (status != BTA_StatusOk) {
             BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, status, "BTAopen Eth: Could not init packetsToParseQueue");
             BTAETHclose(winst);
             return status;
         }
-        status = circular_buf_init(udpDataQueueLen, &inst->packetsToFillQueue);
+        status = BCBinit(udpDataQueueLen, &inst->packetsToFillQueue);
         if (!inst->packetsToFillQueue) {
             BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, status, "BTAopen Eth: Could not init packetsToFillQueue");
             BTAETHclose(winst);
@@ -346,19 +389,12 @@ BTA_Status BTAETHopen(BTA_Config *config, BTA_WrapperInst *winst) {
             BTA_MemoryArea *udpPacket;
             status = BTAinitMemoryArea(&udpPacket, udpPacketLenMax);
             if (status != BTA_StatusOk) {
-                BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusOutOfMemory, "BTAopen Eth: Can't allocate more packet buffers than %d", inst->udpDataQueueMallocCount);
+                BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusOutOfMemory, "BTAopen Eth: Can't allocate more packet buffers than %d", inst->udpDataQueueMallocCount);
                 break;
             }
-            status = circular_buf_put(inst->packetsToFillQueue, (void *)udpPacket);
+            status = BCBput(inst->packetsToFillQueue, (void *)udpPacket);
             assert(status == BTA_StatusOk); // There are max as many packets around as the queue is long
             inst->udpDataQueueMallocCount++;
-        }
-
-        status = BTAcreateThread(&(inst->parseFramesThread), parseFramesRunFunction, (void *)winst, 0);
-        if (status != BTA_StatusOk) {
-            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, status, "BTAopen Eth: Could not start parseFramesThread");
-            BTAETHclose(winst);
-            return status;
         }
 
         status = BTAcreateThread(&(inst->udpReadThread), udpReadRunFunction, (void *)winst, 0);
@@ -367,7 +403,23 @@ BTA_Status BTAETHopen(BTA_Config *config, BTA_WrapperInst *winst) {
             BTAETHclose(winst);
             return status;
         }
+
+        status = BTAcreateThread(&(inst->parseFramesThread), parseFramesRunFunction, (void *)winst, 0);
+        if (status != BTA_StatusOk) {
+            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, status, "BTAopen Eth: Could not start parseFramesThread");
+            BTAETHclose(winst);
+            return status;
+        }
         //status = BTAsetRealTimePriority(inst->udpReadThread);
+    }
+
+    if (shmDataWanted) {
+        status = BTAcreateThread(&(inst->shmReadThread), shmReadRunFunction, (void *)winst, 0);
+        if (status != BTA_StatusOk) {
+            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, status, "BTAopen Eth: Could not start shmReadThread");
+            BTAETHclose(winst);
+            return status;
+        }
     }
 
     return BTA_StatusOk;
@@ -386,6 +438,10 @@ BTA_Status BTAETHclose(BTA_WrapperInst *winst) {
         return BTA_StatusInvalidParameter;
     }
     inst->closing = 1;
+    status = BTAjoinThread(inst->shmReadThread);
+    if (status != BTA_StatusOk) {
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "BTAclose Eth: Failed to join shmReadThread");
+    }
     status = BTAjoinThread(inst->udpReadThread);
     if (status != BTA_StatusOk) {
         BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "BTAclose Eth: Failed to join udpReadThread");
@@ -394,11 +450,11 @@ BTA_Status BTAETHclose(BTA_WrapperInst *winst) {
     if (status != BTA_StatusOk) {
         BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "BTAclose Eth: Failed to join parseFramesThread");
     }
-    status = circular_buf_free(inst->packetsToParseQueue, (BTA_Status(*)(void **))&BTAfreeMemoryArea);
+    status = BCBfree(inst->packetsToParseQueue, (BTA_Status(*)(void **))&BTAfreeMemoryArea);
     if (status != BTA_StatusOk) {
         BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "BTAclose Eth: Failed to close packetsToParseQueue");
     }
-    status = circular_buf_free(inst->packetsToFillQueue, (BTA_Status(*)(void **))&BTAfreeMemoryArea);
+    status = BCBfree(inst->packetsToFillQueue, (BTA_Status(*)(void **))&BTAfreeMemoryArea);
     if (status != BTA_StatusOk) {
         BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "BTAclose Eth: Failed to close packetsToFillQueue");
     }
@@ -406,15 +462,6 @@ BTA_Status BTAETHclose(BTA_WrapperInst *winst) {
     status = BTAjoinThread(inst->connectionMonitorThread);
     if (status != BTA_StatusOk) {
         BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "BTAclose Eth: Failed to join connectionMonitorThread");
-    }
-
-    status = BTAundistortClose(winst);
-    if (status != BTA_StatusOk) {
-        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "BTAclose Eth: Failed to close undistort");
-    }
-    status = BTAjpgClose(winst);
-    if (status != BTA_StatusOk) {
-        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "BTAclose Eth: Failed to close jpg");
     }
 
     free(inst->tcpDeviceIpAddr);
@@ -432,15 +479,19 @@ BTA_Status BTAETHclose(BTA_WrapperInst *winst) {
     }
     free(inst);
     winst->inst = 0;
+
+#   ifdef PLAT_WINDOWS
+    WSACleanup();
+#   endif
     return BTA_StatusOk;
 }
 
 
-static BTA_Status BTAETHgetDeviceType(BTA_WrapperInst *winst, BTA_DeviceType *deviceType) {
+BTA_Status BTAETHgetDeviceType(BTA_WrapperInst *winst, BTA_DeviceType *deviceType) {
     if (!deviceType) {
         return BTA_StatusInvalidParameter;
     }
-    *deviceType = BTA_DeviceTypeGenericEth;
+    *deviceType = BTA_DeviceTypeEthernet;
     BTA_Status status;
     uint32_t reg;
     status = BTAETHreadRegister(winst, 0x0006, &reg, 0);
@@ -448,6 +499,22 @@ static BTA_Status BTAETHgetDeviceType(BTA_WrapperInst *winst, BTA_DeviceType *de
         return status;
     }
     *deviceType = (BTA_DeviceType)reg;
+    return BTA_StatusOk;
+}
+
+
+static BTA_Status BTAETHgetMacAddr(BTA_WrapperInst *winst, uint64_t *macAddr) {
+    if (!macAddr) {
+        return BTA_StatusInvalidParameter;
+    }
+    uint32_t dataAddress = 0x0241;
+    uint32_t data[3];
+    uint32_t dataCount = 3;
+    BTA_Status status = BTAETHreadRegister(winst, dataAddress, data, &dataCount);
+    if (status != BTA_StatusOk) {
+        return status;
+    }
+    *macAddr = ((uint64_t)data[0x0241 - dataAddress] << 32) | ((uint64_t)data[0x0242 - dataAddress] << 16) | ((uint64_t)data[0x0243 - dataAddress]);
     return BTA_StatusOk;
 }
 
@@ -656,139 +723,135 @@ BTA_Status BTAETHgetDeviceInfo(BTA_WrapperInst *winst, BTA_DeviceInfo **deviceIn
     if (!winst ||!deviceInfo) {
         return BTA_StatusInvalidParameter;
     }
-    BTA_EthLibInst *inst = (BTA_EthLibInst *)winst->inst;
-    if (!inst) {
-        return BTA_StatusInvalidParameter;
-    }
     *deviceInfo = 0;
+    BTA_Status status;
 
     BTA_DeviceInfo *info = (BTA_DeviceInfo *)calloc(1, sizeof(BTA_DeviceInfo));
     if (!info) {
         return BTA_StatusOutOfMemory;
     }
 
-    uint32_t deviceTypeInt;
-    BTA_Status status = BTAETHreadRegister(winst, 0x0006, &deviceTypeInt, 0);
+    BTA_DeviceType deviceType;
+    status = BTAETHgetDeviceType(winst, &deviceType);
     if (status != BTA_StatusOk) {
-        free(info);
-        info = 0;
+        BTAfreeDeviceInfo(info);
         return status;
-    }
-    info->deviceType = (BTA_DeviceType)deviceTypeInt;
-    if (info->deviceType == 0) {
-        info->deviceType = BTA_DeviceTypeEthernet;
     }
 
     // TimEth fw v1.7.5 gives wrong values for multi reads
-    if (info->deviceType == BTA_DeviceTypeTimUp19kS3Eth || info->deviceType == BTA_DeviceTypeTimUp19kS3EthP) {
+    if (deviceType == TimUp19kS3Eth || deviceType == TimUp19kS3EthP) {
+        info->deviceType = TimUp19kS3Eth;
         status = getDeviceInfoSlow(winst, info);
         *deviceInfo = info;
         return status;
     }
 
+    uint32_t data[50];
     uint32_t dataAddress = 0x0001;
-    uint32_t data[14];
     uint32_t dataCount = 8;
     status = BTAETHreadRegister(winst, dataAddress, data, &dataCount);
-    if (status == BTA_StatusOk) {
-        info->mode0 = data[0x0001 - dataAddress];
-        info->status = data[0x0003 - dataAddress];
-        info->deviceType = (BTA_DeviceType)data[0x0006 - dataAddress];
-        if (info->deviceType == 0) {
-            info->deviceType = BTA_DeviceTypeEthernet;
-        }
-        info->firmwareVersionMajor = (data[0x0008 - dataAddress] & 0xf800) >> 11;
-        info->firmwareVersionMinor = (data[0x0008 - dataAddress] & 0x07c0) >> 6;
-        info->firmwareVersionNonFunc = (data[0x0008 - dataAddress] & 0x003f);
+    if (status != BTA_StatusOk) {
+        BTAfreeDeviceInfo(info);
+        return status;
     }
+    info->mode0 = data[0x0001 - dataAddress];
+    info->status = data[0x0003 - dataAddress];
+    info->deviceType = (BTA_DeviceType)data[0x0006 - dataAddress];
+    if (info->deviceType == 0) {
+        info->deviceType = BTA_DeviceTypeEthernet;
+    }
+    info->firmwareVersionMajor = (data[0x0008 - dataAddress] & 0xf800) >> 11;
+    info->firmwareVersionMinor = (data[0x0008 - dataAddress] & 0x07c0) >> 6;
+    info->firmwareVersionNonFunc = (data[0x0008 - dataAddress] & 0x003f);
+
 
     dataAddress = 0x000c;
     dataCount = 2;
     status = BTAETHreadRegister(winst, dataAddress, data, &dataCount);
-    if (status == BTA_StatusOk) {
-        info->serialNumber = data[0x000c - dataAddress];
-        info->serialNumber |= data[0x000d - dataAddress] << 16;
+    if (status != BTA_StatusOk) {
+        BTAfreeDeviceInfo(info);
+        return status;
     }
+    info->serialNumber = data[0x000c - dataAddress];
+    info->serialNumber |= data[0x000d - dataAddress] << 16;
 
     dataAddress = 0x0040;
     dataCount = 2;
     status = BTAETHreadRegister(winst, dataAddress, data, &dataCount);
-    if (status == BTA_StatusOk) {
-        info->uptime = data[0x0040 - dataAddress];
-        info->uptime |= data[0x0041 - dataAddress] << 16;
+    if (status != BTA_StatusOk) {
+        BTAfreeDeviceInfo(info);
+        return status;
     }
+    info->uptime = data[0x0040 - dataAddress];
+    info->uptime |= data[0x0041 - dataAddress] << 16;
 
     dataAddress = 0x0241;
     dataCount = 14;
     status = BTAETHreadRegister(winst, dataAddress, data, &dataCount);
-    if (status == BTA_StatusOk) {
-        info->deviceMacAddrLen = 6;
-        info->deviceMacAddr = (uint8_t *)calloc(1, info->deviceMacAddrLen);
-        if (!info->deviceMacAddr) {
-            BTAfreeDeviceInfo(info);
-            return BTA_StatusOutOfMemory;
-        }
-        info->deviceMacAddr[0] = (uint8_t)(data[0x0241 - dataAddress] >> 8);
-        info->deviceMacAddr[1] = (uint8_t)data[0x0241 - dataAddress];
-        info->deviceMacAddr[2] = (uint8_t)(data[0x0242 - dataAddress] >> 8);
-        info->deviceMacAddr[3] = (uint8_t)data[0x0242 - dataAddress];
-        info->deviceMacAddr[4] = (uint8_t)(data[0x0243 - dataAddress] >> 8);
-        info->deviceMacAddr[5] = (uint8_t)data[0x0243 - dataAddress];
-
-        info->deviceIpAddrLen = 4;
-        info->deviceIpAddr = (uint8_t *)calloc(1, info->deviceIpAddrLen);
-        if (!info->deviceIpAddr) {
-            BTAfreeDeviceInfo(info);
-            return BTA_StatusOutOfMemory;
-        }
-        info->deviceIpAddr[3] = (uint8_t)data[0x0244 - dataAddress];
-        info->deviceIpAddr[2] = (uint8_t)(data[0x0244 - dataAddress] >> 8);
-        info->deviceIpAddr[1] = (uint8_t)data[0x0245 - dataAddress];
-        info->deviceIpAddr[0] = (uint8_t)(data[0x0245 - dataAddress] >> 8);
-
-        info->subnetMaskLen = 4;
-        info->subnetMask = (uint8_t *)calloc(1, info->subnetMaskLen);
-        if (!info->subnetMask) {
-            BTAfreeDeviceInfo(info);
-            return BTA_StatusOutOfMemory;
-        }
-        info->subnetMask[3] = (uint8_t)data[0x0246 - dataAddress];
-        info->subnetMask[2] = (uint8_t)(data[0x0246 - dataAddress] >> 8);
-        info->subnetMask[1] = (uint8_t)data[0x0247 - dataAddress];
-        info->subnetMask[0] = (uint8_t)(data[0x0247 - dataAddress] >> 8);
-
-        info->gatewayIpAddrLen = 4;
-        info->gatewayIpAddr = (uint8_t *)calloc(1, info->gatewayIpAddrLen);
-        if (!info->gatewayIpAddr) {
-            BTAfreeDeviceInfo(info);
-            return BTA_StatusOutOfMemory;
-        }
-        info->gatewayIpAddr[3] = (uint8_t)data[0x0248 - dataAddress];
-        info->gatewayIpAddr[2] = (uint8_t)(data[0x0248 - dataAddress] >> 8);
-        info->gatewayIpAddr[1] = (uint8_t)data[0x0249 - dataAddress];
-        info->gatewayIpAddr[0] = (uint8_t)(data[0x0249 - dataAddress] >> 8);
-
-        info->tcpDataPort = data[0x024a - dataAddress];
-
-        info->tcpControlPort = data[0x024b - dataAddress];
-
-        info->udpDataIpAddrLen = 4;
-        info->udpDataIpAddr = (uint8_t *)calloc(1, info->udpDataIpAddrLen);
-        if (!info->udpDataIpAddr) {
-            BTAfreeDeviceInfo(info);
-            return BTA_StatusOutOfMemory;
-        }
-        info->udpDataIpAddr[3] = (uint8_t)data[0x024c - dataAddress];
-        info->udpDataIpAddr[2] = (uint8_t)(data[0x024c - dataAddress] >> 8);
-        info->udpDataIpAddr[1] = (uint8_t)data[0x024d - dataAddress];
-        info->udpDataIpAddr[0] = (uint8_t)(data[0x024d - dataAddress] >> 8);
-
-        info->udpDataPort = data[0x024e - dataAddress];
+    if (status != BTA_StatusOk) {
+        BTAfreeDeviceInfo(info);
+        return status;
     }
+    info->deviceMacAddrLen = 6;
+    info->deviceMacAddr = (uint8_t *)calloc(1, info->deviceMacAddrLen);
+    if (!info->deviceMacAddr) {
+        BTAfreeDeviceInfo(info);
+        return BTA_StatusOutOfMemory;
+    }
+    info->deviceMacAddr[0] = (uint8_t)(data[0x0241 - dataAddress] >> 8);
+    info->deviceMacAddr[1] = (uint8_t)data[0x0241 - dataAddress];
+    info->deviceMacAddr[2] = (uint8_t)(data[0x0242 - dataAddress] >> 8);
+    info->deviceMacAddr[3] = (uint8_t)data[0x0242 - dataAddress];
+    info->deviceMacAddr[4] = (uint8_t)(data[0x0243 - dataAddress] >> 8);
+    info->deviceMacAddr[5] = (uint8_t)data[0x0243 - dataAddress];
+    info->deviceIpAddrLen = 4;
+    info->deviceIpAddr = (uint8_t *)calloc(1, info->deviceIpAddrLen);
+    if (!info->deviceIpAddr) {
+        BTAfreeDeviceInfo(info);
+        return BTA_StatusOutOfMemory;
+    }
+    info->deviceIpAddr[3] = (uint8_t)data[0x0244 - dataAddress];
+    info->deviceIpAddr[2] = (uint8_t)(data[0x0244 - dataAddress] >> 8);
+    info->deviceIpAddr[1] = (uint8_t)data[0x0245 - dataAddress];
+    info->deviceIpAddr[0] = (uint8_t)(data[0x0245 - dataAddress] >> 8);
+    info->subnetMaskLen = 4;
+    info->subnetMask = (uint8_t *)calloc(1, info->subnetMaskLen);
+    if (!info->subnetMask) {
+        BTAfreeDeviceInfo(info);
+        return BTA_StatusOutOfMemory;
+    }
+    info->subnetMask[3] = (uint8_t)data[0x0246 - dataAddress];
+    info->subnetMask[2] = (uint8_t)(data[0x0246 - dataAddress] >> 8);
+    info->subnetMask[1] = (uint8_t)data[0x0247 - dataAddress];
+    info->subnetMask[0] = (uint8_t)(data[0x0247 - dataAddress] >> 8);
+    info->gatewayIpAddrLen = 4;
+    info->gatewayIpAddr = (uint8_t *)calloc(1, info->gatewayIpAddrLen);
+    if (!info->gatewayIpAddr) {
+        BTAfreeDeviceInfo(info);
+        return BTA_StatusOutOfMemory;
+    }
+    info->gatewayIpAddr[3] = (uint8_t)data[0x0248 - dataAddress];
+    info->gatewayIpAddr[2] = (uint8_t)(data[0x0248 - dataAddress] >> 8);
+    info->gatewayIpAddr[1] = (uint8_t)data[0x0249 - dataAddress];
+    info->gatewayIpAddr[0] = (uint8_t)(data[0x0249 - dataAddress] >> 8);
+    info->tcpDataPort = data[0x024a - dataAddress];
+    info->tcpControlPort = data[0x024b - dataAddress];
+    info->udpDataIpAddrLen = 4;
+    info->udpDataIpAddr = (uint8_t *)calloc(1, info->udpDataIpAddrLen);
+    if (!info->udpDataIpAddr) {
+        BTAfreeDeviceInfo(info);
+        return BTA_StatusOutOfMemory;
+    }
+    info->udpDataIpAddr[3] = (uint8_t)data[0x024c - dataAddress];
+    info->udpDataIpAddr[2] = (uint8_t)(data[0x024c - dataAddress] >> 8);
+    info->udpDataIpAddr[1] = (uint8_t)data[0x024d - dataAddress];
+    info->udpDataIpAddr[0] = (uint8_t)(data[0x024d - dataAddress] >> 8);
+    info->udpDataPort = data[0x024e - dataAddress];
 
     dataAddress = 0x0570;
     dataCount = 3;
     status = BTAETHreadRegister(winst, dataAddress, data, &dataCount);
+    // These registers don't always exist (for older devices, so ignore an error
     if (status == BTA_StatusOk) {
         uint32_t ponPart1 = data[0x0570 - dataAddress];
         uint32_t ponPart2 = data[0x0571 - dataAddress];
@@ -856,7 +919,7 @@ BTA_Status BTAETHsetFrameMode(BTA_WrapperInst *winst, BTA_FrameMode frameMode) {
 
     BTA_EthImgMode imageMode = (BTA_EthImgMode)BTAframeModeToImageMode(0, frameMode);
     if (imageMode == BTA_EthImgModeNone) {
-        BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusNotSupported, "BTAsetFrameMode: frameMode not supported: %d", frameMode);
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusNotSupported, "BTAsetFrameMode: frameMode not supported: %s (%d)", BTAframeModeToString(frameMode), frameMode);
         return BTA_StatusNotSupported;
     }
     imgDataFormat &= ~(0xff << 3);
@@ -878,7 +941,7 @@ BTA_Status BTAETHsetFrameMode(BTA_WrapperInst *winst, BTA_FrameMode frameMode) {
     }
     // If the imgDataFormat was not set means it is not supported
     if ((imgDataFormat & (0xff << 3)) != (imgDataFormatReadBack & (0xff << 3))) {
-        BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusNotSupported, "BTAsetFrameMode: frameMode not supported: %d, device silently refused", frameMode);
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusNotSupported, "BTAsetFrameMode: frameMode not supported: %s (%d), device silently refused", BTAframeModeToString(frameMode), frameMode);
         return BTA_StatusNotSupported;
     }
     return BTA_StatusOk;
@@ -911,112 +974,15 @@ static void *connectionMonitorRunFunction(void *handle) {
         return 0;
     }
     int err;
-#   ifdef PLAT_WINDOWS
-        WSADATA wsaData;
-#   elif defined PLAT_LINUX || defined PLAT_APPLE
-        char buf[7];
-#   endif
-    //DWORD bufferSizeData = 200 * 1000 * 1000;
-
     BTAinfoEventHelper(winst->infoEventInst, VERBOSE_INFO, BTA_StatusInformation, "ConnectionMonitorThread started");
-#   ifdef PLAT_WINDOWS
-        do {
-            err = WSAStartup(MAKEWORD(2, 2), &wsaData);
-            if (err != NO_ERROR) {
-                BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusWarning, "Error in WSAStartup, error: %d", err);
-            }
-            BTAmsleep(500);
-        } while (err != NO_ERROR && !inst->closing);
-#   endif
+
+    uint8_t keepAliveFails = 0;
     while (!inst->closing) {
-        BTAmsleep(250);
-        // UDP data connection
-
-        if (inst->udpDataConnectionStatus > 0 && inst->udpDataSocket == INVALID_SOCKET) {
-            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_INFO, BTA_StatusInformation, "UDP data: Connecting...");
-            // retrieve all local network interfaces
-            struct addrinfo hints;
-            memset(&hints, 0, sizeof hints);
-            hints.ai_family = AF_INET;
-            hints.ai_socktype = SOCK_DGRAM;
-            struct addrinfo *addrInfo = 0;
-            struct addrinfo *addrInfoTemp;
-#           ifdef PLAT_WINDOWS
-                err = getaddrinfo("", "", &hints, &addrInfo);
-#           elif defined PLAT_LINUX || defined PLAT_APPLE
-                sprintf(buf,"%d", inst->udpDataPort);
-                hints.ai_flags = AI_PASSIVE;
-                err = getaddrinfo(0, (char*)buf, &hints, &addrInfo);
-#           endif
-            if (err == 0) {
-                inst->udpDataSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-                if (inst->udpDataSocket != INVALID_SOCKET) {
-                    struct sockaddr_in socketAddr = { 0 };
-                    socketAddr.sin_family = AF_INET;
-                    socketAddr.sin_port = htons(inst->udpDataPort);
-                    if (inst->udpDataIpAddr[0] == 224) {
-                        // multicast address
-                        addrInfoTemp = addrInfo;
-                        while (!inst->closing && addrInfoTemp != 0) {
-                            struct ip_mreq mreq;
-                            memset(&mreq, 0, sizeof(mreq));
-                            mreq.imr_multiaddr.s_addr = inst->udpDataIpAddr[0] | (inst->udpDataIpAddr[1] << 8) | (inst->udpDataIpAddr[2] << 16) | (inst->udpDataIpAddr[3] << 24);
-                            mreq.imr_interface.s_addr = ((struct sockaddr_in *)addrInfoTemp->ai_addr)->sin_addr.s_addr;
-                            /* use setsockopt() to request that the kernel join a multicast group */
-                            err = setsockopt(inst->udpDataSocket, IPPROTO_IP, IP_ADD_MEMBERSHIP, (const char*)&mreq, sizeof(mreq));
-                            if (err == SOCKET_ERROR) {
-                                err = getLastSocketError();
-                                BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_WARNING, BTA_StatusWarning, "UDP data: Failed to join the multicast group, error: %d", err);
-                            }
-                            addrInfoTemp = addrInfoTemp->ai_next;
-                        }
-                        socketAddr.sin_addr.s_addr = INADDR_ANY;
-                        //? socketAddr.sin_addr.s_addr = inst->udpDataIpAddr[0] | (inst->udpDataIpAddr[1] << 8) | (inst->udpDataIpAddr[2] << 16) | (inst->udpDataIpAddr[3] << 24);
-
-                        u_long yes = 1;
-                        err = setsockopt(inst->udpDataSocket, SOL_SOCKET, SO_REUSEADDR, (const char*)&yes, sizeof(yes));
-                        if (err == SOCKET_ERROR) {
-                            err = getLastSocketError();
-                            BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_WARNING, BTA_StatusWarning, "UDP data: Failed to allow local address reuse , error: %d", err);
-                        }
-                    }
-                    else {
-                        socketAddr.sin_addr.s_addr = inst->udpDataIpAddr[0] | (inst->udpDataIpAddr[1] << 8) | (inst->udpDataIpAddr[2] << 16) | (inst->udpDataIpAddr[3] << 24);
-                    }
-
-                    err = bind(inst->udpDataSocket, (struct sockaddr*)&socketAddr, sizeof(socketAddr));
-                    if (err != SOCKET_ERROR) {
-                        // SO_RCVTIMEO is set in udpDataRunFunction
-                        // SO_RCVTIMEO and SO_RCVBUF can be modified via LibParams
-                        inst->udpDataConnectionStatus = 16;
-                        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusInformation, "UDP data: Connection open");
-                    }
-                    else {
-                        err = getLastSocketError();
-                        BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_WARNING, BTA_StatusWarning, "UDP data: Failed to bind socket, error: %d", err);
-                        closesocket(inst->udpDataSocket);
-                        inst->udpDataSocket = INVALID_SOCKET;
-                    }
-                }
-                else {
-                    err = getLastSocketError();
-                    BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_WARNING, BTA_StatusWarning, "UDP data: Could not open connection, error: %d", err);
-                }
-            }
-            else {
-                BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_WARNING, BTA_StatusWarning, "UDP data: Could not in get address info, error: %d", err);
-            }
-            freeaddrinfo(addrInfo);
-        }
-
-        if (inst->closing) {
-            break;
-        }
-
+        uint8_t reconnected = 0;
 
         // UDP control connection
         if (inst->udpControlConnectionStatus > 0 && inst->udpControlSocket == INVALID_SOCKET) {
-            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_INFO, BTA_StatusInformation, "UDP control: Connecting...");
+            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusInformation, "UDP control: Connecting...");
             BTAlockMutex(inst->controlMutex);
             inst->udpControlSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
             if (inst->udpControlSocket != INVALID_SOCKET) {
@@ -1024,7 +990,7 @@ static void *connectionMonitorRunFunction(void *handle) {
                 err = setsockopt(inst->udpControlSocket, SOL_SOCKET, SO_REUSEADDR, (const char*)&yes, sizeof(yes));
                 if (err == SOCKET_ERROR) {
                     err = getLastSocketError();
-                    BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_WARNING, BTA_StatusWarning, "UDP control: Failed to allow local address reuse number, error: %d", err);
+                    BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WARNING, BTA_StatusWarning, "UDP control: Failed to allow local address reuse number, error: %d", err);
                 }
 
                 // let's bind the inbound connection
@@ -1054,13 +1020,13 @@ static void *connectionMonitorRunFunction(void *handle) {
                         err = setsockopt(inst->udpControlSocket, SOL_SOCKET, SO_RCVTIMEO, (const char *)&timeout, sizeof(timeout));
                         if (err == SOCKET_ERROR) {
                             err = getLastSocketError();
-                            BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_WARNING, BTA_StatusWarning, "UDP control: Failed to set timeout, error: %d", err);
+                            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WARNING, BTA_StatusWarning, "UDP control: Failed to set timeout, error: %d", err);
                         }
                         const DWORD bufferSizeControl = 2 * 1000 * 1000;
                         err = setsockopt(inst->udpControlSocket, SOL_SOCKET, SO_RCVBUF, (const char *)&bufferSizeControl, sizeof(bufferSizeControl));
                         if (err == SOCKET_ERROR) {
                             err = getLastSocketError();
-                            BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_WARNING, BTA_StatusWarning, "UDP control: Failed to set buffer size, error: %d", err);
+                            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WARNING, BTA_StatusWarning, "UDP control: Failed to set buffer size, error: %d", err);
                         }
                         inst->udpControlConnectionStatus = 8;
                         // connection is up, issue a first keep-alive message
@@ -1068,6 +1034,7 @@ static void *connectionMonitorRunFunction(void *handle) {
                         if (status == BTA_StatusOk) {
                             // udp control is connected -> tcp control not needed
                             inst->tcpControlConnectionStatus = 0;
+                            reconnected = 1;
                             BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusInformation, "UDP control: Connection open");
                         }
                         else {
@@ -1075,26 +1042,26 @@ static void *connectionMonitorRunFunction(void *handle) {
                             inst->udpControlConnectionStatus = 1;
                             closesocket(inst->udpControlSocket);
                             inst->udpControlSocket = INVALID_SOCKET;
-                            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WARNING, BTA_StatusWarning, "UDP control: Connection FAILED");
+                            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusWarning, "UDP control: Connection FAILED (failed to send or receive alive message)");
                         }
                     }
                     else {
                         err = getLastSocketError();
                         closesocket(inst->udpControlSocket);
                         inst->udpControlSocket = INVALID_SOCKET;
-                        BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_WARNING, BTA_StatusWarning, "UDP control: Failed to get socket name, error: %d", err);
+                        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusWarning, "UDP control: Failed to get socket name, error: %d", err);
                     }
                 }
                 else {
                     err = getLastSocketError();
                     closesocket(inst->udpControlSocket);
                     inst->udpControlSocket = INVALID_SOCKET;
-                    BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_WARNING, BTA_StatusWarning, "UDP control: Failed to bind socket, error: %d", err);
+                    BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusWarning, "UDP control: Failed to bind socket, error: %d", err);
                 }
             }
             else {
                 err = getLastSocketError();
-                BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_WARNING, BTA_StatusWarning, "UDP control: Could not open connection, error: %d", err);
+                BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusWarning, "UDP control: Could not open connection, error: %d", err);
             }
             BTAunlockMutex(inst->controlMutex);
         }
@@ -1103,13 +1070,12 @@ static void *connectionMonitorRunFunction(void *handle) {
             break;
         }
 
-
         // TCP control connection
         if (inst->tcpControlConnectionStatus > 0 && inst->tcpControlSocket == INVALID_SOCKET) {
             if (inst->tcpControlConnectionStatus == 2) {
-                BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WARNING, BTA_StatusWarning, "TCP control: Connection lost!");
+                BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusWarning, "TCP control: Connection lost!");
             }
-            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_INFO, BTA_StatusInformation, "TCP control: Connecting...");
+            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusInformation, "TCP control: Connecting...");
             BTAlockMutex(inst->controlMutex);
             inst->tcpControlSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
             if (inst->tcpControlSocket != INVALID_SOCKET) {
@@ -1149,47 +1115,46 @@ static void *connectionMonitorRunFunction(void *handle) {
                                 inst->udpControlCallbackIpAddr = 0;
                                 inst->udpControlCallbackIpAddrLen = 0;
                                 inst->udpControlCallbackPort = 0;
+                                reconnected = 1;
                                 BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusInformation, "TCP control: Connection established");
                             }
                             else {
                                 // inst->tcpControlConnectionStatus is set to 2 in sendKeepAliveMsg, override with 1
+                                // socket is closed down down below sendKeepAliveMsg
                                 inst->tcpControlConnectionStatus = 1;
-                                closesocket(inst->tcpControlSocket);
-                                inst->tcpControlSocket = INVALID_SOCKET;
-                                BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WARNING, BTA_StatusWarning, "TCP control: Connection FAILED");
+                                BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusDeviceUnreachable, "TCP control: Connection FAILED");
                             }
                         }
                         else if (err == SOCKET_ERROR) {
                             err = getLastSocketError();
                             closesocket(inst->tcpControlSocket);
                             inst->tcpControlSocket = INVALID_SOCKET;
-                            BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_WARNING, BTA_StatusWarning, "TCP control: Connecting failed (select write), error: %d", err);
+                            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusWarning, "TCP control: Connecting failed (select write), error: %d", err);
                         }
                         else {
                             err = getLastSocketError();
                             closesocket(inst->tcpControlSocket);
                             inst->tcpControlSocket = INVALID_SOCKET;
-                            BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_WARNING, BTA_StatusWarning, "TCP control: Connection timeout (select write), error: %d", err);
+                            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusWarning, "TCP control: Connection timeout (select write), error: %d", err);
                         }
                     }
                     else {
                         err = getLastSocketError();
                         closesocket(inst->tcpControlSocket);
                         inst->tcpControlSocket = INVALID_SOCKET;
-                        char* fault = strerror(err);
-                        BTAinfoEventHelperIS(winst->infoEventInst, VERBOSE_WARNING, BTA_StatusWarning, "TCP control: Could not establish connection, error: %d %s", err, fault);
+                        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusWarning, "TCP control: Could not establish connection, error: %d", err);
                     }
                 }
                 else {
                     err = getLastSocketError();
                     closesocket(inst->tcpControlSocket);
                     inst->tcpControlSocket = INVALID_SOCKET;
-                    BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_WARNING, BTA_StatusWarning, "TCP control: Could not set connection to non blocking, error: %d", err);
+                    BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusWarning, "TCP control: Could not set connection to non blocking, error: %d", err);
                 }
             }
             else {
                 err = getLastSocketError();
-                BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_WARNING, BTA_StatusWarning, "TCP control: Could not create socket for connection, error: %d", err);
+                BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusWarning, "TCP control: Could not create socket for connection, error: %d", err);
             }
             BTAunlockMutex(inst->controlMutex);
         }
@@ -1198,26 +1163,192 @@ static void *connectionMonitorRunFunction(void *handle) {
             break;
         }
 
-
-        // Keep-alive message
-
-        if ((inst->tcpControlConnectionStatus == 16 || inst->udpControlConnectionStatus == 16 || inst->udpControlConnectionStatus == 3) &&
-            inst->lpKeepAliveMsgInterval > 0 && BTAgetTickCount() > inst->keepAliveMsgTimestamp) {
-            int attempts = 2;
-            while (true) {
-                BTAlockMutex(inst->controlMutex);
-                BTA_Status status = sendKeepAliveMsg(winst);
-                BTAunlockMutex(inst->controlMutex);
-                if (status == BTA_StatusOk) {
-                    BTAinfoEventHelper(winst->infoEventInst, VERBOSE_INFO, BTA_StatusInformation, "Alive");
-                    break;
+        // udp data autoconfig
+        if ((inst->udpControlConnectionStatus == 16 || inst->tcpControlConnectionStatus == 16) && inst->udpDataAutoConfig > 0 && inst->udpDataConnectionStatus > 0 && !inst->udpDataIpAddr) {
+            // user wants udp data autoconfig
+            // If allowed by device type, get local address and choose standard port
+            // This happens only once successfully
+            BTA_DeviceType deviceType;
+            BTA_Status status = BTAETHgetDeviceType(winst, &deviceType);
+            if (status == BTA_StatusOk) {
+                if (deviceType == Argos3dP310 ||
+                    deviceType == Sentis3dM100 ||
+                    deviceType == TimUp19kS3Eth ||
+                    deviceType == TimUp19kS3EthP) {
+                    BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WARNING, BTA_StatusConfigParamError, "UDP data auto config not supported for this device");
+                    inst->udpDataAutoConfig = -1;
                 }
-                if (!attempts--) {
-                    BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusWarning, "Failed to send keep-alive-message, error: %d", status);
-                    break;
+            }
+            else {
+                BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WARNING, BTA_StatusConfigParamError, "UDP data auto config automatically disabled because failed to read device type");
+                inst->udpDataAutoConfig = 0;
+            }
+
+            if (inst->udpDataAutoConfig > 0) {
+                uint8_t *udpDataIpAddr = 0;
+                status = BTAgetMatchingLocalAddress(inst->tcpDeviceIpAddr, inst->tcpDeviceIpAddrLen, &udpDataIpAddr);
+                if (status == BTA_StatusOk) {
+                    inst->udpDataIpAddr = udpDataIpAddr;
+                    inst->udpDataIpAddrLen = 4;
+                    inst->udpDataIpAddrVer = ipAddrLenToVer[inst->udpDataIpAddrLen];
+                    // The Internet Assigned Numbers Authority(IANA) suggests the range 49152 to 65535 for dynamic or private ports.
+                    uint64_t macAddr;
+                    status = BTAETHgetMacAddr(winst, &macAddr);
+                    if (status == BTA_StatusOk) {
+                        inst->udpDataPort = 0xc000 + ((macAddr & 0xffffff) % 0x200);
+                    }
+                    else {
+                        inst->udpDataPort = 0xc000;
+                    }
+                    BTAinfoEventHelper(winst->infoEventInst, VERBOSE_INFO, status, "UDP data auto config set up for %d.%d.%d.%d:%d", inst->udpDataIpAddr[0], inst->udpDataIpAddr[1], inst->udpDataIpAddr[2], inst->udpDataIpAddr[3], inst->udpDataPort);
+                }
+                else {
+                    inst->udpDataAutoConfig = 0;
+                    BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WARNING, BTA_StatusConfigParamError, "UDP data auto config automatically disabled because there is no (unique) local network matching the device ip address");
                 }
             }
         }
+
+        if (inst->closing) {
+            break;
+        }
+
+        // UDP data connection
+        if (inst->udpDataConnectionStatus > 0 && inst->udpDataSocket == INVALID_SOCKET && inst->udpDataIpAddr) {
+            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusInformation, "UDP data: Connecting...");
+            inst->udpDataSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+            if (inst->udpDataSocket != INVALID_SOCKET) {
+                struct sockaddr_in socketAddr = { 0 };
+                socketAddr.sin_family = AF_INET;
+                socketAddr.sin_port = htons(inst->udpDataPort);
+                if (inst->udpDataIpAddr[0] == 224) {
+                    // multicast address, retrieve all local network interfaces, then join them
+                    struct addrinfo hints;
+                    memset(&hints, 0, sizeof(hints));
+                    hints.ai_family = AF_INET;
+                    hints.ai_socktype = SOCK_DGRAM;
+                    struct addrinfo *addrInfo = 0;
+#                   ifdef PLAT_WINDOWS
+                    err = getaddrinfo("", "", &hints, &addrInfo);
+#                   elif defined PLAT_LINUX || defined PLAT_APPLE
+                    char buf[10];
+                    sprintf(buf, "%d", inst->udpDataPort);
+                    hints.ai_flags = AI_PASSIVE;
+                    err = getaddrinfo(0, (char*)buf, &hints, &addrInfo);
+#                   endif
+                    if (err == 0) {
+                        struct addrinfo *addrInfoTemp = addrInfo;
+                        while (!inst->closing && addrInfoTemp) {
+                            struct ip_mreq mreq;
+                            memset(&mreq, 0, sizeof(mreq));
+                            mreq.imr_multiaddr.s_addr = inst->udpDataIpAddr[0] | (inst->udpDataIpAddr[1] << 8) | (inst->udpDataIpAddr[2] << 16) | (inst->udpDataIpAddr[3] << 24);
+                            mreq.imr_interface.s_addr = ((struct sockaddr_in *)addrInfoTemp->ai_addr)->sin_addr.s_addr;
+                            /* use setsockopt() to request that the kernel join a multicast group */
+                            err = setsockopt(inst->udpDataSocket, IPPROTO_IP, IP_ADD_MEMBERSHIP, (const char*)&mreq, sizeof(mreq));
+                            if (err == SOCKET_ERROR) {
+                                err = getLastSocketError();
+                                BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WARNING, BTA_StatusWarning, "UDP data: Failed to join the multicast group, error: %d", err);
+                            }
+                            //else {
+                            //    BTAinfoEventHelper(winst->infoEventInst, VERBOSE_INFO, BTA_StatusInformation, "UDP data: Joined %.%.%.% to the multicast group", mreq.imr_interface.S_un.S_un_b.s_b1, mreq.imr_interface.S_un.S_un_b.s_b2, mreq.imr_interface.S_un.S_un_b.s_b3, mreq.imr_interface.S_un.S_un_b.s_b4);
+                            //}
+                            addrInfoTemp = addrInfoTemp->ai_next;
+                        }
+                        freeaddrinfo(addrInfo);
+
+                        socketAddr.sin_addr.s_addr = INADDR_ANY;
+                        //? socketAddr.sin_addr.s_addr = inst->udpDataIpAddr[0] | (inst->udpDataIpAddr[1] << 8) | (inst->udpDataIpAddr[2] << 16) | (inst->udpDataIpAddr[3] << 24);
+
+                        u_long yes = 1;
+                        err = setsockopt(inst->udpDataSocket, SOL_SOCKET, SO_REUSEADDR, (const char*)&yes, sizeof(yes));
+                        if (err == SOCKET_ERROR) {
+                            err = getLastSocketError();
+                            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WARNING, BTA_StatusWarning, "UDP data: Failed to allow local address reuse , error: %d", err);
+                        }
+                    }
+                    else {
+                        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusWarning, "UDP data: Could not get address info, error: %d", err);
+                        socketAddr.sin_addr.s_addr = INADDR_ANY;
+                    }
+                }
+                else {
+                    socketAddr.sin_addr.s_addr = inst->udpDataIpAddr[0] | (inst->udpDataIpAddr[1] << 8) | (inst->udpDataIpAddr[2] << 16) | (inst->udpDataIpAddr[3] << 24);
+                }
+
+                err = bind(inst->udpDataSocket, (struct sockaddr*)&socketAddr, sizeof(socketAddr));
+                if (err != SOCKET_ERROR) {
+                    // SO_RCVTIMEO is set in udpDataRunFunction
+                    // SO_RCVTIMEO and SO_RCVBUF can be modified via LibParams
+                    inst->udpDataConnectionStatus = 16;
+                    reconnected = 1;
+                    BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusInformation, "UDP data: Connection open");
+                }
+                else {
+                    if (inst->udpDataAutoConfig > 0) {
+                        err = getLastSocketError();
+                        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WARNING, BTA_StatusWarning, "UDP data: Failed to bind socket on %d.%d.%d.%d:%d, error: %d, trying next port", inst->udpDataIpAddr[0], inst->udpDataIpAddr[1], inst->udpDataIpAddr[2], inst->udpDataIpAddr[3], inst->udpDataPort, err);
+                        inst->udpDataPort++;
+                        if (inst->udpDataPort >= 0xc200) {
+                            inst->udpDataPort = 0xc000;
+                        }
+                        closesocket(inst->udpDataSocket);
+                        inst->udpDataSocket = INVALID_SOCKET;
+                    }
+                    else {
+                        err = getLastSocketError();
+                        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusWarning, "UDP data: Failed to bind socket, error: %d", err);
+                        closesocket(inst->udpDataSocket);
+                        inst->udpDataSocket = INVALID_SOCKET;
+                        BTAmsleep(840);
+                    }
+                }
+            }
+            else {
+                err = getLastSocketError();
+                BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusWarning, "UDP data: Could not open connection, error: %d", err);
+            }
+        }
+
+        if (inst->closing) {
+            break;
+        }
+
+        if (reconnected) {
+            writeOrCheckDeviceUdpDataSettings(winst);
+            winst->modFreqsReadFromDevice = 0;
+        }
+
+        // Keep-alive message
+        if ((inst->tcpControlConnectionStatus == 16 || inst->udpControlConnectionStatus == 16 || inst->udpControlConnectionStatus == 3) && inst->lpKeepAliveMsgInterval > 0 && BTAgetTickCount() > inst->keepAliveMsgTimestamp) {
+            BTAlockMutex(inst->controlMutex);
+            BTA_Status status = sendKeepAliveMsg(winst);
+            BTAunlockMutex(inst->controlMutex);
+            if (status == BTA_StatusOk) {
+                keepAliveFails = 0;
+                BTAinfoEventHelper(winst->infoEventInst, VERBOSE_READ_OP, BTA_StatusAlive, "Alive");
+            }
+            else {
+                keepAliveFails++;
+                BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusWarning, "Failed to send keep-alive-message, error: %d. ", status);
+                if (keepAliveFails >= 2) {
+                    if (inst->udpControlConnectionStatus == 16) {
+                        // the keepalive message failed, but udp connection is still open (protocol version-, crc- or such error). trigger reconnect
+                        inst->udpControlConnectionStatus = 3;
+                    }
+                    else if (inst->tcpControlConnectionStatus == 16) {
+                        // the keepalive message failed, but the tcp connection is still up (protocol version-, crc- or such error). trigger reconnect
+                        BTAlockMutex(inst->controlMutex);
+                        int err = closesocket(inst->tcpControlSocket);
+                        if (err == SOCKET_ERROR) BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "connectionMonitor: Failed to close socket, error: %d", err);
+                        inst->tcpControlSocket = INVALID_SOCKET;
+                        inst->tcpControlConnectionStatus = 2;
+                        BTAunlockMutex(inst->controlMutex);
+                    }
+                }
+            }
+        }
+        
+        BTAmsleep(250);
     }
 
 
@@ -1226,14 +1357,14 @@ static void *connectionMonitorRunFunction(void *handle) {
         BTAlockMutex(inst->controlMutex);
         err = closesocket(inst->udpControlSocket);
         inst->udpControlSocket = INVALID_SOCKET;
+        inst->udpControlConnectionStatus = 255;
         BTAunlockMutex(inst->controlMutex);
         if (err != SOCKET_ERROR) {
-            inst->udpControlConnectionStatus = 255;
             BTAinfoEventHelper(winst->infoEventInst, VERBOSE_INFO, BTA_StatusInformation, "UDP control: Connection closed");
         }
         else {
             err = getLastSocketError();
-            BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusWarning, "UDP control: Connection close FAILED, error: %d", err);
+            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusWarning, "UDP control: Connection close FAILED, error: %d", err);
         }
     }
 
@@ -1242,14 +1373,14 @@ static void *connectionMonitorRunFunction(void *handle) {
         // (previously we did a shutdown interface here)
         err = closesocket(inst->tcpControlSocket);
         inst->tcpControlSocket = INVALID_SOCKET;
+        inst->tcpControlConnectionStatus = 255;
         BTAunlockMutex(inst->controlMutex);
         if (err != SOCKET_ERROR) {
-            inst->tcpControlConnectionStatus = 255;
             BTAinfoEventHelper(winst->infoEventInst, VERBOSE_INFO, BTA_StatusInformation, "TCP control: Connection closed");
         }
         else {
             err = getLastSocketError();
-            BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusWarning, "TCP control: Connection close FAILED, error: %d", err);
+            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusWarning, "TCP control: Connection close FAILED, error: %d", err);
         }
     }
 
@@ -1262,15 +1393,90 @@ static void *connectionMonitorRunFunction(void *handle) {
         }
         else {
             err = getLastSocketError();
-            BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusWarning, "UDP data: Connection close FAILED, error: %d", err);
+            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusWarning, "UDP data: Connection close FAILED, error: %d", err);
         }
     }
 
-    #ifdef PLAT_WINDOWS
-        WSACleanup();
-    #endif
     BTAinfoEventHelper(winst->infoEventInst, VERBOSE_INFO, BTA_StatusInformation, "ConnectionMonitorThread terminated");
     return 0;
+}
+
+
+static BTA_Status writeOrCheckDeviceUdpDataSettings(BTA_WrapperInst *winst) {
+    if (!winst) {
+        return BTA_StatusInvalidParameter;
+    }
+    BTA_EthLibInst *inst = (BTA_EthLibInst *)winst->inst;
+    if (!inst) {
+        return BTA_StatusInvalidParameter;
+    }
+
+    if (inst->udpDataConnectionStatus == 16 && (inst->udpControlConnectionStatus == 16 || inst->tcpControlConnectionStatus == 16)) {
+        // if connection fully open
+        if (inst->udpDataAutoConfig > 0) {
+            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusInformation, "UDP data: Configuring device to stream UDP data to %d.%d.%d.%d:%d", inst->udpDataIpAddr[0], inst->udpDataIpAddr[1], inst->udpDataIpAddr[2], inst->udpDataIpAddr[3], inst->udpDataPort);
+            //Eth0UdpStreamIp0
+            uint32_t v = inst->udpDataIpAddr[3] | (inst->udpDataIpAddr[2] << 8);
+            BTA_Status status = BTAETHwriteRegister(winst, 588, &v, 0);
+            if (status != BTA_StatusOk) {
+                BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusConfigParamError, "UDP data: Device configuration failed! (ip0)");
+                return status;
+            }
+            //Eth0UdpStreamIp1
+            v = inst->udpDataIpAddr[1] | (inst->udpDataIpAddr[0] << 8);
+            status = BTAETHwriteRegister(winst, 589, &v, 0);
+            if (status != BTA_StatusOk) {
+                BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusConfigParamError, "UDP data: Device configuration failed! (ip1)");
+                return status;
+            }
+            //Eth0UdpStreamPort
+            v = inst->udpDataPort;
+            status = BTAETHwriteRegister(winst, 590, &v, 0);
+            if (status != BTA_StatusOk) {
+                BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusConfigParamError, "UDP data: Device configuration failed! (port)");
+                return status;
+            }
+            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusInformation, "UDP data: Device configuration ok");
+        }
+        else {
+            //Eth0UdpStreamIp0, Eth0UdpStreamIp1 (no multi read in regard of TimEth which does not support it)
+            uint32_t ipAddr[2];
+            BTA_Status status = BTAETHreadRegister(winst, 588, ipAddr, 0);
+            if (status != BTA_StatusOk) {
+                BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusWarning, "UDP data: Cannot check stream ip");
+                return status;
+            }
+            status = BTAETHreadRegister(winst, 589, &(ipAddr[1]), 0);
+            if (status != BTA_StatusOk) {
+                BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusWarning, "UDP data: Cannot check stream ip");
+                return status;
+            }
+
+            uint32_t ipAddrTemp1 = inst->udpDataIpAddr[0] | (inst->udpDataIpAddr[1] << 8) | (inst->udpDataIpAddr[2] << 16) | (inst->udpDataIpAddr[3] << 24);
+            uint32_t ipAddrTemp2 = ((ipAddr[1] & 0xff00) >> 8) | ((ipAddr[1] & 0xff) << 8) | ((ipAddr[0] & 0xff00) << 8) | ((ipAddr[0] & 0xff) << 24);
+            uint8_t ipAddrTemp3[4] = { (ipAddr[1] >> 8) & 0xff, ipAddr[1] & 0xff, (ipAddr[0] >> 8) & 0xff, ipAddr[0] & 0xff };
+            uint8_t listenMulti = (ipAddrTemp1 & 0xe0) == 0xe0;
+            uint8_t cameraToLocalOrMulti = BTAisLocalIpAddrOrMulticast(ipAddrTemp3, 4);
+            uint8_t ipsAreEqual = ipAddrTemp1 == ipAddrTemp2;
+            if (!ipsAreEqual && !(listenMulti && cameraToLocalOrMulti)) {
+                BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusConfigParamError, "UDP data: The device streams to %d.%d.%d.%d, but the BltTofApi is listening at %d.%d.%d.%d", (ipAddr[1] >> 8) & 0xff, ipAddr[1] & 0xff, (ipAddr[0] >> 8) & 0xff, ipAddr[0] & 0xff, inst->udpDataIpAddr[0], inst->udpDataIpAddr[1], inst->udpDataIpAddr[2], inst->udpDataIpAddr[3], inst->udpDataPort);
+            }
+            else {
+                //Eth0UdpStreamPort
+                uint32_t port;
+                status = BTAETHreadRegister(winst, 590, &port, 0);
+                if (status != BTA_StatusOk) {
+                    BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusWarning, "UDP data: Cannot check streaming port");
+                }
+                else {
+                    if (port != inst->udpDataPort) {
+                        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusConfigParamError, "UDP data: The device streams to port %d, but the BltTofApi is listening at port %d", port, inst->udpDataPort);
+                    }
+                }
+            }
+        }
+    }
+    return BTA_StatusOk;
 }
 
 
@@ -1351,6 +1557,9 @@ static BTA_Status sendKeepAliveMsg(BTA_WrapperInst *winst) {
 static void *udpReadRunFunction(void *handle) {
     int err;
 
+//#   define DEBUGUDPREAD
+    //char dm[2000] = { 0 };
+
     BTA_WrapperInst *winst = (BTA_WrapperInst *)handle;
     if (!winst) {
         return 0;
@@ -1383,7 +1592,7 @@ static void *udpReadRunFunction(void *handle) {
     err = setsockopt(inst->udpDataSocket, SOL_SOCKET, SO_RCVTIMEO, (const char *)&timeout, sizeof(timeout));
     if (err == SOCKET_ERROR) {
         err = getLastSocketError();
-        BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_WARNING, BTA_StatusWarning, "UdpReadThread: Failed to set timeout, error: %d", err);
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WARNING, BTA_StatusWarning, "UdpReadThread: Failed to set timeout, error: %d", err);
     }
 
     // set default socket buffer size now, later LibParam can change it directly
@@ -1391,20 +1600,20 @@ static void *udpReadRunFunction(void *handle) {
     err = setsockopt(inst->udpDataSocket, SOL_SOCKET, SO_RCVBUF, (char *)&bufferSize, sizeof(bufferSize));
     if (err == SOCKET_ERROR) {
         err = getLastSocketError();
-        BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_WARNING, BTA_StatusWarning, "UdpReadThread: Failed to set buffer size, error: %d", err);
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WARNING, BTA_StatusWarning, "UdpReadThread: Failed to set buffer size, error: %d", err);
     }
 
     BTA_MemoryArea *udpPacket = 0;
 
-
-#   if defined(DEBUG)
+#   if defined(DEBUGUDPREAD)
     int frameCounterCurr = -1;
     int packetCount = 0;
     uint16_t packetCountTotal = 0;
     int frameCount = 0;
 #   endif
 
-    uint64_t timeLastSuccess = BTAgetTickCount64();
+    const int errorOnGapAfterMs = 7000;
+    uint64_t timeLastPacketReceived = BTAgetTickCount64();
     while (!inst->closing) {
 
         if (winst->lpPauseCaptureThread) {
@@ -1413,10 +1622,10 @@ static void *udpReadRunFunction(void *handle) {
         }
 
         if (!udpPacket) {
-#           if defined(DEBUG)
+#           if defined(DEBUGUDPREAD)
             uint64_t time06 = BTAgetTickCountNano() / 1000;
 #           endif
-            BTA_Status status = circular_buf_get(inst->packetsToFillQueue, (void **)&udpPacket);
+            BTA_Status status = BCBget(inst->packetsToFillQueue, (void **)&udpPacket);
             if (status != BTA_StatusOk) {
                 if (inst->udpDataQueueMallocCount < udpDataQueueLen) {
                     status = BTAinitMemoryArea(&udpPacket, udpPacketLenMax);
@@ -1428,19 +1637,20 @@ static void *udpReadRunFunction(void *handle) {
                     inst->udpDataQueueMallocCount++;
                 }
                 else {
-                    BTAinfoEventHelperII(winst->infoEventInst, VERBOSE_WARNING, status, "UdpReadThread: No packet buffer available queueLength=%d queueLengthMax=%d", circular_buf_size(inst->packetsToFillQueue), udpDataQueueLen);
+                    BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WARNING, status, "UdpReadThread: No packet buffer available queueLength=%d queueLengthMax=%d", BCBgetSize(inst->packetsToFillQueue), udpDataQueueLen);
+                    BTAmsleep(50);
                     continue;
                 }
             }
 
-#           if defined(DEBUG)
+#           if defined(DEBUGUDPREAD)
             uint64_t dur06 = BTAgetTickCountNano() / 1000 - time06;
-            winst->lpDebugValue06 = (float)BTAmax(dur06, (uint64_t)winst->lpDebugValue06);
+            winst->lpDebugValue06 = (float)MTHmax(dur06, (uint64_t)winst->lpDebugValue06);
 #           endif
         }
 
 
-#       if defined(DEBUG)
+#       if defined(DEBUGUDPREAD)
         uint64_t time07 = BTAgetTickCountNano() / 1000;
 #       endif
 
@@ -1451,26 +1661,29 @@ static void *udpReadRunFunction(void *handle) {
 #       endif
         readCount = recvfrom(inst->udpDataSocket, (char *)udpPacket->p, udpPacketLenMax, 0, (struct sockaddr *)&socketAddr, (socklen_t *)&socketAddrLen);
 
-#       if defined(DEBUG)
+#       if defined(DEBUGUDPREAD)
         uint64_t dur07 = BTAgetTickCountNano() / 1000 - time07;
-        winst->lpDebugValue07 = (float)BTAmax(dur07, (uint64_t)winst->lpDebugValue07);
+        winst->lpDebugValue07 = (float)MTHmax(dur07, (uint64_t)winst->lpDebugValue07);
 #       endif
 
         if (readCount < 0) {
+            //sprintf(dm + strlen(dm), " X");
             err = getLastSocketError();
             if (err == ERROR_TRY_AGAIN) {
-                if (BTAgetTickCount64() > timeLastSuccess + 7000) {
-                    timeLastSuccess = BTAgetTickCount64();
-                    BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_WARNING, BTA_StatusWarning, "UdpReadThread: No data on UDP data stream socket %d", err);
+                if (BTAgetTickCount64() - timeLastPacketReceived > errorOnGapAfterMs) {
+                    timeLastPacketReceived = BTAgetTickCount64();
+                    BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WARNING, BTA_StatusWarning, "UdpReadThread: No data on UDP data stream socket %d", err);
                 }
             }
             else {
                 winst->lpDataStreamReadFailedCount += 1;
-                BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_WARNING, BTA_StatusWarning, "UdpReadThread: Error in recvfrom() %d", err);
+                BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WARNING, BTA_StatusWarning, "UdpReadThread: Error in recvfrom() %d", err);
             }
         }
         else {
-#           if defined(DEBUG)
+            timeLastPacketReceived = BTAgetTickCount64();
+
+#           if defined(DEBUGUDPREAD)
             winst->lpDebugValue04++;
 
             if (frameCounterCurr != -1) {
@@ -1480,7 +1693,7 @@ static void *udpReadRunFunction(void *handle) {
             if (((uint16_t *)udpPacket->p)[0] == 0x0100) {
                 BTA_UdpPackHead2 *udpPackHead2 = (BTA_UdpPackHead2 *)udpPacket->p;
                 frameCounter = (uint16_t)(udpPackHead2->frameCounter << 8) | (uint16_t)(udpPackHead2->frameCounter >> 8);
-                packetCountTotal = BTAmax(packetCountTotal, (uint16_t)(udpPackHead2->packetCounter << 8) | (uint16_t)(udpPackHead2->packetCounter >> 8));
+                packetCountTotal = MTHmax(packetCountTotal, (uint16_t)(udpPackHead2->packetCounter << 8) | (uint16_t)(udpPackHead2->packetCounter >> 8));
             }
             else if (((uint16_t *)udpPacket->p)[0] == 0x0200) {
                 BTA_UdpPackHead2 *udpPackHead2 = (BTA_UdpPackHead2 *)udpPacket->p;
@@ -1508,20 +1721,22 @@ static void *udpReadRunFunction(void *handle) {
 #           endif
 
             udpPacket->l = (uint32_t)readCount;
-            circular_buf_put(inst->packetsToParseQueue, udpPacket); // There are max as many packets around as the queue is long -> no error checking
+            BCBput(inst->packetsToParseQueue, udpPacket); // There are max as many packets around as the queue is long -> no error checking
             udpPacket = 0;
 
             winst->lpDataStreamBytesReceivedCount += readCount;
-            timeLastSuccess = BTAgetTickCount64();
 
-#           if defined(DEBUG)
+#           if defined(DEBUGUDPREAD)
             uint64_t dur08 = BTAgetTickCountNano() / 1000 - time08;
-            winst->lpDebugValue08 = (float)BTAmax(dur08, (uint64_t)winst->lpDebugValue08);
+            winst->lpDebugValue08 = (float)MTHmax(dur08, (uint64_t)winst->lpDebugValue08);
 #           endif
         }
     }
+    if (udpPacket) {
+        BTAfreeMemoryArea(&udpPacket);
+    }
 
-    BTAinfoEventHelper(winst->infoEventInst, VERBOSE_INFO, BTA_StatusInformation, "UdpDataThread thread terminated");
+    BTAinfoEventHelper(winst->infoEventInst, VERBOSE_INFO, BTA_StatusInformation, "UdpReadThread thread terminated");
     return 0;
 }
 
@@ -1578,7 +1793,7 @@ static void *parseFramesRunFunction(void *handle) {
 #           if defined(DEBUG)
             loopCount++;
             uint64_t dur09 = BTAgetTickCountNano() / 1000 - time09Prev;
-            winst->lpDebugValue09 = (float)BTAmax(dur09, (uint64_t)winst->lpDebugValue09);
+            winst->lpDebugValue09 = (float)MTHmax(dur09, (uint64_t)winst->lpDebugValue09);
             time09Prev = BTAgetTickCountNano() / 1000;
 #           endif
 
@@ -1602,13 +1817,13 @@ static void *parseFramesRunFunction(void *handle) {
                         if (time >= ftpTemp->retryTime) {
                             if (ftpTemp->retryCount >= inst->lpDataStreamRetrReqMaxAttempts) {
                                 // maximum attempts reached, give up (parse older unfinished frames first, then this)
-                                while (true) {
+                                while (1) {
                                     BTA_FrameToParse *ftpTemp2 = getOlderThan(framesToParse, framesToParseLen, ftpTemp->timestamp);
                                     if (!ftpTemp2) {
                                         break;
                                     }
-                                    BTAinfoEventHelperII(winst->infoEventInst, VERBOSE_INFO, BTA_StatusDebug, "parsing (%d) (%d pLost)  max attempts reached", ftpTemp2->frameCounter, ftpTemp2->packetCountGot - ftpTemp2->packetCountTotal);
-                                    BTAparseGrabCallbackEnqueue(winst, ftpTemp2);
+                                    BTAinfoEventHelper(winst->infoEventInst, VERBOSE_DEBUG, BTA_StatusWarning, "parsing (%d) (%d/%d received) max attempts reached", ftpTemp2->frameCounter, ftpTemp2->packetCountGot, ftpTemp2->packetCountTotal);
+                                    BTAparsePostprocessGrabCallbackEnqueue(winst, ftpTemp2);
                                 }
                             }
                             else {
@@ -1621,12 +1836,12 @@ static void *parseFramesRunFunction(void *handle) {
                     }
                     else {
                         // frame is not expected to be complete -> parse (parse older unfinished frames first)
-                        while (true) {
+                        while (1) {
                             BTA_FrameToParse *ftpTemp2 = getOlderThan(framesToParse, framesToParseLen, ftpTemp->timestamp);
                             if (!ftpTemp2) {
                                 break;
                             }
-                            BTAparseGrabCallbackEnqueue(winst, ftpTemp2);
+                            BTAparsePostprocessGrabCallbackEnqueue(winst, ftpTemp2);
                         }
                     }
                 }
@@ -1634,8 +1849,8 @@ static void *parseFramesRunFunction(void *handle) {
 
             // This is for statistics
             //int count = BVQgetCount(inst->packetsToParseQueue);
-            int count = circular_buf_size(inst->packetsToParseQueue);
-            winst->lpDataStreamPacketsToParse = (float)BTAmax(count, (int)winst->lpDataStreamPacketsToParse);
+            int count = BCBgetSize(inst->packetsToParseQueue);
+            winst->lpDataStreamPacketsToParse = (float)MTHmax(count, (int)winst->lpDataStreamPacketsToParse);
 
 
             //printf("mallocCount %d  packetsToParse %d\n", inst->udpDataQueueMallocCount, count);
@@ -1643,18 +1858,24 @@ static void *parseFramesRunFunction(void *handle) {
             // lpDataStreamPacketWaitTimeout is the time that has to pass (no packet received for a certain frame during this time) before any action is taken
             // ..so I figured we listen to Shannon and loop for checks at intervals of half that time
             //dequeStatus = BVQdequeue(inst->packetsToParseQueue, (void **)&packet, (uint32_t)inst->lpDataStreamPacketWaitTimeout / 2);
-            status = circular_buf_get(inst->packetsToParseQueue, (void **)&packet);
-            if (status != BTA_StatusOk) {
-                BTAmsleep((uint32_t)(inst->lpDataStreamPacketWaitTimeout / 2));
-                status = circular_buf_get(inst->packetsToParseQueue, (void **)&packet);
-                if (status != BTA_StatusOk) {
-                    packet = 0;
-                    continue;
+            uint64_t timeEnd = BTAgetTickCount64() + (uint64_t)(inst->lpDataStreamPacketWaitTimeout / 2);
+            while (1) {
+                status = BCBget(inst->packetsToParseQueue, (void **)&packet);
+                if (status == BTA_StatusOk) {
+                    break;
                 }
+                if (BTAgetTickCount64() > timeEnd) {
+                    packet = 0;
+                    break;
+                }
+                BTAmsleep(1 + (uint32_t)(inst->lpDataStreamPacketWaitTimeout / 20));
+            }
+            if (!packet) {
+                continue;
             }
 
             if (packet->l < BTA_ETH_PACKET_HEADER_SIZE) {
-                BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusWarning, "ParseFramesThread: Datagram too small %d", packet->l);
+                BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusWarning, "ParseFramesThread: Datagram too small %d", packet->l);
                 continue;
             }
 
@@ -1674,7 +1895,7 @@ static void *parseFramesRunFunction(void *handle) {
                     uint16_t payloadSize = (int)(((uint16_t)packetBuf[i] << 8) | (uint16_t)packetBuf[i + 1]);
                     i += 2;
                     if (payloadSize + BTA_ETH_PACKET_HEADER_SIZE != packetLen) {
-                        BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusWarning, "ParseFramesThread: Did not read expected amount of data", packetLen);
+                        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusWarning, "ParseFramesThread: Did not read expected amount of data", packetLen);
                         break;
                     }
                     uint32_t totalLength = (int)(((uint32_t)packetBuf[i] << 24) | ((uint32_t)packetBuf[i + 1] << 16) | ((uint32_t)packetBuf[i + 2] << 8) | (uint32_t)packetBuf[i + 3]);
@@ -1695,7 +1916,7 @@ static void *parseFramesRunFunction(void *handle) {
 
                     // count missing packets
                     winst->lpDataStreamPacketsReceivedCount += 1;
-                    packetCountMax = BTAmax(packetCountMax, packetCounter);
+                    packetCountMax = MTHmax(packetCountMax, packetCounter);
                     if (frameCounterGotLast == -1) {
                         frameCounterGotLast = frameCounter;
                         packetCounterGotLast = packetCounter;
@@ -1731,7 +1952,7 @@ static void *parseFramesRunFunction(void *handle) {
                         uint32_t bytesDropped = 0;
                         uint16_t frameCounterDropped;
                         // haven't seen this frame before
-                        if ((BTAabs((long)frameCounterA - (long)frameCounter) >= BTAabs((long)frameCounterB - (long)frameCounter)) && (BTAabs((long)frameCounterA - (long)frameCounter) >= BTAabs((long)frameCounterC - (long)frameCounter))) {
+                        if ((MTHabs((long)frameCounterA - (long)frameCounter) >= MTHabs((long)frameCounterB - (long)frameCounter)) && (MTHabs((long)frameCounterA - (long)frameCounter) >= MTHabs((long)frameCounterC - (long)frameCounter))) {
                             // the above if is robust against overflows: it finds the bigger difference to the current frameCounter
                             frameCounterDropped = frameCounterA;
                             frameCounterA = frameCounter;
@@ -1740,12 +1961,12 @@ static void *parseFramesRunFunction(void *handle) {
                                 if (framePacketsA[i]) {
                                     packetsDroppedCount++;
                                     bytesDropped += framePacketsA[i]->l;
-                                    circular_buf_put(inst->packetsToFillQueue, (void **)framePacketsA[i]);
+                                    BCBput(inst->packetsToFillQueue, (void **)framePacketsA[i]);
                                     framePacketsA[i] = 0;
                                 }
                             }
                         }
-                        else if ((BTAabs((long)frameCounterB - (long)frameCounter) >= BTAabs((long)frameCounterA - (long)frameCounter)) && (BTAabs((long)frameCounterB - (long)frameCounter) >= BTAabs((long)frameCounterC - (long)frameCounter))) {
+                        else if ((MTHabs((long)frameCounterB - (long)frameCounter) >= MTHabs((long)frameCounterA - (long)frameCounter)) && (MTHabs((long)frameCounterB - (long)frameCounter) >= MTHabs((long)frameCounterC - (long)frameCounter))) {
                             frameCounterDropped = frameCounterB;
                             frameCounterB = frameCounter;
                             frameBytesReceivedB = 0;
@@ -1753,7 +1974,7 @@ static void *parseFramesRunFunction(void *handle) {
                                 if (framePacketsB[i]) {
                                     packetsDroppedCount++;
                                     bytesDropped += framePacketsB[i]->l;
-                                    circular_buf_put(inst->packetsToFillQueue, (void **)framePacketsB[i]);
+                                    BCBput(inst->packetsToFillQueue, (void **)framePacketsB[i]);
                                     framePacketsB[i] = 0;
                                 }
                             }
@@ -1766,13 +1987,13 @@ static void *parseFramesRunFunction(void *handle) {
                                 if (framePacketsC[i]) {
                                     packetsDroppedCount++;
                                     bytesDropped += framePacketsC[i]->l;
-                                    circular_buf_put(inst->packetsToFillQueue, (void **)framePacketsC[i]);
+                                    BCBput(inst->packetsToFillQueue, (void **)framePacketsC[i]);
                                     framePacketsC[i] = 0;
                                 }
                             }
                         }
                         if (packetsDroppedCount) {
-                            BTAinfoEventHelperIII(winst->infoEventInst, VERBOSE_INFO, BTA_StatusInformation, "ParseFramesThread: Frame %d incomplete: %d packets (%d bytes) dropped", frameCounterDropped, packetsDroppedCount, bytesDropped);
+                            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_INFO, BTA_StatusInformation, "ParseFramesThread: Frame %d incomplete: %d packets (%d bytes) dropped", frameCounterDropped, packetsDroppedCount, bytesDropped);
                         }
                     }
 
@@ -1800,15 +2021,15 @@ static void *parseFramesRunFunction(void *handle) {
                         // overflow! drop everything
                         for (i = 0; i < framePacketsLen; i++) {
                             if (framePacketsA[i]) {
-                                circular_buf_put(inst->packetsToFillQueue, (void **)framePacketsA[i]);
+                                BCBput(inst->packetsToFillQueue, (void **)framePacketsA[i]);
                                 framePacketsA[i] = 0;
                             }
                             if (framePacketsB[i]) {
-                                circular_buf_put(inst->packetsToFillQueue, (void **)framePacketsB[i]);
+                                BCBput(inst->packetsToFillQueue, (void **)framePacketsB[i]);
                                 framePacketsB[i] = 0;
                             }
                             if (framePacketsC[i]) {
-                                circular_buf_put(inst->packetsToFillQueue, (void **)framePacketsC[i]);
+                                BCBput(inst->packetsToFillQueue, (void **)framePacketsC[i]);
                                 framePacketsC[i] = 0;
                             }
                         }
@@ -1825,8 +2046,8 @@ static void *parseFramesRunFunction(void *handle) {
 
                     if (framePackets[packetCounter]) {
                         // already got this packet -> discard old packet and use new packet
-                        BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusWarning, "ParseFramesThread: Packet received twice %d", packetCounter);
-                        circular_buf_put(inst->packetsToFillQueue, (void **)framePackets[packetCounter]);
+                        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusWarning, "ParseFramesThread: Packet received twice %d", packetCounter);
+                        BCBput(inst->packetsToFillQueue, (void **)framePackets[packetCounter]);
                         framePackets[packetCounter] = 0;
                         *frameBytesReceived -= payloadSize;
                     }
@@ -1844,7 +2065,7 @@ static void *parseFramesRunFunction(void *handle) {
                         uint32_t completeFrameOffset = 0;
                         for (i = 0; i < framePacketsLen; i++) {
                             if (!framePackets[i]) {
-                                BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusWarning, "ParseFramesThread: Packet gap even though the total size of the frame is correct %d", i);
+                                BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusWarning, "ParseFramesThread: Packet gap even though the total size of the frame is correct %d", i);
                                 continue;
                             }
                             uint8_t *payload = &((uint8_t *)framePackets[i]->p)[BTA_ETH_PACKET_HEADER_SIZE];
@@ -1853,13 +2074,13 @@ static void *parseFramesRunFunction(void *handle) {
                                 memcpy(completeFrame + completeFrameOffset, payload, payloadLen);
                                 completeFrameOffset += payloadLen;
                             }
-                            circular_buf_put(inst->packetsToFillQueue, (void **)framePackets[i]);
+                            BCBput(inst->packetsToFillQueue, (void **)framePackets[i]);
                             framePackets[i] = 0;
                             // check if the frame is fully memcopied (all packets should've been given back to packetsToFillQueue)
                             if (completeFrameOffset == completeFrameLen) break;
                         }
                         if (completeFrameOffset != completeFrameLen) {
-                            BTAinfoEventHelperII(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusWarning, "ParseFramesThread: Frame length mismatch. Accumulated: %d, should be: ", completeFrameOffset, completeFrameLen);
+                            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusWarning, "ParseFramesThread: Frame length mismatch. Accumulated: %d, should be: ", completeFrameOffset, completeFrameLen);
                             free(completeFrame);
                             completeFrame = 0;
                             completeFrameLen = 0;
@@ -1880,7 +2101,7 @@ static void *parseFramesRunFunction(void *handle) {
                         frameToParse->frame = completeFrame;
                         completeFrameLen = 0;
                         completeFrame = 0;
-                        BTAparseGrabCallbackEnqueue(winst, frameToParse);
+                        BTAparsePostprocessGrabCallbackEnqueue(winst, frameToParse);
                         BTAfreeFrameToParse(&frameToParse); // with protocol v3 the frameToParse is not re-used!
                     }
                     break;
@@ -1913,11 +2134,11 @@ static void *parseFramesRunFunction(void *handle) {
 
                     // length check
                     if (!packHead->packetDataLen) {
-                        BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusWarning, "ParseFramesThread v2: unexpected packet data size %d", packHead->packetDataLen);
+                        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusWarning, "ParseFramesThread v2: unexpected packet data size %d", packHead->packetDataLen);
                         break;
                     }
                     if ((uint32_t)(packHead->packetDataLen + BTA_ETH_PACKET_HEADER_SIZE) != packet->l) {
-                        BTAinfoEventHelperII(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusWarning, "ParseFramesThread v2: unexpected packet size", packHead->packetDataLen + BTA_ETH_PACKET_HEADER_SIZE, packet->l);
+                        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusWarning, "ParseFramesThread v2: unexpected packet size", packHead->packetDataLen + BTA_ETH_PACKET_HEADER_SIZE, packet->l);
                         break;
                     }
 
@@ -1925,16 +2146,15 @@ static void *parseFramesRunFunction(void *handle) {
                     if (packHead->flags & 0x08 && packetCounter != UINT16_MAX) inst->lpDataStreamRetrPacketsCount++;
                     if (packHead->flags & 0x08 && packetCounter == UINT16_MAX) inst->lpDataStreamNdasReceived++;
 
-                    //if (packHead->flags & 0x08 && packetCounter != UINT16_MAX) BTAinfoEventHelper1(winst->infoEventInst, IMPORTANCE_MOST, BTA_StatusDebug, "got retr %d", packetCounter);
+                    //if (packHead->flags & 0x08 && packetCounter != UINT16_MAX) BTAinfoEventHelper(winst->infoEventInst, IMPORTANCE_MOST, BTA_StatusDebug, "got retr %d", packetCounter);
 
                     // check if this is an NDA packet
                     if (packetCounter == UINT16_MAX) {
                         for (uint8_t ftpInd = 0; ftpInd < framesToParseLen; ftpInd++) {
                             BTA_FrameToParse *ftpTemp = framesToParse[ftpInd];
                             if (ftpTemp->timestamp && ftpTemp->frameCounter == packHead->frameCounter) {
-                                uint16_t *packetCounters;
+                                uint16_t *packetCounters = (uint16_t *)((uint8_t *)packet->p + BTA_ETH_PACKET_HEADER_SIZE);
 #if defined(DEBUG)
-                                packetCounters = (uint16_t *)((uint8_t *)packet->p + BTA_ETH_PACKET_HEADER_SIZE);
                                 char msg[5000] = { 0 };
                                 sprintf(msg + strlen(msg), "got NDA (%%d)");
                                 for (int pcInd = 0; pcInd < packHead->packetDataLen / 2; pcInd++) {
@@ -1945,20 +2165,26 @@ static void *parseFramesRunFunction(void *handle) {
                                     }
                                 }
                                 if (!*((uint16_t *)((uint8_t *)packet->p + BTA_ETH_PACKET_HEADER_SIZE))) sprintf(msg + strlen(msg), "first packet missing -> discard");
-                                BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusDebug, msg, packHead->frameCounter);
-#endif
+                                BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusDebug, msg, packHead->frameCounter);
                                 packetCounters = (uint16_t *)((uint8_t *)packet->p + BTA_ETH_PACKET_HEADER_SIZE);
+#endif
                                 if (!*packetCounters) {
                                     // first packet is missing, don't bother any further..
                                     ftpTemp->timestamp = 0;
                                     winst->lpDataStreamPacketsReceivedCount += ftpTemp->packetCountGot;
                                     winst->lpDataStreamPacketsMissedCount += ftpTemp->packetCountTotal - ftpTemp->packetCountGot;
+                                    BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusWarning, "ParseFramesThread v2: first packet is missing, discard");
                                     break;
                                 }
                                 for (int pcInd = 0; pcInd < packHead->packetDataLen / 2; pcInd++) {
-                                    ftpTemp->packetCountNda++;
-                                    ftpTemp->packetSize[*packetCounters] = UINT16_MAX;
-                                    packetCounters++;
+                                    if (*packetCounters >= ftpTemp->packetCountTotal) {
+                                        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusInvalidData, "Got an NDA with packet counter %d, but total packet count is %d", *packetCounters, ftpTemp->packetCountTotal);
+                                    }
+                                    else {
+                                        ftpTemp->packetCountNda++;
+                                        ftpTemp->packetSize[*packetCounters] = UINT16_MAX;
+                                        packetCounters++;
+                                    }
                                 }
                                 ftp = ftpTemp;
                                 break;
@@ -1968,12 +2194,12 @@ static void *parseFramesRunFunction(void *handle) {
                     }
                     // packet length check
                     if (packHead->packetPosition + packHead->packetDataLen > packHead->frameLen) {
-                        BTAinfoEventHelperIII(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusWarning, "ParseFramesThread v2: Packet position (%d) and packet size (%d) exceed frame size (%d)", packHead->packetPosition, packHead->packetDataLen, packHead->frameLen);
+                        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusWarning, "ParseFramesThread v2: Packet position (%d) and packet size (%d) exceed frame size (%d)", packHead->packetPosition, packHead->packetDataLen, packHead->frameLen);
                         break;
                     }
                     // packet count check
                     if (packetCounter >= packHead->packetCountTotal) {
-                        BTAinfoEventHelperII(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusWarning, "ParseFramesThread v2: wrong packetCounter", packetCounter, packHead->packetCountTotal);
+                        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusWarning, "ParseFramesThread v2: wrong packetCounter", packetCounter, packHead->packetCountTotal);
                         break;
                     }
 
@@ -1994,7 +2220,7 @@ static void *parseFramesRunFunction(void *handle) {
                     if (!ftp) {
                         if (packHead->flags & 0x08) {
                             // this is a late arriving retransmission, frame must have been parsed already, discard packet
-                            BTAinfoEventHelperII(winst->infoEventInst, VERBOSE_INFO, BTA_StatusInformation, "UDP data v2: got late retransmission (%d) %d", packHead->frameCounter, packHead->packetCounter);
+                            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_INFO, BTA_StatusInformation, "UDP data v2: got late retransmission (%d) %d", packHead->frameCounter, packHead->packetCounter);
                             break;
                         }
                         // No corresponding ftp found, use a free slot
@@ -2016,13 +2242,13 @@ static void *parseFramesRunFunction(void *handle) {
                     }
 
                     if (packHead->frameLen != ftp->frameLen) {
-                        BTAinfoEventHelperII(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusWarning, "ParseFramesThread v2: wrong frameLen", packHead->frameLen, ftp->frameLen);
+                        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusWarning, "ParseFramesThread v2: wrong frameLen", packHead->frameLen, ftp->frameLen);
                         ftp->timestamp = 0;
                         ftp = 0;
                         break;
                     }
                     if (packHead->packetCountTotal != ftp->packetCountTotal) {
-                        BTAinfoEventHelperII(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusWarning, "ParseFramesThread v2: wrong packetCountTotal", packHead->packetCountTotal, ftp->packetCountTotal);
+                        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusWarning, "ParseFramesThread v2: wrong packetCountTotal", packHead->packetCountTotal, ftp->packetCountTotal);
                         ftp->timestamp = 0;
                         ftp = 0;
                         break;
@@ -2031,7 +2257,7 @@ static void *parseFramesRunFunction(void *handle) {
                     if (ftp->packetSize[packetCounter]) {
                         if (ftp->packetSize[packetCounter] == UINT16_MAX) {
                             // NDA for this packet already received (unreachable)
-                            BTAinfoEventHelperII(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusWarning, "ParseFramesThread v2: Packet received when we already got the NDA frame %d pack %d", ftp->frameCounter, packetCounter);
+                            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusWarning, "ParseFramesThread v2: Packet received when we already got the NDA frame %d pack %d", ftp->frameCounter, packetCounter);
                             ftp = 0;
                             break;
                         }
@@ -2039,7 +2265,7 @@ static void *parseFramesRunFunction(void *handle) {
                             // This packet was already received -> discard old packet and use new packet
                             ftp->packetCountGot--;
                             inst->lpDataStreamRedundantPacketCount++;
-                            BTAinfoEventHelperII(winst->infoEventInst, VERBOSE_INFO, BTA_StatusWarning, "ParseFramesThread v2: Packet received twice frame %d pack %d", ftp->frameCounter, packetCounter);
+                            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_INFO, BTA_StatusWarning, "ParseFramesThread v2: Packet received twice frame %d pack %d", ftp->frameCounter, packetCounter);
                         }
                     }
 
@@ -2053,13 +2279,13 @@ static void *parseFramesRunFunction(void *handle) {
                 }
 
                 default: {
-                    BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_WARNING, BTA_StatusInvalidVersion, "ParseFramesThread: Unknown header version %d", headerVersion);
+                    BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WARNING, BTA_StatusInvalidVersion, "ParseFramesThread: Unknown header version %d", headerVersion);
                     break;
                 }
             }
 
             if (packet) {
-                status = circular_buf_put(inst->packetsToFillQueue, (void **)packet);
+                status = BCBput(inst->packetsToFillQueue, (void **)packet);
                 assert(status == BTA_StatusOk); // There are max as many packets around as the queue is long
                 packet = 0;
             }
@@ -2069,19 +2295,19 @@ static void *parseFramesRunFunction(void *handle) {
                 if (!inst->lpDataStreamRetrReqMode || !retransmissionSupport) {
                     // no retransmission. see if current frame is complete and parse
                     if (ftp->packetCountGot + ftp->packetCountNda == ftp->packetCountTotal) {
-                        BTAparseGrabCallbackEnqueue(winst, ftp);
+                        BTAparsePostprocessGrabCallbackEnqueue(winst, ftp);
                     }
                 }
                 else if (inst->lpDataStreamRetrReqMode == 1) {
                     if (ftp->packetCountGot + ftp->packetCountNda == ftp->packetCountTotal) {
                         // current frame is complete -> parse all frames from oldest to newest
-                        while (true) {
+                        while (1) {
                             BTA_FrameToParse *ftpTemp2 = getOlderThan(framesToParse, framesToParseLen, ftp->timestamp);
                             if (!ftpTemp2) {
                                 break;
                             }
-                            //BTAinfoEventHelper2(winst->infoEventInst, IMPORTANCE_INFO, BTA_StatusInformation, "parsing (%d) (%d pLost)  packetCount reached", ftpTemp2->frameCounter, ftpTemp2->packetCountGot - ftpTemp2->packetCountTotal);
-                            BTAparseGrabCallbackEnqueue(winst, ftpTemp2);
+                            //BTAinfoEventHelper(winst->infoEventInst, IMPORTANCE_INFO, BTA_StatusInformation, "parsing (%d) (%d pLost)  packetCount reached", ftpTemp2->frameCounter, ftpTemp2->packetCountGot - ftpTemp2->packetCountTotal);
+                            BTAparsePostprocessGrabCallbackEnqueue(winst, ftpTemp2);
                         }
                     }
                     else if (packetCounter != UINT16_MAX) {
@@ -2116,11 +2342,11 @@ static void *parseFramesRunFunction(void *handle) {
                             }
                         }
                         if (pcGapBegPrev != UINT16_MAX) {
-                            BTAinfoEventHelperIII(winst->infoEventInst, VERBOSE_INFO, BTA_StatusInformation, "gap opened (%d) in previous (%d) %d", ftpPrev->frameCounter, ftp->frameCounter, packetCounter);
+                            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_INFO, BTA_StatusInformation, "gap opened frame %d in previous frame %d packet %d", ftpPrev->frameCounter, ftp->frameCounter, packetCounter);
                             sendRetrReqGap(winst, ftpPrev, pcGapBegPrev, pcGapEndPrev);
                         }
                         if (pcGapBeg != UINT16_MAX) {
-                            BTAinfoEventHelperII(winst->infoEventInst, VERBOSE_INFO, BTA_StatusInformation, "gap opened (%d) %d", ftp->frameCounter, packetCounter);
+                            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_INFO, BTA_StatusInformation, "gap opened frame %d packet %d", ftp->frameCounter, packetCounter);
                             sendRetrReqGap(winst, ftp, pcGapBeg, pcGapEnd);
                         }
                     }
@@ -2134,32 +2360,164 @@ static void *parseFramesRunFunction(void *handle) {
         }
 
         // +++ clean up variables for v1 ++++++++++++++++++++++++++++
-        if (1) {
-            for (int i = 0; i < framePacketsLen; i++) {
-                circular_buf_put(inst->packetsToFillQueue, (void **)framePacketsA[i]);
-                circular_buf_put(inst->packetsToFillQueue, (void **)framePacketsB[i]);
-                circular_buf_put(inst->packetsToFillQueue, (void **)framePacketsC[i]);
-            }
-            free(framePacketsA);
-            framePacketsA = 0;
-            free(framePacketsB);
-            framePacketsB = 0;
-            free(framePacketsC);
-            framePacketsC = 0;
+        for (int i = 0; i < framePacketsLen; i++) {
+            BCBput(inst->packetsToFillQueue, (void **)framePacketsA[i]);
+            BCBput(inst->packetsToFillQueue, (void **)framePacketsB[i]);
+            BCBput(inst->packetsToFillQueue, (void **)framePacketsC[i]);
         }
+        free(framePacketsA);
+        framePacketsA = 0;
+        free(framePacketsB);
+        framePacketsB = 0;
+        free(framePacketsC);
+        framePacketsC = 0;
         // --- clean up variables for v1 ----------------------------
 
         // +++ clean up variables for v2 ++++++++++++++++++++++++++++
-        if (1) {
-            //BTAfreeFrameToParse(&frameToParse);
-            for (uint8_t ftpInd = 0; ftpInd < framesToParseLen; ftpInd++) {
-                BTAfreeFrameToParse(&framesToParse[ftpInd]);
-            }
+        //BTAfreeFrameToParse(&frameToParse);
+        for (uint8_t ftpInd = 0; ftpInd < framesToParseLen; ftpInd++) {
+            BTAfreeFrameToParse(&framesToParse[ftpInd]);
         }
         // --- clean up variables for v2 ----------------------------
     }
 
     BTAinfoEventHelper(winst->infoEventInst, VERBOSE_INFO, BTA_StatusInformation, "ParseFramesThread thread terminated");
+    return 0;
+}
+
+
+static void *shmReadRunFunction(void *handle) {
+    BTA_WrapperInst *winst = (BTA_WrapperInst *)handle;
+    if (!winst) {
+        return 0;
+    }
+    BTA_EthLibInst *inst = (BTA_EthLibInst *)winst->inst;
+    if (!inst) {
+        return 0;
+    }
+    BTAinfoEventHelper(winst->infoEventInst, VERBOSE_INFO, BTA_StatusInformation, "ShmReadThread started");
+    BTA_Status status;
+
+    // turn off streaming until it's off, the turn streaming on clean
+    while (!inst->closing) {
+        uint32_t interfaceConfig = 0xffff;
+        status = BTAwriteRegister(winst, 0xfa, &interfaceConfig, 0);
+        if (status != BTA_StatusOk) {
+            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "SHM data: Could not set interface config to off. Continuing");
+        }
+        BTAmsleep(250);
+        uint32_t shmKeyNum;
+        status = BTAreadRegister(winst, 0x5c1, &shmKeyNum, 0);
+        if (status != BTA_StatusOk) {
+            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "SHM data: Could not read shmKey\n");
+            BTAmsleep(500);
+            continue;
+        }
+        if (shmKeyNum) {
+            continue;
+        }
+        interfaceConfig = 2;
+        status = BTAwriteRegister(winst, 0xfa, &interfaceConfig, 0);
+        if (status != BTA_StatusOk) {
+            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "SHM data: Could not set interface config to Shm. Continuing");
+        }
+        break;
+    }
+
+    while (!inst->closing) {
+        uint32_t shmVersion;
+        status = BTAreadRegister(winst, 0x5c0, &shmVersion, 0);
+        if (status != BTA_StatusOk) {
+            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "SHM data: Could not read shmVersion\n");
+            BTAmsleep(500);
+            continue;
+        }
+        if (shmVersion != SHM_PROTOCOL_VERSION) {
+            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_INFO, status, "SHM data: Unsupported Shm version\n");
+            BTAmsleep(500);
+            continue;
+        }
+        uint32_t shmKeyNum;
+        status = BTAreadRegister(winst, 0x5c1, &shmKeyNum, 0);
+        if (status != BTA_StatusOk) {
+            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "SHM data: Could not read shmKey\n");
+            BTAmsleep(500);
+            continue;
+        }
+        if (!shmKeyNum) {
+            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_INFO, status, "SHM data: No Shm key\n");
+            BTAmsleep(500);
+            continue;
+        }
+        uint32_t shmSizeLw;
+        status = BTAreadRegister(winst, 0x5c2, &shmSizeLw, 0);
+        if (status != BTA_StatusOk) {
+            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "SHM data: Could not read shmSizeLw\n");
+            BTAmsleep(500);
+            continue;
+        }
+        uint32_t shmSizeHw;
+        status = BTAreadRegister(winst, 0x5c3, &shmSizeHw, 0);
+        if (status != BTA_StatusOk) {
+            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "SHM data: Could not read shmSizeHw\n");
+            BTAmsleep(500);
+            continue;
+        }
+        uint32_t shmSize = (shmSizeHw << 16) | shmSizeLw;
+        if (!shmSize) {
+            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_INFO, status, "SHM data: No Shm size\n");
+            BTAmsleep(500);
+            continue;
+        }
+
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_INFO, status, "SHM data: Connecting to shared memory (key: %d, size: %d)...\n", shmKeyNum, shmSize);
+        int32_t shmFd;
+        uint8_t *bufShmBase;
+        sem_t *semFullWrite, *semFullRead, *semEmptyWrite, *semEmptyRead;
+        fifo_t *fifoFull, *fifoEmpty;
+        uint8_t *bufDataBase;
+        if (!initShm(shmKeyNum, shmSize, &shmFd, &bufShmBase, &semFullWrite, &semFullRead, &semEmptyWrite, &semEmptyRead, &fifoFull, &fifoEmpty, &bufDataBase, winst->infoEventInst)) {
+            BTAsleep(222);
+            continue;
+        }
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, status, "SHM data: Connection established\n");
+
+        while (!inst->closing) {
+            status = BTAwaitSemaphoreTimed(semFullRead, 2000);
+            if (status != BTA_StatusOk) {
+                BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "SHM data: Timeout on read, reconnecting\n");
+                break;
+            }
+            BTAlockMutex(&(fifoFull->mutex));
+            uint32_t offset;
+            fifo_get_buffer(fifoFull, &offset);
+            BTAunlockMutex(&(fifoFull->mutex));
+            BTApostSemaphore(semFullWrite);
+            BTA_Frame *frame;
+            status = BTAparseFrameFromShm(winst, bufDataBase + offset, &frame);
+            if (status == BTA_StatusOk) {
+                if (frame) {
+                    // Not an alive message frame
+                    BTAgrabCallbackEnqueueFromShm(winst, frame);
+                }
+            }
+            else {
+                BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "SHM data: Error parsing frame");
+            }
+            status = BTAwaitSemaphoreTimed(semEmptyWrite, 2000);
+            if (status != BTA_StatusOk) {
+                BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "SHM data: Timeout on write, reconnecting\n");
+                break;
+            }
+            BTAlockMutex(&(fifoEmpty->mutex));
+            fifo_push_buffer(fifoEmpty, offset);
+            BTAunlockMutex(&(fifoEmpty->mutex));
+            BTApostSemaphore(semEmptyRead);
+        }
+        closeShm(&semEmptyRead, &semEmptyWrite, &semFullRead, &semFullWrite, &bufShmBase, shmSize, &shmFd, shmKeyNum, winst->infoEventInst);
+    }
+
+    BTAinfoEventHelper(winst->infoEventInst, VERBOSE_INFO, BTA_StatusInformation, "ShmReadThread thread terminated");
     return 0;
 }
 
@@ -2218,7 +2576,7 @@ static BTA_Status sendRetrReq(BTA_WrapperInst *winst, uint16_t frameCounter, uin
     uint8_t *sendBuffer;
     uint32_t sendBufferLen;
     BTA_Status status = BTAtoByteStream(BTA_EthCommandRetransmissionRequest, BTA_EthSubCommandNone, (uint32_t)frameCounter, (uint8_t *)packetCounters, packetCountersLen * sizeof(uint16_t), inst->lpControlCrcEnabled, &sendBuffer, &sendBufferLen,
-        inst->udpDataIpAddrVer, inst->udpDataIpAddr, inst->udpDataIpAddrLen, inst->udpDataPort, 0, 0, 0);
+                                        inst->udpDataIpAddrVer, inst->udpDataIpAddr, inst->udpDataIpAddrLen, inst->udpDataPort, 0, 0, 0);
     if (status != BTA_StatusOk) {
         return status;
     }
@@ -2255,7 +2613,7 @@ static BTA_Status sendRetrReqComplete(BTA_WrapperInst *winst, BTA_FrameToParse *
                     }
                 }
                 sprintf(msg + strlen(msg), " (%d)", packetCountersLen);
-                BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusDebug, msg, frameToParse->frameCounter);
+                BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusDebug, msg, frameToParse->frameCounter);
 #endif
                 // reached limit -> request packets gathered so far
                 status = sendRetrReq(winst, frameToParse->frameCounter, retrReqPacketCounters, packetCountersLen);
@@ -2280,7 +2638,7 @@ static BTA_Status sendRetrReqComplete(BTA_WrapperInst *winst, BTA_FrameToParse *
             }
         }
         sprintf(msg + strlen(msg), " (%d)", packetCountersLen);
-        BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusDebug, msg, frameToParse->frameCounter);
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusDebug, msg, frameToParse->frameCounter);
 #endif
         status = sendRetrReq(winst, frameToParse->frameCounter, retrReqPacketCounters, packetCountersLen);
         if (status != BTA_StatusOk) {
@@ -2323,7 +2681,7 @@ static BTA_Status sendRetrReqGap(BTA_WrapperInst *winst, BTA_FrameToParse *frame
                 }
             }
             sprintf(msg + strlen(msg), " (%d)", packetCountersLen);
-            BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusDebug, msg, frameToParse->frameCounter);
+            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusDebug, msg, frameToParse->frameCounter);
 #endif
             // reached limit -> request packets gathered so far
             status = sendRetrReq(winst, frameToParse->frameCounter, retrReqPacketCounters, packetCountersLen);
@@ -2347,7 +2705,7 @@ static BTA_Status sendRetrReqGap(BTA_WrapperInst *winst, BTA_FrameToParse *frame
             }
         }
         sprintf(msg + strlen(msg), " (%d)", packetCountersLen);
-        BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusDebug, msg, frameToParse->frameCounter);
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusDebug, msg, frameToParse->frameCounter);
 #endif
         status = sendRetrReq(winst, frameToParse->frameCounter, retrReqPacketCounters, packetCountersLen);
         if (status != BTA_StatusOk) {
@@ -2416,17 +2774,9 @@ BTA_Status BTAETHsetModulationFrequency(BTA_WrapperInst *winst, uint32_t modulat
         return BTA_StatusInvalidParameter;
     }
     BTA_Status status;
-    BTA_DeviceType deviceType;
-    status = BTAETHgetDeviceType(winst, &deviceType);
-    if (status != BTA_StatusOk) {
-        return status;
-    }
     uint32_t modFreq;
-    status = BTAgetNextBestModulationFrequency(deviceType, modulationFrequency, &modFreq, 0);
+    status = BTAgetNextBestModulationFrequency(winst, modulationFrequency, &modFreq, 0);
     if (status != BTA_StatusOk) {
-        if (status == BTA_StatusNotSupported) {
-            BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusNotSupported, "BTAsetModulationFrequency: Not supported for this deviceType: %d", deviceType);
-        }
         return status;
     }
     modFreq /= 10000;
@@ -2446,17 +2796,9 @@ BTA_Status BTAETHgetGlobalOffset(BTA_WrapperInst *winst, float *offset) {
         return status;
     }
     modFreq = modFreq * 10000;
-    BTA_DeviceType deviceType;
-    status = BTAETHgetDeviceType(winst, &deviceType);
-    if (status != BTA_StatusOk) {
-        return status;
-    }
     int32_t modFreqIndex;
-    status = BTAgetNextBestModulationFrequency(deviceType, modFreq, 0, &modFreqIndex);
+    status = BTAgetNextBestModulationFrequency(winst, modFreq, 0, &modFreqIndex);
     if (status != BTA_StatusOk) {
-        if (status == BTA_StatusNotSupported) {
-            BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusNotSupported, "BTAgetGlobalOffset: Not supported for this deviceType: %d", deviceType);
-        }
         return status;
     }
     uint32_t offset32;
@@ -2483,17 +2825,9 @@ BTA_Status BTAETHsetGlobalOffset(BTA_WrapperInst *winst, float offset) {
         return status;
     }
     modFreq = modFreq * 10000;
-    BTA_DeviceType deviceType;
-    status = BTAETHgetDeviceType(winst, &deviceType);
-    if (status != BTA_StatusOk) {
-        return status;
-    }
     int32_t modFreqIndex;
-    status = BTAgetNextBestModulationFrequency(deviceType, modFreq, 0, &modFreqIndex);
+    status = BTAgetNextBestModulationFrequency(winst, modFreq, 0, &modFreqIndex);
     if (status != BTA_StatusOk) {
-        if (status == BTA_StatusNotSupported) {
-            BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusNotSupported, "BTAETHsetGlobalOffset: Not supported for this deviceType %d", deviceType);
-        }
         return status;
     }
     int32_t offset32 = (int32_t)offset;
@@ -2528,7 +2862,7 @@ BTA_Status BTAETHwriteCurrentConfigToNvm(BTA_WrapperInst *winst) {
         status = readRegister(winst, 0x0034, &result, 0, timeoutBigger);
         if (status == BTA_StatusOk) {
             if (result != 1) {
-                BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "BTAwriteCurrentConfigToNvm() failed, the device said %d", result);
+                BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "BTAwriteCurrentConfigToNvm() failed, the device said %d", result);
                 return BTA_StatusRuntimeError;
             }
             return BTA_StatusOk;
@@ -2564,7 +2898,7 @@ BTA_Status BTAETHrestoreDefaultConfig(BTA_WrapperInst *winst) {
         status = readRegister(winst, 0x0034, &result, 0, timeoutBigger);
         if (status == BTA_StatusOk) {
             if (result != 1) {
-                BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "BTArestoreDefaultConfig() failed, the device said %d", result);
+                BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "BTArestoreDefaultConfig() failed, the device said %d", result);
                 return BTA_StatusRuntimeError;
             }
             return BTA_StatusOk;
@@ -2794,12 +3128,6 @@ BTA_Status BTAETHsetLibParam(BTA_WrapperInst *winst, BTA_LibParam libParam, floa
     case BTA_LibParamDataStreamRetrReqMaxAttempts:
         inst->lpDataStreamRetrReqMaxAttempts = value;
         return BTA_StatusOk;
-    //case BTA_LibParamDataStreamParseFrameThreadInterval:
-    //    inst->parseFrameThreadInterval = (int)value;
-    //    return BTA_StatusOk;
-    //case BTA_LibParamTransmissionTimePerPacketMax:
-    //    inst->transmissionTimePerPacketMax = value;
-    //    return BTA_StatusOk;
     case BTA_LibParamDataStreamRetrReqsCount:
     case BTA_LibParamDataStreamRetransPacketsCount:
     case BTA_LibParamDataStreamNdasReceived:
@@ -2832,7 +3160,7 @@ BTA_Status BTAETHsetLibParam(BTA_WrapperInst *winst, BTA_LibParam libParam, floa
     }
 
     default:
-        BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusNotSupported, "BTAsetLibParam: LibParam not supported %d", libParam);
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusNotSupported, "BTAsetLibParam: LibParam not supported %d", libParam);
         return BTA_StatusNotSupported;
     }
 }
@@ -2866,12 +3194,6 @@ BTA_Status BTAETHgetLibParam(BTA_WrapperInst *winst, BTA_LibParam libParam, floa
     case BTA_LibParamDataStreamRetrReqMaxAttempts:
         *value = inst->lpDataStreamRetrReqMaxAttempts;
         return BTA_StatusOk;
-    //case BTA_LibParamDataStreamParseFrameThreadInterval:
-    //    *value = (float)inst->parseFrameThreadInterval;
-    //    return BTA_StatusOk;
-    //case BTA_LibParamTransmissionTimePerPacketMax:
-    //    *value = inst->transmissionTimePerPacketMax;
-    //    return BTA_StatusOk;
     case BTA_LibParamDataStreamRetrReqsCount:
         *value = (float)inst->lpDataStreamRetrReqsCount;
         inst->lpDataStreamRetrReqsCount = 0;
@@ -2928,7 +3250,7 @@ BTA_Status BTAETHgetLibParam(BTA_WrapperInst *winst, BTA_LibParam libParam, floa
 
 
 
-BTA_Status BTAETHflashUpdate(BTA_WrapperInst *winst, BTA_FlashUpdateConfig *config, FN_BTA_ProgressReport progressReport) {
+BTA_Status BTAETHflashUpdate(BTA_WrapperInst *winst, BTA_FlashUpdateConfig *flashUpdateConfig, FN_BTA_ProgressReport progressReport) {
     if (!winst) {
         if (progressReport) (*progressReport)(BTA_StatusInvalidParameter, 0);
         return BTA_StatusInvalidParameter;
@@ -2941,52 +3263,47 @@ BTA_Status BTAETHflashUpdate(BTA_WrapperInst *winst, BTA_FlashUpdateConfig *conf
 
     BTA_EthCommand cmd = BTA_EthCommandNone;
     BTA_EthSubCommand subCmd = BTA_EthSubCommandNone;
-    BTAgetFlashCommand(config->target, config->flashId, &cmd, &subCmd);
-    if (cmd == BTA_EthCommandNone || cmd == BTA_EthCommandNone) {
+    BTAgetFlashCommand(flashUpdateConfig->target, flashUpdateConfig->flashId, &cmd, &subCmd);
+    if (cmd == BTA_EthCommandNone) {
         if (progressReport) (*progressReport)(BTA_StatusInvalidParameter, 0);
-        BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusInvalidParameter, "BTAflashUpdate: FlashTarget or FlashId not supported %d", (int)config->target);
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusInvalidParameter, "BTAflashUpdate: FlashTarget %d or FlashId %d not supported", flashUpdateConfig->target, flashUpdateConfig->flashId);
         return BTA_StatusInvalidParameter;
     }
-
-    // Set preconditions that benefit the update
-    float lpKeepAliveMsgInterval = inst->lpKeepAliveMsgInterval;
-    inst->lpKeepAliveMsgInterval = 0;
 
     BTA_Status status;
     uint8_t *sendBuffer;
     uint32_t sendBufferLen;
     if (inst->udpControlConnectionStatus == 16 || inst->udpControlConnectionStatus == 3 || inst->udpControlConnectionStatus == 8) {
-        uint8_t *sendBufferPart = config->data;
-        uint32_t sendBufferPartLen = BTAmin(768, config->dataLen);
+        uint8_t *sendBufferPart = flashUpdateConfig->data;
+        uint32_t sendBufferPartLen = MTHmin(768, flashUpdateConfig->dataLen);
         uint32_t sendBufferLenSent = 0;
         uint32_t packetNumber = 0;
-        uint32_t fileCrc32 = (uint32_t)CRC32ccitt(config->data, config->dataLen);
+        uint32_t fileCrc32 = (uint32_t)CRC32ccitt(flashUpdateConfig->data, flashUpdateConfig->dataLen);
         BTAlockMutex(inst->controlMutex);
         if (progressReport) (*progressReport)(BTA_StatusOk, 0);
         do {
             packetNumber++;
-            status = BTAtoByteStream(cmd, subCmd, config->address, sendBufferPart, sendBufferPartLen, inst->lpControlCrcEnabled, &sendBuffer, &sendBufferLen,
+            status = BTAtoByteStream(cmd, subCmd, flashUpdateConfig->address, sendBufferPart, sendBufferPartLen, inst->lpControlCrcEnabled, &sendBuffer, &sendBufferLen,
                                                 inst->udpControlCallbackIpAddrVer, inst->udpControlCallbackIpAddr, inst->udpControlCallbackIpAddrLen, inst->udpControlCallbackPort,
-                                                packetNumber, config->dataLen, fileCrc32);
+                                                packetNumber, flashUpdateConfig->dataLen, fileCrc32);
             if (status != BTA_StatusOk) {
-                inst->lpKeepAliveMsgInterval = lpKeepAliveMsgInterval;
                 if (progressReport) (*progressReport)(status, 0);
                 return status;
             }
             uint8_t attempts = 0;
             do {
-                BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_INFO, BTA_StatusInformation, "BTAflashUpdate: Transmitting packet #%d", packetNumber);
+                BTAinfoEventHelper(winst->infoEventInst, VERBOSE_INFO, BTA_StatusInformation, "BTAflashUpdate: Transmitting packet #%d", packetNumber);
                 status = transmit(winst, sendBuffer, sendBufferLen, timeoutDefault);
                 if (status == BTA_StatusOk) {
                     status = receiveControlResponse(winst, sendBuffer, 0, 0, timeoutDefault, 0);
                     if (status != BTA_StatusOk) {
-                        BTAinfoEventHelperII(winst->infoEventInst, VERBOSE_WARNING, BTA_StatusWarning, "BTAflashUpdate: Erroneous response for packet #%d (attempt %d)", packetNumber, attempts + 1);
+                        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WARNING, BTA_StatusWarning, "BTAflashUpdate: Erroneous response for packet #%d (attempt %d)", packetNumber, attempts + 1);
                         // wait between attempts
                         BTAmsleep(1000);
                     }
                 }
                 else {
-                    BTAinfoEventHelperII(winst->infoEventInst, VERBOSE_WARNING, BTA_StatusWarning, "BTAflashUpdate: Failed to send packet #%d (attempt %d)", packetNumber, attempts + 1);
+                    BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WARNING, BTA_StatusWarning, "BTAflashUpdate: Failed to send packet #%d (attempt %d)", packetNumber, attempts + 1);
                     // wait between attempts
                     BTAmsleep(1000);
                 }
@@ -2994,31 +3311,29 @@ BTA_Status BTAETHflashUpdate(BTA_WrapperInst *winst, BTA_FlashUpdateConfig *conf
             free(sendBuffer);
             sendBuffer = 0;
             if (status != BTA_StatusOk) {
-                inst->lpKeepAliveMsgInterval = lpKeepAliveMsgInterval;
                 BTAunlockMutex(inst->controlMutex);
-                BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, status, "BTAflashUpdate: Failed to send packet #%d", packetNumber);
+                BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "BTAflashUpdate: Failed to send packet #%d", packetNumber);
                 if (progressReport) (*progressReport)(status, 0);
                 return status;
             }
             sendBufferLenSent += sendBufferPartLen;
             // report progress (use 50 of the 100% for the transmission
-            if (progressReport) (*progressReport)(status, (byte)(50.0 * sendBufferLenSent / config->dataLen));
-            BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_INFO, BTA_StatusInformation, "BTAflashUpdate: Sent #%d", packetNumber);
+            if (progressReport) (*progressReport)(status, (byte)(50.0 * sendBufferLenSent / flashUpdateConfig->dataLen));
+            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_INFO, BTA_StatusInformation, "BTAflashUpdate: Sent #%d", packetNumber);
             sendBufferPart += sendBufferPartLen;
-            if (sendBufferLenSent + sendBufferPartLen > config->dataLen) {
-                sendBufferPartLen = config->dataLen - sendBufferLenSent;
+            if (sendBufferLenSent + sendBufferPartLen > flashUpdateConfig->dataLen) {
+                sendBufferPartLen = flashUpdateConfig->dataLen - sendBufferLenSent;
             }
             // wait between packets
             BTAmsleep(22);
-        } while (sendBufferLenSent < config->dataLen);
+        } while (sendBufferLenSent < flashUpdateConfig->dataLen);
         BTAunlockMutex(inst->controlMutex);
     }
 
     else if (inst->tcpControlConnectionStatus == 16 || inst->tcpControlConnectionStatus == 8) {
-        status = BTAtoByteStream(cmd, subCmd, config->address, config->data, config->dataLen, inst->lpControlCrcEnabled, &sendBuffer, &sendBufferLen,
+        status = BTAtoByteStream(cmd, subCmd, flashUpdateConfig->address, flashUpdateConfig->data, flashUpdateConfig->dataLen, inst->lpControlCrcEnabled, &sendBuffer, &sendBufferLen,
                                  inst->udpControlCallbackIpAddrVer, inst->udpControlCallbackIpAddr, inst->udpControlCallbackIpAddrLen, inst->udpControlCallbackPort, 0, 0, 0);
         if (status != BTA_StatusOk) {
-            inst->lpKeepAliveMsgInterval = lpKeepAliveMsgInterval;
             if (progressReport) (*progressReport)(status, 0);
             return status;
         }
@@ -3028,12 +3343,12 @@ BTA_Status BTAETHflashUpdate(BTA_WrapperInst *winst, BTA_FlashUpdateConfig *conf
         uint32_t sendBufferLenSent = 0;
         if (progressReport) (*progressReport)(BTA_StatusOk, 0);
         do {
-            BTAinfoEventHelperII(winst->infoEventInst, VERBOSE_INFO, BTA_StatusInformation, "BTAflashUpdate: Transmitting %d bytes of data (already sent %d bytes)", sendBufferLen, sendBufferLenSent);
+            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_INFO, BTA_StatusInformation, "BTAflashUpdate: Transmitting %d bytes of data (already sent %d bytes)", sendBufferLen, sendBufferLenSent);
             uint8_t attempts = 0;
             while (1) {
                 status = transmit(winst, sendBufferPart, sendBufferPartLen, timeoutHuge);
                 if (status != BTA_StatusOk) {
-                    BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_WARNING, status, "BTAflashUpdate: Failed to send! (attempt %d)", attempts + 1);
+                    BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WARNING, status, "BTAflashUpdate: Failed to send! (attempt %d)", attempts + 1);
                     attempts++;
                     if (attempts == 3) {
                         BTAunlockMutex(inst->controlMutex);
@@ -3057,20 +3372,18 @@ BTA_Status BTAETHflashUpdate(BTA_WrapperInst *winst, BTA_FlashUpdateConfig *conf
             if (progressReport) (*progressReport)(status, (byte)(50.0 * sendBufferLenSent / sendBufferLen));
             BTAmsleep(22);
         } while (sendBufferLenSent < sendBufferLen);
-        BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_INFO, BTA_StatusInformation, "BTAflashUpdate: %d bytes sent", sendBufferLenSent);
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_INFO, BTA_StatusInformation, "BTAflashUpdate: %d bytes sent", sendBufferLenSent);
         status = receiveControlResponse(winst, sendBuffer, 0, 0, timeoutHuge, 0);
         free(sendBuffer);
         sendBuffer = 0;
         BTAunlockMutex(inst->controlMutex);
         if (status != BTA_StatusOk) {
-            inst->lpKeepAliveMsgInterval = lpKeepAliveMsgInterval;
             BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "BTAflashUpdate: Erroneous response!");
             if (progressReport) (*progressReport)(status, 0);
             return status;
         }
     }
     else {
-        inst->lpKeepAliveMsgInterval = lpKeepAliveMsgInterval;
         if (progressReport) (*progressReport)(BTA_StatusNotConnected, 0);
         BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusNotConnected, "BTAflashUpdate: Not connected");
         return BTA_StatusNotConnected;
@@ -3083,7 +3396,6 @@ BTA_Status BTAETHflashUpdate(BTA_WrapperInst *winst, BTA_FlashUpdateConfig *conf
     while (1) {
         BTAmsleep(1000);
         if (BTAgetTickCount() > timeEnd) {
-            inst->lpKeepAliveMsgInterval = lpKeepAliveMsgInterval;
             if (progressReport) (*progressReport)(BTA_StatusTimeOut, 80);
             BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusTimeOut, "BTAflashUpdate: Timeout");
             return BTA_StatusTimeOut;
@@ -3102,7 +3414,7 @@ BTA_Status BTAETHflashUpdate(BTA_WrapperInst *winst, BTA_FlashUpdateConfig *conf
 
 
 
-BTA_Status BTAETHflashRead(BTA_WrapperInst *winst, BTA_FlashUpdateConfig *config, FN_BTA_ProgressReport progressReport, uint8_t quiet) {
+BTA_Status BTAETHflashRead(BTA_WrapperInst *winst, BTA_FlashUpdateConfig *flashUpdateConfig, FN_BTA_ProgressReport progressReport, uint8_t quiet) {
     if (!winst) {
         if (progressReport) (*progressReport)(BTA_StatusInvalidParameter, 0);
         return BTA_StatusInvalidParameter;
@@ -3113,12 +3425,12 @@ BTA_Status BTAETHflashRead(BTA_WrapperInst *winst, BTA_FlashUpdateConfig *config
         return BTA_StatusInvalidParameter;
     }
 
-    BTA_EthCommand cmd = BTA_EthCommandNone;
-    BTA_EthSubCommand subCmd = BTA_EthSubCommandNone;
-    BTAgetFlashCommand(config->target, config->flashId, &cmd, &subCmd);
-    if (cmd == BTA_EthCommandNone || cmd == BTA_EthCommandNone) {
+    BTA_EthCommand cmd;
+    BTA_EthSubCommand subCmd;
+    BTAgetFlashCommand(flashUpdateConfig->target, flashUpdateConfig->flashId, &cmd, &subCmd);
+    if (cmd == BTA_EthCommandNone) {
         if (progressReport) (*progressReport)(BTA_StatusInvalidParameter, 0);
-        if (!quiet) BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusInvalidParameter, "BTAflashRead: FlashTarget or FlashId not supported %d", (int)config->target);
+        if (!quiet) BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusInvalidParameter, "BTAflashRead: FlashTarget %d or FlashId %d not supported", flashUpdateConfig->target, flashUpdateConfig->flashId);
         return BTA_StatusInvalidParameter;
     }
     // change the flash command to a read command
@@ -3126,21 +3438,16 @@ BTA_Status BTAETHflashRead(BTA_WrapperInst *winst, BTA_FlashUpdateConfig *config
 
     uint8_t *sendBuffer;
     uint32_t sendBufferLen;
-    BTA_Status status = BTAtoByteStream(cmd, subCmd, config->address, 0, 0, inst->lpControlCrcEnabled, &sendBuffer, &sendBufferLen,
+    BTA_Status status = BTAtoByteStream(cmd, subCmd, flashUpdateConfig->address, 0, 0, inst->lpControlCrcEnabled, &sendBuffer, &sendBufferLen,
                                         inst->udpControlCallbackIpAddrVer, inst->udpControlCallbackIpAddr, inst->udpControlCallbackIpAddrLen, inst->udpControlCallbackPort, 0, 0, 0);
     if (status != BTA_StatusOk) {
         if (progressReport) (*progressReport)(status, 0);
         return status;
     }
 
-    // Set preconditions that benefit the read
-    float lpKeepAliveMsgInterval = inst->lpKeepAliveMsgInterval;
-    inst->lpKeepAliveMsgInterval = 0;
-
     BTAlockMutex(inst->controlMutex);
     status = transmit(winst, sendBuffer, sendBufferLen, timeoutDefault);
     if (status != BTA_StatusOk) {
-        inst->lpKeepAliveMsgInterval = lpKeepAliveMsgInterval;
         free(sendBuffer);
         sendBuffer = 0;
         BTAunlockMutex(inst->controlMutex);
@@ -3154,7 +3461,6 @@ BTA_Status BTAETHflashRead(BTA_WrapperInst *winst, BTA_FlashUpdateConfig *config
                                                  &inst->udpControlConnectionStatus, &inst->udpControlSocket, inst->udpControlCallbackIpAddr, inst->udpControlCallbackPort, &inst->tcpControlConnectionStatus, &inst->tcpControlSocket,
                                                  &inst->keepAliveMsgTimestamp, inst->lpKeepAliveMsgInterval, 0);
     else status = receiveControlResponse(winst, sendBuffer, &dataBuffer, &dataBufferLen, timeoutHuge, progressReport);
-    inst->lpKeepAliveMsgInterval = lpKeepAliveMsgInterval;
     BTAunlockMutex(inst->controlMutex);
     free(sendBuffer);
     sendBuffer = 0;
@@ -3163,134 +3469,151 @@ BTA_Status BTAETHflashRead(BTA_WrapperInst *winst, BTA_FlashUpdateConfig *config
         return status;
     }
     if (!quiet) BTAinfoEventHelper(winst->infoEventInst, VERBOSE_INFO, BTA_StatusInformation, "BTAflashRead: Transmission successful");
-    if (dataBufferLen > config->dataLen) {
+    if (!flashUpdateConfig->dataLen) {
+        flashUpdateConfig->data = (uint8_t *)malloc(dataBufferLen);
+        if (!flashUpdateConfig->data) {
+            free(dataBuffer);
+            dataBuffer = 0;
+            if (progressReport) (*progressReport)(BTA_StatusOutOfMemory, 0);
+            if (!quiet) BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusOutOfMemory, "BTAflashRead: Out of memory!");
+            return BTA_StatusOutOfMemory;
+        }
+    }
+    else if (dataBufferLen > flashUpdateConfig->dataLen) {
         free(dataBuffer);
         dataBuffer = 0;
-        config->dataLen = 0;
+        flashUpdateConfig->dataLen = 0;
         if (progressReport) (*progressReport)(BTA_StatusOutOfMemory, 0);
         if (!quiet) BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusOutOfMemory, "BTAflashRead: Provided buffer too small");
         return BTA_StatusOutOfMemory;
     }
-    config->dataLen = dataBufferLen;
-    memcpy(config->data, dataBuffer, dataBufferLen);
+    flashUpdateConfig->dataLen = dataBufferLen;
+    memcpy(flashUpdateConfig->data, dataBuffer, dataBufferLen);
+    free(dataBuffer);
+    dataBuffer = 0;
     if (progressReport) (*progressReport)(BTA_StatusOk, 100);
     return BTA_StatusOk;
 }
 
 
-
-BTA_Status BTAETHstartDiscovery(BTA_DiscoveryConfig *config, FN_BTA_DeviceFound deviceFound, FN_BTA_InfoEvent infoEvent, BTA_Handle *handle) {
-    if (!config || !handle) {
-        return BTA_StatusInvalidParameter;
-    }
-    *handle = 0;
-    BTA_DiscoveryInst *inst = (BTA_DiscoveryInst *)calloc(1, sizeof(BTA_DiscoveryInst));
-    if (!inst) {
-        return BTA_StatusOutOfMemory;
-    }
-    inst->infoEventInst = (BTA_InfoEventInst *)calloc(1, sizeof(BTA_InfoEventInst));
-    inst->infoEventInst->infoEvent = infoEvent;
-    inst->infoEventInst->verbosity = UINT8_MAX;
-
-    inst->deviceType = config->deviceType;
-    if (inst->deviceType == BTA_DeviceTypeGenericEth) {
-        inst->deviceType = (BTA_DeviceType)0; // any
-    }
-    if (config->broadcastIpAddr) {
-        inst->broadcastIpAddr = (uint8_t*)malloc(config->broadcastIpAddrLen);
-        if (!inst->broadcastIpAddr) {
-            return BTA_StatusOutOfMemory;
-        }
-        memcpy(inst->broadcastIpAddr, config->broadcastIpAddr, config->broadcastIpAddrLen);
-        inst->broadcastIpAddrLen = config->broadcastIpAddrLen;
-    }
-    else {
-        config->broadcastIpAddrLen = 4;
-        inst->broadcastIpAddr = (uint8_t*)malloc(config->broadcastIpAddrLen);
-        if (!inst->broadcastIpAddr) {
-            return BTA_StatusOutOfMemory;
-        }
-        memset(inst->broadcastIpAddr, 0xff, config->broadcastIpAddrLen);
-        inst->broadcastIpAddrLen = config->broadcastIpAddrLen;
-    }
-    if (config->broadcastPort) {
-        inst->broadcastPort = config->broadcastPort;
-    }
-    else {
-        inst->broadcastPort = 11003;
-    }
-    if (config->callbackIpAddr) {
-        inst->callbackIpAddr = (uint8_t*)malloc(config->callbackIpAddrLen);
-        if (!inst->callbackIpAddr) {
-            return BTA_StatusOutOfMemory;
-        }
-        memcpy(inst->callbackIpAddr, config->callbackIpAddr, config->callbackIpAddrLen);
-        inst->callbackIpAddrLen = config->callbackIpAddrLen;
-    }
-    inst->callbackPort = config->callbackPort;
-    inst->deviceFound = deviceFound;
-
-#   ifdef PLAT_WINDOWS
-        WSADATA wsaData;
-        int err;
-        do {
-            err = WSAStartup(MAKEWORD(2, 2), &wsaData);
-            BTAmsleep(22);
-        } while (err != NO_ERROR && !inst->abortDiscovery);
-#   endif
-    BTA_Status status = BTAcreateThread(&inst->discoveryThread, (void* (*)(void*))&discoveryRunFunction, inst, 0);
-    if (status != BTA_StatusOk) {
-        BTAinfoEventHelper(inst->infoEventInst, VERBOSE_ERROR, status, "Discovery: Could not start discoveryThread");
-        return status;
-    }
-    *handle = inst;
-    return BTA_StatusOk;
-}
-
-
-
-BTA_Status BTAETHstopDiscovery(BTA_Handle *handle) {
-    if (!handle) {
-        return BTA_StatusInvalidParameter;
-    }
-    BTA_DiscoveryInst *inst = (BTA_DiscoveryInst *)*handle;
-    if (!inst) {
-        return BTA_StatusInvalidParameter;
-    }
-    inst->abortDiscovery = 1;
-    int result = BTAjoinThread(inst->discoveryThread);
-    if (result != 0) {
-        BTAinfoEventHelper(inst->infoEventInst, VERBOSE_WARNING, BTA_StatusWarning, "Discovery: unable to join thread");
-    }
-    #ifdef PLAT_WINDOWS
-        WSACleanup();
-    #endif
-    free(inst->infoEventInst);
-    inst->infoEventInst = 0;
-    free(inst->broadcastIpAddr);
-    inst->broadcastIpAddr = 0;
-    free(inst->callbackIpAddr);
-    inst->callbackIpAddr = 0;
-    free(inst);
-    *handle = 0;
-    return BTA_StatusOk;
-}
-
-
-
-static void *discoveryRunFunction(BTA_DiscoveryInst *inst) {
+void *BTAETHdiscoveryRunFunction(BTA_DiscoveryInst *inst) {
     if (!inst) {
         return 0;
     }
-    int err = 0;
 
     BTAinfoEventHelper(inst->infoEventInst, VERBOSE_INFO, BTA_StatusInformation, "Discovery: started");
 
+#   ifdef PLAT_WINDOWS
+    int err;
+    WSADATA wsaData;
+    do {
+        err = WSAStartup(MAKEWORD(2, 2), &wsaData);
+        BTAmsleep(220);
+        if (inst->abortDiscovery) {
+            return 0;
+        }
+    } while (err != NO_ERROR);
+#   endif
+
+    SOCKET udpRcvSocket = openDiscoveryRcvSocket(&(inst->callbackPort), inst->infoEventInst);
+    if (!udpRcvSocket) {
+#       ifdef PLAT_WINDOWS
+        WSACleanup();
+#       endif
+        return 0;
+    }
+
+    // build packet for discovery transmission
+    uint8_t buffer[64] = { 0 };
+    fillDiscoveryBuffer(buffer, inst->deviceType, inst->callbackIpAddr, inst->callbackPort);
+
+
+    uint16_t broadcastPortDefault = 11003;
+    uint16_t broadcastPort = inst->broadcastPort;
+    if (!broadcastPort) {
+        broadcastPort = broadcastPortDefault;
+    }
+    uint8_t broadcastIpAddrDefault[4] = { 255, 255, 255, 255 };
+    uint8_t *broadcastIpAddr = inst->broadcastIpAddr;
+    if (!broadcastIpAddr) {
+        broadcastIpAddr = broadcastIpAddrDefault;
+    }
+
+    BTA_Status status;
+    SOCKET sockets[50];
+    int socketsCount;
+    status = openDiscoverySendSockets(broadcastPort, sockets, &socketsCount, inst->infoEventInst);
+    if (status != BTA_StatusOk) {
+        closesocket(udpRcvSocket);
+#       ifdef PLAT_WINDOWS
+        WSACleanup();
+#       endif
+        return 0;
+    }
+
+    uint32_t ticksSendMessage = BTAgetTickCount();
+    while (!inst->abortDiscovery) {
+
+        if (BTAgetTickCount() >= ticksSendMessage) {
+            ticksSendMessage += 3000;
+            sendDiscoveryMessage(sockets, socketsCount, buffer, sizeof(buffer), broadcastIpAddr, broadcastPort, inst->infoEventInst);
+        }
+
+        uint8_t *responsePayload;
+        uint32_t responseLen = 0;
+        uint8_t udpControlConnectionStatus = 16;
+        uint8_t tcpControlConnectionStatus = 0;
+        status = receiveControlResponse_2(buffer, &responsePayload, &responseLen, timeoutTiny, 0,
+                                          &udpControlConnectionStatus, &udpRcvSocket, 0, inst->callbackPort, &tcpControlConnectionStatus, 0, 0, 0, 0);
+        if (status == BTA_StatusDeviceUnreachable) {
+            BTAmsleep(100);
+        }
+        else if (status != BTA_StatusOk) {
+            BTAinfoEventHelper(inst->infoEventInst, VERBOSE_WARNING, status, "Discovery: Error receiving message");
+        }
+        else {
+            BTA_DeviceInfo *deviceInfo = parseDiscoveryResponse(responsePayload, responseLen, inst->deviceListMutex, inst->deviceList, inst->deviceListCount, inst->infoEventInst);
+            if (deviceInfo) {
+                BTAinfoEventHelper(inst->infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "Discovery: received an answer from %d.%d.%d.%d", deviceInfo->deviceIpAddr[0], deviceInfo->deviceIpAddr[1], deviceInfo->deviceIpAddr[2], deviceInfo->deviceIpAddr[3]);
+                if (BTAaddToDiscoveredList(inst->deviceListMutex, inst->deviceList, &inst->deviceListCount, inst->deviceListCountMax, deviceInfo)) {
+                    if (inst->deviceFound) {
+                        (*inst->deviceFound)(inst, deviceInfo);
+                    }
+                    if (inst->deviceFoundEx) {
+                        (*inst->deviceFoundEx)(inst, deviceInfo, inst->userArg);
+                    }
+                }
+                else {
+                    BTAfreeDeviceInfo(deviceInfo);
+                    deviceInfo = 0;
+                }
+            }
+            free(responsePayload);
+            responsePayload = 0;
+        }
+    }
+
+    BTAinfoEventHelper(inst->infoEventInst, VERBOSE_INFO, BTA_StatusInformation, "Discovery: stopped");
+
+    closeSockets(sockets, socketsCount);
+    closesocket(udpRcvSocket);
+#   ifdef PLAT_WINDOWS
+    WSACleanup();
+#   endif
+    return 0;
+}
+
+
+static SOCKET openDiscoveryRcvSocket(uint16_t *callbackPort, BTA_InfoEventInst *infoEventInst) {
+    int err;
     // bind a socket for listening
     SOCKET udpRcvSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (udpRcvSocket == INVALID_SOCKET) {
         err = getLastSocketError();
-        BTAinfoEventHelperI(inst->infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "Discovery: Error creating socket, error: %d", err);
+        BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "Discovery: Error creating socket, error: %d", err);
+#       ifdef PLAT_WINDOWS
+        WSACleanup();
+#       endif
         return 0;
     }
     u_long yes = 1;
@@ -3298,7 +3621,10 @@ static void *discoveryRunFunction(BTA_DiscoveryInst *inst) {
     if (err == SOCKET_ERROR) {
         err = getLastSocketError();
         closesocket(udpRcvSocket);
-        BTAinfoEventHelperI(inst->infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "Discovery: Error setting SO_REUSEADDR, error: %d", err);
+        BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "Discovery: Error setting SO_REUSEADDR, error: %d", err);
+#       ifdef PLAT_WINDOWS
+        WSACleanup();
+#       endif
         return 0;
     }
     yes = 1;
@@ -3306,18 +3632,24 @@ static void *discoveryRunFunction(BTA_DiscoveryInst *inst) {
     if (err == SOCKET_ERROR) {
         err = getLastSocketError();
         closesocket(udpRcvSocket);
-        BTAinfoEventHelperI(inst->infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "Discovery: Error setting SO_BROADCAST, error: %d", err);
+        BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "Discovery: Error setting SO_BROADCAST, error: %d", err);
+#       ifdef PLAT_WINDOWS
+        WSACleanup();
+#       endif
         return 0;
     }
     struct sockaddr_in socketAddr = { 0 };
     socketAddr.sin_family = AF_INET;
     socketAddr.sin_addr.s_addr = INADDR_ANY;
-    socketAddr.sin_port = htons(inst->callbackPort);
+    socketAddr.sin_port = htons(*callbackPort);
     err = bind(udpRcvSocket, (struct sockaddr *)&socketAddr, sizeof(socketAddr));
     if (err == SOCKET_ERROR) {
         err = getLastSocketError();
         closesocket(udpRcvSocket);
-        BTAinfoEventHelperI(inst->infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "Discovery: Error binding socket, error: %d", err);
+        BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "Discovery: Error binding socket, error: %d", err);
+#       ifdef PLAT_WINDOWS
+        WSACleanup();
+#       endif
         return 0;
     }
 
@@ -3327,235 +3659,264 @@ static void *discoveryRunFunction(BTA_DiscoveryInst *inst) {
     if (err != 0) {
         err = getLastSocketError();
         closesocket(udpRcvSocket);
-        BTAinfoEventHelperI(inst->infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "Discovery: Error in getsockname, error: %d", err);
+        BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "Discovery: Error in getsockname, error: %d", err);
+#       ifdef PLAT_WINDOWS
+        WSACleanup();
+#       endif
         return 0;
     }
-    inst->callbackPort = htons(socketAddr.sin_port);
+    *callbackPort = htons(socketAddr.sin_port);
 
     DWORD bufferSizeControl = 1000000;
     err = setsockopt(udpRcvSocket, SOL_SOCKET, SO_RCVBUF, (const char *)&bufferSizeControl, sizeof(bufferSizeControl));
     if (err == SOCKET_ERROR) {
         err = getLastSocketError();
         closesocket(udpRcvSocket);
-        BTAinfoEventHelperI(inst->infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "Discovery: Error setting SO_RCVBUF, error: %d", err);
+        BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "Discovery: Error setting SO_RCVBUF, error: %d", err);
+#       ifdef PLAT_WINDOWS
+        WSACleanup();
+#       endif
         return 0;
     }
+    BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "Discovery: Receive socket open");
+    return udpRcvSocket;
+}
 
 
-    // build packet for discovery transmission
-    BTA_Status status;
-    uint8_t buffer[64];
-    memset(buffer, 0, sizeof(buffer));
+static void fillDiscoveryBuffer(uint8_t buffer[64], uint16_t deviceType, uint8_t callbackIpAddr[4], uint16_t callbackPort) {
+    memset(buffer, 0, 64);
     buffer[0] = BTA_ETH_PREAMBLE_0;
     buffer[1] = BTA_ETH_PREAMBLE_1;
     buffer[2] = 3;
     buffer[3] = BTA_EthCommandDiscovery;
     //buffer[6] = 1; // flags
     //buffer[7] = 1; // flags
-    buffer[12] = inst->deviceType >> 8;
-    buffer[13] = inst->deviceType;
-    buffer[16] = 4;
-    if (inst->callbackIpAddr) {
-        buffer[17] = inst->callbackIpAddr[0];
-        buffer[18] = inst->callbackIpAddr[1];
-        buffer[19] = inst->callbackIpAddr[2];
-        buffer[20] = inst->callbackIpAddr[3];
+    if (deviceType == BTA_DeviceTypeEthernet) {
+        deviceType = BTA_DeviceTypeAny;
     }
-    buffer[21] = (uint8_t)(inst->callbackPort >> 8);
-    buffer[22] = (uint8_t)inst->callbackPort;
+    buffer[12] = (uint8_t)(deviceType >> 8);
+    buffer[13] = (uint8_t)deviceType;
+    buffer[16] = 4;
+    if (callbackIpAddr) {
+        buffer[17] = callbackIpAddr[0];
+        buffer[18] = callbackIpAddr[1];
+        buffer[19] = callbackIpAddr[2];
+        buffer[20] = callbackIpAddr[3];
+    }
+    buffer[21] = (uint8_t)(callbackPort >> 8);
+    buffer[22] = (uint8_t)callbackPort;
     uint16_t crc16 = crc16_ccitt(buffer + 2, 60);
     buffer[62] = (uint8_t)(crc16 >> 8);
     buffer[63] = (uint8_t)crc16;
-    uint8_t udpControlConnectionStatus = 16;
-    uint8_t tcpControlConnectionStatus = 0;
+}
 
-    // retrieve all local network interfaces, bind and send message to each
+
+static BTA_Status openDiscoverySendSockets(uint16_t broadcastPort, SOCKET *sockets, int *socketsCount, BTA_InfoEventInst *infoEventInst) {
+    // retrieve all local network interfaces and bind
     struct addrinfo hints;
     memset(&hints, 0, sizeof hints);
     hints.ai_family = AF_INET;
     hints.ai_socktype = SOCK_DGRAM;
     struct addrinfo *addrInfo = 0;
     struct addrinfo *addrInfoTemp;
-#   ifdef PLAT_WINDOWS
-    err = getaddrinfo("", "", &hints, &addrInfo);
-#   elif defined PLAT_LINUX || defined PLAT_APPLE
     char buf[10];
-    sprintf(buf, "%d", inst->broadcastPort);
+    sprintf(buf, "%d", broadcastPort);
+#   ifdef PLAT_WINDOWS
+    int err = getaddrinfo("", "" /*buf untested*/, &hints, &addrInfo);
+#   elif defined PLAT_LINUX || PLAT_APPLE
     hints.ai_flags = AI_PASSIVE;
-    err = getaddrinfo(0, (char*)buf, &hints, &addrInfo);
+    int err = getaddrinfo(0, (char*)buf, &hints, &addrInfo);
 #   endif
-    if (err == 0) {
-        addrInfoTemp = addrInfo;
-        while (addrInfoTemp != 0) {
-            SOCKET udpTransmitSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-            if (udpTransmitSocket == INVALID_SOCKET) {
-                err = getLastSocketError();
-                closesocket(udpRcvSocket);
-                BTAinfoEventHelperI(inst->infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "Discovery: Error creating socket, error: %d", err);
-                return 0;
-            }
-            u_long yes = 1;
-            err = setsockopt(udpTransmitSocket, SOL_SOCKET, SO_REUSEADDR, (const char*)&yes, sizeof(yes));
-            if (err == SOCKET_ERROR) {
-                err = getLastSocketError();
-                closesocket(udpRcvSocket);
-                closesocket(udpTransmitSocket);
-                BTAinfoEventHelperI(inst->infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "Discovery: Error setting SO_REUSEADDR, error: %d", err);
-                return 0;
-            }
-            yes = 1;
-            err = setsockopt(udpTransmitSocket, SOL_SOCKET, SO_BROADCAST, (const char *)&yes, sizeof(yes));
-            if (err == SOCKET_ERROR) {
-                err = getLastSocketError();
-                closesocket(udpRcvSocket);
-                closesocket(udpTransmitSocket);
-                BTAinfoEventHelperI(inst->infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "Discovery: Error setting SO_BROADCAST, error: %d", err);
-                return 0;
-            }
-
-            struct sockaddr_in socketAddr = { 0 };
-            socketAddr.sin_family = AF_INET;
-            socketAddr.sin_addr.s_addr = ((struct sockaddr_in *)addrInfoTemp->ai_addr)->sin_addr.s_addr;
-            err = bind(udpTransmitSocket, (struct sockaddr *)&socketAddr, sizeof(socketAddr));
-            if (err == SOCKET_ERROR) {
-                err = getLastSocketError();
-                closesocket(udpRcvSocket);
-                closesocket(udpTransmitSocket);
-                freeaddrinfo(addrInfo);
-                BTAinfoEventHelperI(inst->infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "Discovery: Error binding socket, error: %d", err);
-                return 0;
-            }
-            status = transmit_2(buffer, sizeof(buffer), timeoutDefault,
-                                &udpControlConnectionStatus, &udpTransmitSocket, inst->broadcastIpAddr, inst->broadcastPort, &tcpControlConnectionStatus, 0, 0);
-            if (status != BTA_StatusOk) {
-                err = getLastSocketError();
-                closesocket(udpRcvSocket);
-                closesocket(udpTransmitSocket);
-                freeaddrinfo(addrInfo);
-                BTAinfoEventHelperI(inst->infoEventInst, VERBOSE_ERROR, status, "Discovery: Error in transmit, error: %d", err);
-                return 0;
-            }
+    if (err) {
+        BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "Discovery: Error getting addrInfo struct, error: %d", err);
+    }
+    *socketsCount = 0;
+    addrInfoTemp = addrInfo;
+    while (addrInfoTemp != 0) {
+        SOCKET udpTransmitSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+        if (udpTransmitSocket == INVALID_SOCKET) {
+            err = getLastSocketError();
+            BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "Discovery: Error creating socket, error: %d", err);
+            return BTA_StatusRuntimeError;
+        }
+        u_long yes = 1;
+        err = setsockopt(udpTransmitSocket, SOL_SOCKET, SO_REUSEADDR, (const char*)&yes, sizeof(yes));
+        if (err == SOCKET_ERROR) {
+            err = getLastSocketError();
             closesocket(udpTransmitSocket);
-            addrInfoTemp = addrInfoTemp->ai_next;
+            freeaddrinfo(addrInfo);
+            BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "Discovery: Error setting SO_REUSEADDR, error: %d", err);
+            return BTA_StatusRuntimeError;
         }
-        freeaddrinfo(addrInfo);
+        yes = 1;
+        err = setsockopt(udpTransmitSocket, SOL_SOCKET, SO_BROADCAST, (const char *)&yes, sizeof(yes));
+        if (err == SOCKET_ERROR) {
+            err = getLastSocketError();
+            closesocket(udpTransmitSocket);
+            freeaddrinfo(addrInfo);
+            BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "Discovery: Error setting SO_BROADCAST, error: %d", err);
+            return BTA_StatusRuntimeError;
+        }
+
+        struct sockaddr_in socketAddr = { 0 };
+        socketAddr.sin_family = AF_INET;
+        socketAddr.sin_addr.s_addr = ((struct sockaddr_in *)addrInfoTemp->ai_addr)->sin_addr.s_addr;
+        err = bind(udpTransmitSocket, (struct sockaddr *)&socketAddr, sizeof(socketAddr));
+        if (err == SOCKET_ERROR) {
+            err = getLastSocketError();
+            closesocket(udpTransmitSocket);
+            freeaddrinfo(addrInfo);
+            BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "Discovery: Error binding socket, error: %d", err);
+            return BTA_StatusRuntimeError;
+        }
+
+        sockets[*socketsCount] = udpTransmitSocket;
+        *socketsCount = *socketsCount + 1;
+
+        addrInfoTemp = addrInfoTemp->ai_next;
     }
+    freeaddrinfo(addrInfo);
+    BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "Discovery: %d send socket(s) open", *socketsCount);
+    return BTA_StatusOk;
+}
 
 
-    while (!inst->abortDiscovery) {
-        uint8_t *responsePayload;
-        uint32_t responseLen = 0;
-        status = receiveControlResponse_2(buffer, &responsePayload, &responseLen, timeoutSmall, 0,
-                                          &udpControlConnectionStatus, &udpRcvSocket, 0, inst->callbackPort, &tcpControlConnectionStatus, 0, 0, 0, 0);
-        if (status == BTA_StatusDeviceUnreachable) {
-            BTAmsleep(200);
+static BTA_Status sendDiscoveryMessage(SOCKET *sockets, int socketsCount, uint8_t *buffer, uint32_t bufferLen, uint8_t *broadcastIpAddr, uint16_t broadcastPort, BTA_InfoEventInst *infoEventInst) {
+    for (int i = 0; i < socketsCount; i++) {
+        uint8_t udpControlConnectionStatus = 16;
+        uint8_t tcpControlConnectionStatus = 0;
+        BTA_Status status = transmit_2(buffer, bufferLen, timeoutDefault, &udpControlConnectionStatus, &(sockets[i]), broadcastIpAddr, broadcastPort, &tcpControlConnectionStatus, 0, 0);
+        if (status != BTA_StatusOk) {
+            int err = getLastSocketError();
+            BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, status, "Discovery: Error in transmit to IP %d.%d.%d.%d:%d, error: %d", broadcastIpAddr[0], broadcastIpAddr[1], broadcastIpAddr[2], broadcastIpAddr[3], broadcastPort, err);
+            return BTA_StatusRuntimeError;
         }
-        else if (status != BTA_StatusOk) {
-            BTAinfoEventHelper(inst->infoEventInst, VERBOSE_WARNING, status, "Discovery: Error receiving message");
-        }
-        else {
-            if (responseLen == 48) {
-                BTA_DeviceInfo *deviceInfo = (BTA_DeviceInfo *)calloc(1, sizeof(BTA_DeviceInfo));
-                deviceInfo->deviceMacAddr = &responsePayload[0x40 - 64];
+    }
+    BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "Discovery: message sent");
+    return BTA_StatusOk;
+}
+
+
+static BTA_DeviceInfo *parseDiscoveryResponse(uint8_t *responsePayload, uint32_t responseLen, void* deviceListMutex, BTA_DeviceInfo **deviceList, uint16_t deviceListCount, BTA_InfoEventInst *infoEventInst) {
+    if (responseLen == 48) {
+        BTA_DeviceInfo *deviceInfo = (BTA_DeviceInfo *)calloc(1, sizeof(BTA_DeviceInfo));
+        if (deviceInfo) {
+            deviceInfo->deviceMacAddr = (uint8_t *)malloc(6);
+            if (deviceInfo->deviceMacAddr) {
+                memcpy(deviceInfo->deviceMacAddr, &responsePayload[0x40 - 64], 6);
                 deviceInfo->deviceMacAddrLen = 6;
-                deviceInfo->deviceIpAddr = &responsePayload[0x47 - 64];
+            }
+            deviceInfo->deviceIpAddr = (uint8_t *)malloc(4);
+            if (deviceInfo->deviceIpAddr) {
+                memcpy(deviceInfo->deviceIpAddr, &responsePayload[0x47 - 64], 4);
                 deviceInfo->deviceIpAddrLen = 4;
-                deviceInfo->subnetMask = &responsePayload[0x4b - 64];
+            }
+            deviceInfo->subnetMask = (uint8_t *)malloc(4);
+            if (deviceInfo->subnetMask) {
+                memcpy(deviceInfo->subnetMask, &responsePayload[0x4b - 64], 4);
                 deviceInfo->subnetMaskLen = 4;
-                deviceInfo->gatewayIpAddr = &responsePayload[0x4f - 64];
+            }
+            deviceInfo->gatewayIpAddr = (uint8_t *)malloc(4);
+            if (deviceInfo->gatewayIpAddr) {
+                memcpy(deviceInfo->gatewayIpAddr, &responsePayload[0x4f - 64], 4);
                 deviceInfo->gatewayIpAddrLen = 4;
-                deviceInfo->udpDataIpAddr = &responsePayload[0x54 - 64];
+            }
+            deviceInfo->udpDataIpAddr = (uint8_t *)malloc(4);
+            if (deviceInfo->udpDataIpAddr) {
+                memcpy(deviceInfo->udpDataIpAddr, &responsePayload[0x54 - 64], 4);
                 deviceInfo->udpDataIpAddrLen = 4;
-                deviceInfo->udpDataPort = (responsePayload[0x58 - 64] << 8) | responsePayload[0x59 - 64];
-                deviceInfo->udpControlPort = (responsePayload[0x5a - 64] << 8) | responsePayload[0x5b - 64];
-                deviceInfo->tcpDataPort = (responsePayload[0x5c - 64] << 8) | responsePayload[0x5d - 64];
-                deviceInfo->tcpControlPort = (responsePayload[0x5e - 64] << 8) | responsePayload[0x5f - 64];
-                deviceInfo->deviceType = (BTA_DeviceType)((responsePayload[0x60 - 64] << 8) | responsePayload[0x61 - 64]);
-                deviceInfo->serialNumber = (responsePayload[0x62 - 64] << 24) | (responsePayload[0x63 - 64] << 16) | (responsePayload[0x64 - 64] << 8) | responsePayload[0x65 - 64];
-                deviceInfo->uptime = (responsePayload[0x66 - 64] << 24) | (responsePayload[0x67 - 64] << 16) | (responsePayload[0x68 - 64] << 8) | responsePayload[0x69 - 64];
-                deviceInfo->mode0 = (responsePayload[0x6a - 64] << 8) | responsePayload[0x6b - 64];
-                deviceInfo->status = (responsePayload[0x6c - 64] << 8) | responsePayload[0x6d - 64];
-                uint16_t fwv = (responsePayload[0x6e - 64] << 8) | responsePayload[0x6f - 64];
-                deviceInfo->firmwareVersionMajor = (fwv & 0xf800) >> 11;
-                deviceInfo->firmwareVersionMinor = (fwv & 0x07c0) >> 6;
-                deviceInfo->firmwareVersionNonFunc = (fwv & 0x003f);
-
-                // Establish a connection and read PON directly
-                BTA_Config config;
-                status = BTAinitConfig(&config);
-                if (status != BTA_StatusOk) {
-                    BTAinfoEventHelper(inst->infoEventInst, VERBOSE_WARNING, status, "Discovery: Read PON: Error in BTAinitConfig");
-                }
-                else {
-                    config.deviceType = BTA_DeviceTypeGenericEth;
-                    if (deviceInfo->tcpControlPort) {
-                        config.tcpDeviceIpAddr = deviceInfo->deviceIpAddr;
-                        config.tcpDeviceIpAddrLen = deviceInfo->deviceIpAddrLen;
-                        config.tcpControlPort = deviceInfo->tcpControlPort;
-                    }
-                    if (deviceInfo->udpControlPort != 0) {
-                        config.udpControlOutIpAddr = deviceInfo->deviceIpAddr;
-                        config.udpControlOutIpAddrLen = deviceInfo->deviceIpAddrLen;
-                        config.udpControlPort = deviceInfo->udpControlPort;
-                    }
-                    //config.infoEvent = inst->infoEventInst->infoEvent;
-                    //config.verbosity = 15;
-                    BTA_Handle btaHandle;
-                    status = BTAopen(&config, &btaHandle);
-                    if (status != BTA_StatusOk)  {
-                        BTAinfoEventHelper(inst->infoEventInst, VERBOSE_WARNING, status, "Discovery: Read PON: Error in BTAopen");
-                    }
-                    else {
-                        uint32_t dataAddress = 0x0570;
-                        uint32_t data[3];
-                        uint32_t dataCount = 3;
-                        status = BTAreadRegister(btaHandle, dataAddress, data, &dataCount);
-                        if (status != BTA_StatusOk) {
-                            BTAinfoEventHelper(inst->infoEventInst, VERBOSE_WARNING, status, "Discovery: Read PON: Error in BTAreadRegister");
-                        }
-                        else {
-                            uint32_t ponPart1 = data[0x0570 - dataAddress];
-                            uint32_t ponPart2 = data[0x0571 - dataAddress];
-                            uint32_t deviceRevisionMajor = data[0x0572 - dataAddress];
-                            if (!ponPart1 || !ponPart2) {
-                                BTAinfoEventHelper(inst->infoEventInst, VERBOSE_WARNING, BTA_StatusOutOfMemory, "Discovery: Read PON: PON related registers are empty!");
-                            }
-                            else {
-                                free(deviceInfo->productOrderNumber);
-                                deviceInfo->productOrderNumber = (uint8_t *)calloc(1, 20);
-                                if (deviceInfo->productOrderNumber) {
-                                    sprintf((char *)deviceInfo->productOrderNumber, "%03d-%04d-%d", ponPart1, ponPart2, deviceRevisionMajor);
-                                }
-                            }
-                        }
-                        BTAclose(&btaHandle);
-                    }
-                }
-
-                if (inst->deviceFound) {
-                    (*inst->deviceFound)(inst, deviceInfo);
-                }
-                free(deviceInfo);
-                deviceInfo = 0;
-                free(responsePayload);
-                responsePayload = 0;
             }
-            else {
-                if (responseLen > 0) {
-                    free(responsePayload);
-                    responsePayload = 0;
-                }
-                //if (inst->infoEvent) {
-                //    (*inst->infoEvent)(inst, BTA_StatusRuntimeError, (int8_t *)"Discovery: Message has the wrong size");
-                //}
+            deviceInfo->udpDataPort = (responsePayload[0x58 - 64] << 8) | responsePayload[0x59 - 64];
+            deviceInfo->udpControlPort = (responsePayload[0x5a - 64] << 8) | responsePayload[0x5b - 64];
+            deviceInfo->tcpDataPort = (responsePayload[0x5c - 64] << 8) | responsePayload[0x5d - 64];
+            deviceInfo->tcpControlPort = (responsePayload[0x5e - 64] << 8) | responsePayload[0x5f - 64];
+            deviceInfo->deviceType = (BTA_DeviceType)((responsePayload[0x60 - 64] << 8) | responsePayload[0x61 - 64]);
+            deviceInfo->serialNumber = (responsePayload[0x62 - 64] << 24) | (responsePayload[0x63 - 64] << 16) | (responsePayload[0x64 - 64] << 8) | responsePayload[0x65 - 64];
+            deviceInfo->uptime = (responsePayload[0x66 - 64] << 24) | (responsePayload[0x67 - 64] << 16) | (responsePayload[0x68 - 64] << 8) | responsePayload[0x69 - 64];
+            deviceInfo->mode0 = (responsePayload[0x6a - 64] << 8) | responsePayload[0x6b - 64];
+            deviceInfo->status = (responsePayload[0x6c - 64] << 8) | responsePayload[0x6d - 64];
+            uint16_t fwv = (responsePayload[0x6e - 64] << 8) | responsePayload[0x6f - 64];
+            deviceInfo->firmwareVersionMajor = (fwv & 0xf800) >> 11;
+            deviceInfo->firmwareVersionMinor = (fwv & 0x07c0) >> 6;
+            deviceInfo->firmwareVersionNonFunc = (fwv & 0x003f);
+
+            // HACK because PON not in discovery protocol
+            if (BTAisInDiscoveredListIgnorePon(deviceListMutex, deviceList, deviceListCount, deviceInfo)) {
+                // if this device was already discovered, do NOT connect and read PON again!
+                BTAfreeDeviceInfo(deviceInfo);
+                return 0;
             }
+            // Establish a connection and read PON directly
+            BTA_Config config;
+            BTA_Status status = BTAinitConfig(&config);
+            if (status != BTA_StatusOk) {
+                BTAinfoEventHelper(infoEventInst, VERBOSE_WARNING, status, "Discovery: Read PON: Error in BTAinitConfig");
+                return deviceInfo;
+            }
+
+            config.deviceType = BTA_DeviceTypeEthernet;
+            if (deviceInfo->tcpControlPort) {
+                config.tcpDeviceIpAddr = deviceInfo->deviceIpAddr;
+                config.tcpDeviceIpAddrLen = deviceInfo->deviceIpAddrLen;
+                config.tcpControlPort = deviceInfo->tcpControlPort;
+            }
+            if (deviceInfo->udpControlPort != 0) {
+                config.udpControlOutIpAddr = deviceInfo->deviceIpAddr;
+                config.udpControlOutIpAddrLen = deviceInfo->deviceIpAddrLen;
+                config.udpControlPort = deviceInfo->udpControlPort;
+            }
+            BTA_Handle btaHandle;
+            status = BTAopen(&config, &btaHandle);
+            if (status != BTA_StatusOk) {
+                BTAinfoEventHelper(infoEventInst, VERBOSE_WARNING, status, "Discovery: Read PON: Error in BTAopen");
+                return deviceInfo;
+            }
+
+            //ArticleNrPart1, ArticleNrPart2, DeviceRevisionMajor (no multi read in regard of TimEth which does not support it)
+            uint32_t ponPart1;
+            uint32_t ponPart2;
+            uint32_t deviceRevisionMajor;
+            status = BTAreadRegister(btaHandle, 0x0570, &ponPart1, 0);
+            if (status != BTA_StatusOk) {
+                BTAclose(&btaHandle);
+                BTAinfoEventHelper(infoEventInst, VERBOSE_WARNING, status, "Discovery: Read PON: Error in BTAreadRegister");
+                return deviceInfo;
+            }
+            status = BTAreadRegister(btaHandle, 0x0571, &ponPart2, 0);
+            if (status != BTA_StatusOk) {
+                BTAclose(&btaHandle);
+                BTAinfoEventHelper(infoEventInst, VERBOSE_WARNING, status, "Discovery: Read PON: Error in BTAreadRegister");
+                return deviceInfo;
+            }
+            status = BTAreadRegister(btaHandle, 0x0572, &deviceRevisionMajor, 0);
+            if (status != BTA_StatusOk) {
+                BTAclose(&btaHandle);
+                BTAinfoEventHelper(infoEventInst, VERBOSE_WARNING, status, "Discovery: Read PON: Error in BTAreadRegister");
+                return deviceInfo;
+            }
+            if (!ponPart1 || !ponPart2) {
+                BTAclose(&btaHandle);
+                BTAinfoEventHelper(infoEventInst, VERBOSE_WARNING, BTA_StatusOutOfMemory, "Discovery: Read PON: PON related registers are empty!");
+                return deviceInfo;
+            }
+            free(deviceInfo->productOrderNumber);
+            deviceInfo->productOrderNumber = (uint8_t *)calloc(1, 20);
+            if (deviceInfo->productOrderNumber) {
+                sprintf((char *)deviceInfo->productOrderNumber, "%03d-%04d-%d", ponPart1, ponPart2, deviceRevisionMajor);
+            }
+            BTAclose(&btaHandle);
+            return deviceInfo;
         }
     }
-
-    BTAinfoEventHelper(inst->infoEventInst, VERBOSE_INFO, BTA_StatusInformation, "Discovery: stopped");
-
-    closesocket(udpRcvSocket);
     return 0;
+}
+
+
+static BTA_Status closeSockets(SOCKET *sockets, int socketsCount) {
+    for (int i = 0; i < socketsCount; i++) {
+        closesocket(sockets[i]);
+    }
+    return BTA_StatusOk;
 }
 
 
@@ -3580,6 +3941,7 @@ static BTA_Status receiveControlResponse_2(uint8_t *request, uint8_t **data, uin
     uint32_t headerLen;
     uint32_t flags;
     uint32_t dataCrc32;
+    uint8_t parseError;
     uint32_t datagramLen;
     BTA_Status status;
     if (data) {
@@ -3592,18 +3954,18 @@ static BTA_Status receiveControlResponse_2(uint8_t *request, uint8_t **data, uin
     if (*udpControlConnectionStatus == 16 || *udpControlConnectionStatus == 3 || *udpControlConnectionStatus == 8) {
         datagramLen = sizeof(datagram);
         status = receive(datagram, &datagramLen,
-            udpControlConnectionStatus, udpControlSocket, udpControlCallbackIpAddr, udpControlCallbackPort, tcpControlConnectionStatus, 0,
-            timeout, keepAliveMsgTimestamp, lpKeepAliveMsgInterval, infoEventInst);
+                         udpControlConnectionStatus, udpControlSocket, udpControlCallbackIpAddr, udpControlCallbackPort, tcpControlConnectionStatus, 0,
+                         timeout, keepAliveMsgTimestamp, lpKeepAliveMsgInterval, infoEventInst);
         if (status != BTA_StatusOk) {
             return status;
         }
         uint32_t dataLenTemp;
-        status = BTAparseControlHeader(request, datagram, &dataLenTemp, &flags, &dataCrc32, infoEventInst);
+        status = BTAparseControlHeader(request, datagram, &dataLenTemp, &flags, &dataCrc32, &parseError, infoEventInst);
         if (status != BTA_StatusOk) {
             return status;
         }
         if (datagramLen != dataLenTemp + BTA_ETH_HEADER_SIZE) {
-            BTAinfoEventHelperI(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "UDP receiveControlResponse: The datagram has the wrong size: %d", datagramLen);
+            BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "UDP receiveControlResponse: The datagram has the wrong size: %d", datagramLen);
             return BTA_StatusRuntimeError;
         }
         if (dataLenTemp > 0) {
@@ -3621,27 +3983,50 @@ static BTA_Status receiveControlResponse_2(uint8_t *request, uint8_t **data, uin
     }
 
     else if (*tcpControlConnectionStatus == 16 || *tcpControlConnectionStatus == 8) {
-        headerLen = sizeof(header);
-        status = receive(header, &headerLen,
-            udpControlConnectionStatus, 0, 0, 0, tcpControlConnectionStatus, tcpControlSocket,
-            timeout, keepAliveMsgTimestamp, lpKeepAliveMsgInterval, infoEventInst);
+        // read byte by byte until preamble or timeout
+        uint8_t preamble0 = 0;
+        uint8_t preamble1 = 0;
+        int bytesReadForPreambleCount = 0;
+        while (1) {
+            uint32_t len = 1;
+            status = receive(&preamble1, &len, udpControlConnectionStatus, 0, 0, 0, tcpControlConnectionStatus, tcpControlSocket, timeout, keepAliveMsgTimestamp, lpKeepAliveMsgInterval, infoEventInst);
+            if (status != BTA_StatusOk) {
+                BTAinfoEventHelper(infoEventInst, VERBOSE_WARNING, BTA_StatusWarning, "TCP receiveControlResponse: could not find preamble in answer, %d bytes read", bytesReadForPreambleCount);
+                return status;
+            }
+            bytesReadForPreambleCount++;
+            if (preamble0 == BTA_ETH_PREAMBLE_0 && preamble1 == BTA_ETH_PREAMBLE_1) {
+                break;
+            }
+            preamble0 = preamble1;
+        }
+        header[0] = BTA_ETH_PREAMBLE_0;
+        header[1] = BTA_ETH_PREAMBLE_1;
+        headerLen = sizeof(header) - 2;
+        status = receive(header + 2, &headerLen, udpControlConnectionStatus, 0, 0, 0, tcpControlConnectionStatus, tcpControlSocket, timeout, keepAliveMsgTimestamp, lpKeepAliveMsgInterval, infoEventInst);
         if (status != BTA_StatusOk) {
             return status;
         }
         uint32_t dataLenTemp;
-        status = BTAparseControlHeader(request, header, &dataLenTemp, &flags, &dataCrc32, infoEventInst);
+        status = BTAparseControlHeader(request, header, &dataLenTemp, &flags, &dataCrc32, &parseError, infoEventInst);
+        if (parseError) {
+            // we found a preamble, but parsing gave an error, try to read on, maybe the answer is yet to come (recursively ;)
+            timeout = timeout > timeoutDefault ? timeoutDefault : timeout;
+            return receiveControlResponse_2(request, data, dataLen, timeout, progressReport, udpControlConnectionStatus, udpControlSocket, udpControlCallbackIpAddr, udpControlCallbackPort,
+                                            tcpControlConnectionStatus, tcpControlSocket, keepAliveMsgTimestamp, lpKeepAliveMsgInterval, infoEventInst);
+        }
         if (status != BTA_StatusOk) {
             return status;
         }
         if (dataLenTemp > 0) {
             if (!data || !dataLen) {
-                BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusInvalidParameter, "UDP receiveControlResponse: parameters data or dataLen missing");
+                BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusInvalidParameter, "TCP receiveControlResponse: parameters data or dataLen missing");
                 return BTA_StatusInvalidParameter;
             }
             *dataLen = dataLenTemp;
             *data = (uint8_t *)malloc(*dataLen);
             if (!*data) {
-                BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusOutOfMemory, "UDP receiveControlResponse: Cannot allocate");
+                BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusOutOfMemory, "TCP receiveControlResponse: Cannot allocate");
                 return BTA_StatusOutOfMemory;
             }
             if (progressReport) {
@@ -3651,21 +4036,21 @@ static BTA_Status receiveControlResponse_2(uint8_t *request, uint8_t **data, uin
                 uint32_t dataPartLenTemp;
                 (*progressReport)(BTA_StatusOk, 0);
                 do {
-                    BTAinfoEventHelperI(infoEventInst, VERBOSE_INFO, BTA_StatusInformation, "TCP receiveControlResponse: receiving %d bytes", dataPartLen);
+                    BTAinfoEventHelper(infoEventInst, VERBOSE_INFO, BTA_StatusInformation, "TCP receiveControlResponse: receiving %d bytes", dataPartLen);
                     dataPartLenTemp = dataPartLen;
                     status = receive((*data) + dataReceivedLen, &dataPartLenTemp,
-                        udpControlConnectionStatus, 0, 0, 0, tcpControlConnectionStatus, tcpControlSocket,
-                        timeout, keepAliveMsgTimestamp, lpKeepAliveMsgInterval, infoEventInst);
+                                     udpControlConnectionStatus, 0, 0, 0, tcpControlConnectionStatus, tcpControlSocket,
+                                     timeout, keepAliveMsgTimestamp, lpKeepAliveMsgInterval, infoEventInst);
                     if (status == BTA_StatusOk) {
                         dataReceivedLen += dataPartLen;
                         if (dataReceivedLen + dataPartLen > *dataLen) {
                             dataPartLen = *dataLen - dataReceivedLen;
                         }
                         // report progress (use 90 of the 100% for the transmission
-                        (*progressReport)(status, (uint8_t)(90 * dataReceivedLen / *dataLen));
+                        (*progressReport)(status, (uint8_t)(90.0 * dataReceivedLen / *dataLen));
                     }
                     else {
-                        BTAinfoEventHelperI(infoEventInst, VERBOSE_WARNING, status, "TCP receiveControlResponse: Failed, error: %d", dataPartLenTemp);
+                        BTAinfoEventHelper(infoEventInst, VERBOSE_WARNING, status, "TCP receiveControlResponse: Failed, error: %d", dataPartLenTemp);
                     }
                 } while (dataReceivedLen < *dataLen && status == BTA_StatusOk);
                 if (status != BTA_StatusOk) {
@@ -3676,10 +4061,10 @@ static BTA_Status receiveControlResponse_2(uint8_t *request, uint8_t **data, uin
                 }
             }
             else {
-                // read data at once
+                // read data in one piece
                 status = receive(*data, dataLen,
-                    udpControlConnectionStatus, 0, 0, 0, tcpControlConnectionStatus, tcpControlSocket,
-                    timeout, keepAliveMsgTimestamp, lpKeepAliveMsgInterval, infoEventInst);
+                                 udpControlConnectionStatus, 0, 0, 0, tcpControlConnectionStatus, tcpControlSocket,
+                                 timeout, keepAliveMsgTimestamp, lpKeepAliveMsgInterval, infoEventInst);
                 if (status != BTA_StatusOk) {
                     free(*data);
                     *data = 0;
@@ -3712,8 +4097,8 @@ static BTA_Status receiveControlResponse_2(uint8_t *request, uint8_t **data, uin
 
 
 static BTA_Status receive(uint8_t *data, uint32_t *length,
-                            uint8_t *udpControlConnectionStatus, SOCKET *udpControlSocket, uint8_t *udpControlCallbackIpAddr, uint16_t udpControlCallbackPort, uint8_t *tcpControlConnectionStatus, SOCKET *tcpControlSocket,
-                            uint32_t timeout, uint32_t *keepAliveMsgTimestamp, float lpKeepAliveMsgInterval, BTA_InfoEventInst *infoEventInst) {
+                          uint8_t *udpControlConnectionStatus, SOCKET *udpControlSocket, uint8_t *udpControlCallbackIpAddr, uint16_t udpControlCallbackPort, uint8_t *tcpControlConnectionStatus, SOCKET *tcpControlSocket,
+                          uint32_t timeout, uint32_t *keepAliveMsgTimestamp, float lpKeepAliveMsgInterval, BTA_InfoEventInst *infoEventInst) {
     if (length && *length == 0) return BTA_StatusOk;
     if (!length || !udpControlConnectionStatus || !tcpControlConnectionStatus) {
         BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusInvalidParameter, "UDP receive: parameters length, udpControlConnectionStatus or tcpControlConnectionStatus missing");
@@ -3738,7 +4123,9 @@ static BTA_Status receive(uint8_t *data, uint32_t *length,
         uint32_t endTime = BTAgetTickCount() + timeout;
         while (1) {
             if (BTAgetTickCount() > endTime) {
-                if (*udpControlConnectionStatus == 16) *udpControlConnectionStatus = 3;
+                if (*udpControlConnectionStatus == 16) {
+                    *udpControlConnectionStatus = 3;
+                }
                 BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusDeviceUnreachable, "UDP control receive: Failed: timeout");
                 return BTA_StatusDeviceUnreachable;
             }
@@ -3756,7 +4143,7 @@ static BTA_Status receive(uint8_t *data, uint32_t *length,
                         BTAmsleep(22);
                         continue;
                     }
-                    BTAinfoEventHelperI(infoEventInst, VERBOSE_ERROR, BTA_StatusDeviceUnreachable, "UDP control receive: Error in recvfrom, error: %d", err);
+                    BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusDeviceUnreachable, "UDP control receive: Error in recvfrom, error: %d", err);
                     return BTA_StatusDeviceUnreachable;
                 }
                 *length = err;
@@ -3766,7 +4153,7 @@ static BTA_Status receive(uint8_t *data, uint32_t *length,
                 }
                 return BTA_StatusOk;
             }
-            BTAinfoEventHelperI(infoEventInst, VERBOSE_WARNING, BTA_StatusWarning, "UDP control receive: Failed to select, returned: %d", err);
+            BTAinfoEventHelper(infoEventInst, VERBOSE_WARNING, BTA_StatusWarning, "UDP control receive: Failed to select, returned: %d", err);
             return BTA_StatusDeviceUnreachable;
         }
     }
@@ -3782,9 +4169,11 @@ static BTA_Status receive(uint8_t *data, uint32_t *length,
             while (1) {
                 if (BTAgetTickCount() > endTime) {
                     int err = closesocket(*tcpControlSocket);
-                    if (err == SOCKET_ERROR) BTAinfoEventHelperI(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "TCP control receive: Failed to close socket, error: %d", err);
+                    if (err == SOCKET_ERROR) BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "TCP control receive: Failed to close socket, error: %d", err);
                     *tcpControlSocket = INVALID_SOCKET;
-                    if (*tcpControlConnectionStatus == 16) *tcpControlConnectionStatus = 2;
+                    if (*tcpControlConnectionStatus == 16) {
+                        *tcpControlConnectionStatus = 2;
+                    }
                     BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusDeviceUnreachable, "TCP control receive: Failed: timeout");
                     return BTA_StatusDeviceUnreachable;
                 }
@@ -3802,17 +4191,24 @@ static BTA_Status receive(uint8_t *data, uint32_t *length,
                             BTAmsleep(22);
                             continue;
                         }
-                        BTAinfoEventHelperI(infoEventInst, VERBOSE_ERROR, BTA_StatusDeviceUnreachable, "TCP control receive: Failed in recv, error: %d", err);
+                        BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusDeviceUnreachable, "TCP control receive: Failed in recv, error: %d", err);
                         err = closesocket(*tcpControlSocket);
-                        if (err == SOCKET_ERROR) BTAinfoEventHelperI(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "TCP control receive: Failed to close socket, error: %d", err);
+                        if (err == SOCKET_ERROR) BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "TCP control receive: Failed to close socket, error: %d", err);
                         *tcpControlSocket = INVALID_SOCKET;
-                        if (*tcpControlConnectionStatus == 16) *tcpControlConnectionStatus = 2;
+                        if (*tcpControlConnectionStatus == 16) {
+                            *tcpControlConnectionStatus = 2;
+                        }
                         return BTA_StatusDeviceUnreachable;
                     }
                     nBytesReceived += err;
                     break;
                 }
-                BTAinfoEventHelperI(infoEventInst, VERBOSE_WARNING, BTA_StatusWarning, "TCP control receive: Failed to select, returned: %d", err);
+                BTAinfoEventHelper(infoEventInst, VERBOSE_WARNING, BTA_StatusWarning, "TCP control receive: Failed to select, returned: %d", err);
+                if (*tcpControlConnectionStatus < 16) {
+                    err = closesocket(*tcpControlSocket);
+                    if (err == SOCKET_ERROR) BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "TCP control receive: Failed to close socket, error: %d", err);
+                    *tcpControlSocket = INVALID_SOCKET;
+                }
                 return BTA_StatusDeviceUnreachable;
             }
         }
@@ -3861,7 +4257,9 @@ static BTA_Status transmit_2(uint8_t *data, uint32_t length, uint32_t timeout,
         uint32_t endTime = BTAgetTickCount() + timeout;
         while (1) {
             if (BTAgetTickCount() > endTime) {
-                if (*udpControlConnectionStatus == 16) *udpControlConnectionStatus = 3;
+                if (*udpControlConnectionStatus == 16) {
+                    *udpControlConnectionStatus = 3;
+                }
                 BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusDeviceUnreachable, "UDP control transmit: Failed: timeout");
                 return BTA_StatusDeviceUnreachable;
             }
@@ -3879,13 +4277,13 @@ static BTA_Status transmit_2(uint8_t *data, uint32_t length, uint32_t timeout,
                         BTAmsleep(22);
                         continue;
                     }
-                    BTAinfoEventHelperI(infoEventInst, VERBOSE_ERROR, BTA_StatusDeviceUnreachable, "UDP control transmit: Failed in sendto, error: %d", err);
+                    BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusDeviceUnreachable, "UDP control transmit: Failed in sendto, error: %d", err);
                     return BTA_StatusDeviceUnreachable;
                 }
                 assert(err == (int)length);
                 return BTA_StatusOk;
             }
-            BTAinfoEventHelperI(infoEventInst, VERBOSE_WARNING, BTA_StatusWarning, "UDP control transmit: Failed to select, returned: %d", err);
+            BTAinfoEventHelper(infoEventInst, VERBOSE_WARNING, BTA_StatusWarning, "UDP control transmit: Failed to select, returned: %d", err);
             return BTA_StatusDeviceUnreachable;
         }
     }
@@ -3902,9 +4300,11 @@ static BTA_Status transmit_2(uint8_t *data, uint32_t length, uint32_t timeout,
             while (1) {
                 if (BTAgetTickCount() > endTime) {
                     int err = closesocket(*tcpControlSocket);
-                    if (err == SOCKET_ERROR) BTAinfoEventHelperI(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "TCP transmit: Failed to close socket, error: %d", err);
+                    if (err == SOCKET_ERROR) BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "TCP transmit: Failed to close socket, error: %d", err);
                     *tcpControlSocket = INVALID_SOCKET;
-                    if (*tcpControlConnectionStatus == 16) *tcpControlConnectionStatus = 2;
+                    if (*tcpControlConnectionStatus == 16) {
+                        *tcpControlConnectionStatus = 2;
+                    }
                     BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusDeviceUnreachable, "TCP control transmit: Failed: timeout");
                     return BTA_StatusDeviceUnreachable;
                 }
@@ -3922,17 +4322,24 @@ static BTA_Status transmit_2(uint8_t *data, uint32_t length, uint32_t timeout,
                             BTAmsleep(22);
                             continue;
                         }
-                        BTAinfoEventHelperI(infoEventInst, VERBOSE_ERROR, BTA_StatusDeviceUnreachable, "TCP control transmit: Failed in send, error: %d", err);
+                        BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusDeviceUnreachable, "TCP control transmit: Failed in send, error: %d", err);
                         err = closesocket(*tcpControlSocket);
-                        if (err == SOCKET_ERROR) BTAinfoEventHelperI(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "TCP transmit: Failed to close socket, error: %d", err);
+                        if (err == SOCKET_ERROR) BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "TCP transmit: Failed to close socket, error: %d", err);
                         *tcpControlSocket = INVALID_SOCKET;
-                        if (*tcpControlConnectionStatus == 16) *tcpControlConnectionStatus = 2;
+                        if (*tcpControlConnectionStatus == 16) {
+                            *tcpControlConnectionStatus = 2;
+                        }
                         return BTA_StatusDeviceUnreachable;
                     }
                     nBytesWritten += err;
                     break;
                 }
-                BTAinfoEventHelperI(infoEventInst, VERBOSE_WARNING, BTA_StatusWarning, "TCP control transmit: Failed to select, returned: %d", err);
+                BTAinfoEventHelper(infoEventInst, VERBOSE_WARNING, BTA_StatusWarning, "TCP control transmit: Failed to select, returned: %d", err);
+                if (*tcpControlConnectionStatus < 16) {
+                    err = closesocket(*tcpControlSocket);
+                    if (err == SOCKET_ERROR) BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "TCP transmit: Failed to close socket, error: %d", err);
+                    *tcpControlSocket = INVALID_SOCKET;
+                }
                 return BTA_StatusDeviceUnreachable;
             }
         }

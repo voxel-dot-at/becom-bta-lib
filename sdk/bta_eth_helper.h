@@ -12,7 +12,6 @@ typedef struct BTA_MemoryArea {
 
 BTA_Status BTAinitMemoryArea(BTA_MemoryArea **memoryArea, int size);
 BTA_Status BTAfreeMemoryArea(BTA_MemoryArea **memoryArea);
-
 #endif
 
 #endif

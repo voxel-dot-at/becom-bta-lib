@@ -24,8 +24,30 @@
 #include "bta_grabbing.h"
 #include <bvq_queue.h>
 
+#include "fifo.h"
+#include <semaphore.h>
+#if defined PLAT_LINUX
+#include <sys/stat.h> // For mode constants
+#include <fcntl.h> // For O_* constants
+#include <sys/mman.h>
+#include <unistd.h>
+#else
+// not on linux, define dummies in order to satisfy compiler
+//#define shm_open(a, b, c) (-1)
+//#define shm_unlink(a) (-1)
+//#define ftruncate(a, b, c) (-1)
+//#define MAP_FAILED 0
+//#define mmap(a, b, c, d, e, f) MAP_FAILED
+//#define close(a) (-1)
+//#define sem_unlink(a) (-1)
+//#define munmap(a, b) (-1)
+//#define SEM_FAILED 0
+//#define sem_open(a, b) SEM_FAILED
+#endif
+
 
 struct BTA_UndistortInst;
+struct BTA_CalcXYZInst;
 struct BTA_JpgInst;
 struct BVQ_QueueInst;
 
@@ -52,32 +74,6 @@ typedef struct BTA_FrameArrivedInst {
 } BTA_FrameArrivedInst;
 
 
-typedef struct BTA_DiscoveryInst {
-    BTA_DeviceType deviceType;
-
-    uint8_t *broadcastIpAddr;
-    uint8_t broadcastIpAddrLen;
-    uint16_t broadcastPort;
-    uint8_t *callbackIpAddr;
-    uint8_t callbackIpAddrLen;
-    uint16_t callbackPort;
-
-    int32_t uartBaudRate;
-    uint8_t uartDataBits;
-    uint8_t uartStopBits;
-    uint8_t uartParity;
-    uint8_t uartTransmitterAddress;
-    uint8_t uartReceiverAddressStart;
-    uint8_t uartReceiverAddressEnd;
-
-    FN_BTA_DeviceFound deviceFound;
-    uint8_t abortDiscovery;
-    void *discoveryThread;
-
-    BTA_InfoEventInst *infoEventInst;
-} BTA_DiscoveryInst;
-
-
 typedef struct BTA_WrapperInst {
     void *inst;
     BTA_InfoEventInst *infoEventInst;
@@ -88,15 +84,18 @@ typedef struct BTA_WrapperInst {
 
     struct BTA_JpgInst *jpgInst;
     struct BTA_UndistortInst *undistortInst;
+    struct BTA_CalcXYZInst *calcXYZInst;
+
+    uint32_t modFreqs[15];
+    int modFreqsReadFromDevice;
 
     BTA_Status (*close)(struct BTA_WrapperInst *winst);
     BTA_Status (*getDeviceInfo)(struct BTA_WrapperInst *winst, BTA_DeviceInfo **deviceInfo);
+    BTA_Status(*getDeviceType)(struct BTA_WrapperInst *winst, BTA_DeviceType *deviceType);
     uint8_t (*isRunning)(struct BTA_WrapperInst *winst);
     uint8_t (*isConnected)(struct BTA_WrapperInst *winst);
     BTA_Status (*setFrameMode)(struct BTA_WrapperInst *winst, BTA_FrameMode frameMode);
     BTA_Status (*getFrameMode)(struct BTA_WrapperInst *winst, BTA_FrameMode *frameMode);
-    BTA_Status(*getFrame)(struct BTA_WrapperInst *winst, BTA_Frame **frame, uint32_t millisecondsTimeout);
-    BTA_Status(*flushFrameQueue)(struct BTA_WrapperInst *winst);
     BTA_Status (*setIntegrationTime)(struct BTA_WrapperInst *winst, uint32_t integrationTime);
     BTA_Status (*getIntegrationTime)(struct BTA_WrapperInst *winst, uint32_t *integrationTime);
     BTA_Status (*setFrameRate)(struct BTA_WrapperInst *winst, float frameRate);
@@ -110,11 +109,11 @@ typedef struct BTA_WrapperInst {
     BTA_Status (*setLibParam)(struct BTA_WrapperInst *winst, BTA_LibParam libParam, float value);
     BTA_Status (*getLibParam)(struct BTA_WrapperInst *winst, BTA_LibParam libParam, float *value);
     BTA_Status (*sendReset)(struct BTA_WrapperInst *winst);
-    BTA_Status (*startGrabbing)(struct BTA_WrapperInst *winst, uint8_t *libNameVer, BTA_DeviceInfo *deviceInfo, BTA_GrabbingConfig *config);
     BTA_Status (*flashUpdate)(struct BTA_WrapperInst *winst, BTA_FlashUpdateConfig *flashUpdateConfig, FN_BTA_ProgressReport progressReport);
     BTA_Status (*flashRead)(struct BTA_WrapperInst *winst, BTA_FlashUpdateConfig *flashUpdateConfig, FN_BTA_ProgressReport progressReport, uint8_t quiet);
     BTA_Status (*writeCurrentConfigToNvm)(struct BTA_WrapperInst *winst);
     BTA_Status (*restoreDefaultConfig)(struct BTA_WrapperInst *winst);
+
 
     // LibParams
     uint16_t lpTestPatternEnabled;
@@ -125,13 +124,19 @@ typedef struct BTA_WrapperInst {
     float lpDataStreamPacketsMissedCount;
     float lpDataStreamPacketsToParse;
     float lpDataStreamParseFrameDuration;
+    float lpDataStreamFrameCounterGap;
     float lpDataStreamFrameCounterGapsCount;
     float lpDataStreamFramesParsedCount;
+    float lpAllowIncompleteFrames;
 
+    uint32_t timeStampLast;
+    uint16_t frameCounterLast;
     BVQ_QueueHandle lpDataStreamFramesParsedPerSecFrametimes;
     uint32_t lpDataStreamFramesParsedPerSecUpdated;
 
     uint8_t lpPauseCaptureThread;
+
+    uint8_t lpBilateralFilterWindow;
 
     uint32_t lpDebugFlags01;
     float lpDebugValue01;
@@ -150,19 +155,21 @@ typedef struct BTA_WrapperInst {
 
 
 typedef struct BTA_FrameToParse {
-    uint64_t timestamp;             // BTAinitFrameToParse sets it and BTAparseFrame resets it. This way we distinguish between initialized or not.
-    uint16_t frameCounter;          // this is the only way to distinguish between frames
-    uint32_t frameLen;              // length of the frame
-    uint8_t *frame;                 // storage for a frame. packets are memcpied directly to this buffer
-    uint16_t packetCountGot;        // counter for keeping track if the frame is complete
-    uint16_t packetCountNda;        // counter for keeping track if the frame is complete
-    uint16_t packetCountTotal;      // number of packets for the complete frame
-    uint32_t *packetStartAddr;      // to remember the packet's position
-    uint16_t *packetSize;           // to remember the packet's size (if == 0 then the packet is missing if == UINT16_MAX then the packet cannot be requested to be resent)
-    //uint16_t packetCounterLast;     // to remember which packet was received last. Gaps provoke retransmission requests
-    uint64_t timeLastPacket;        // to remember when we last received a packet
-    uint64_t retryTime;             // the time when a retransmission request is done earliest
-    uint16_t retryCount;            // counter for keeping track how many times a retransmission request was sent (only counting complete requests, not gap requests)
+    uint64_t timestamp;             ///< BTAinitFrameToParse sets it and BTAparseFrame resets it. This way we distinguish between initialized or not.
+    uint16_t frameCounter;          ///< this is the only way to distinguish between frames
+    uint32_t frameLen;              ///< length of the frame
+    uint8_t *frame;                 ///< storage for a frame. packets are memcpied directly to this buffer
+    uint16_t packetCountGot;        ///< counter for keeping track if the frame is complete
+    uint16_t packetCountNda;        ///< counter for keeping track if the frame is complete
+    uint16_t packetCountTotal;      ///< number of packets for the complete frame
+    uint32_t *packetStartAddr;      ///< to remember the packet's position
+    uint16_t *packetSize;           ///< to remember the packet's size (if == 0 then the packet is missing if == UINT16_MAX then the packet cannot be requested to be resent)
+    //uint16_t packetCounterLast;     ///< to remember which packet was received last. Gaps provoke retransmission requests
+    uint64_t timeLastPacket;        ///< to remember when we last received a packet
+    uint64_t retryTime;             ///< the time when a retransmission request is done earliest
+    uint16_t retryCount;            ///< counter for keeping track how many times a retransmission request was sent (only counting complete requests, not gap requests)
+
+    uint32_t shmOffset;             ///< in case of shared memory, this is the 'id' that is returned to the camera's shared memory management
 } BTA_FrameToParse;
 
 BTA_Status BTAcreateFrameToParse(BTA_FrameToParse **frameToParse);
@@ -195,9 +202,10 @@ typedef struct BTA_Data4DescBase {
     uint32_t dataLen;
 } BTA_Data4DescBase;
 
-static const uint16_t btaData4DescriptorTypeEof = 0xfffe;
-static const uint16_t btaData4DescriptorTypeFrameInfoV1 = 0x0001;
+#define btaData4DescriptorTypeEof               0xfffe
+#define btaData4DescriptorTypeAliveMsgV1        0x0005
 
+#define btaData4DescriptorTypeFrameInfoV1       0x0001
 typedef struct BTA_Data4DescFrameInfoV1 {
     uint16_t descriptorType;
     uint16_t descriptorLen;
@@ -211,7 +219,7 @@ typedef struct BTA_Data4DescFrameInfoV1 {
 } BTA_Data4DescFrameInfoV1;
 
 
-static const uint16_t btaData4DescriptorTypeTofV1 = 0x0002;
+#define btaData4DescriptorTypeTofV1             0x0002
 typedef struct BTA_Data4DescTofV1 {
     uint16_t descriptorType;
     uint16_t descriptorLen;
@@ -229,7 +237,7 @@ typedef struct BTA_Data4DescTofV1 {
 } BTA_Data4DescTofV1;
 
 
-static const uint16_t btaData4DescriptorTypeTofWithMetadataV1 = 0x0003;
+#define btaData4DescriptorTypeTofWithMetadataV1 0x0003
 typedef struct BTA_Data4DescTofWithMetadataV1 {
     uint16_t descriptorType;
     uint16_t descriptorLen;
@@ -237,7 +245,7 @@ typedef struct BTA_Data4DescTofWithMetadataV1 {
 } BTA_Data4DescTofWithMetadataV1;
 
 
-static const uint16_t btaData4DescriptorTypeColorV1 = 0x0004;
+#define btaData4DescriptorTypeColorV1           0x0004
 typedef struct BTA_Data4DescColorV1 {
     uint16_t descriptorType;
     uint16_t descriptorLen;
@@ -250,6 +258,18 @@ typedef struct BTA_Data4DescColorV1 {
     uint16_t gain;
     uint16_t integrationTime;
 } BTA_Data4DescColorV1;
+
+
+#define btaData4DescriptorTypeMetadataV1        0x0006
+typedef struct BTA_Data4DescMetadataV1 {
+    uint16_t descriptorType;
+    uint16_t descriptorLen;
+    uint32_t dataLen;
+    uint8_t lensIndex;
+    uint8_t flags;
+    uint16_t reserved;
+    uint32_t metadataId;
+} BTA_Data4DescMetadataV1;
 #pragma pack(pop)
 
 
@@ -259,33 +279,43 @@ typedef enum BTA_EthCommand { // now also for USB
     BTA_EthCommandRead = 3,
     BTA_EthCommandWrite = 4,
     BTA_EthCommandReset = 7,
-
     BTA_EthCommandFlashBootloader = 11,
     BTA_EthCommandFlashApplication = 12,
     BTA_EthCommandFlashGeneric = 13,
     BTA_EthCommandFlashLensCalib = 21,
     BTA_EthCommandFlashWigglingCalib = 22,
-    BTA_EthCommandFlashAmpCompensation = 23,      // obsolete
+    BTA_EthCommandFlashAmpCompensation = 23,            // obsolete
     BTA_EthCommandFlashGeometricModelParameters = 24,
     BTA_EthCommandFlashOverlayCalibration = 25,
+    BTA_EthCommandFlashFPPN = 26,
+    BTA_EthCommandFlashFPN = 27,
+    BTA_EthCommandFlashDeadPixelList = 28,
     BTA_EthCommandFlashFactoryConfig = 31,
     BTA_EthCommandFlashPredefinedConfig = 32,
-    BTA_EthCommandFlashIntrinsicTof = 41,      // obsolete
-    BTA_EthCommandFlashIntrinsicColor = 42,      // obsolete
-    BTA_EthCommandFlashIntrinsicStereo = 43,      // obsolete
+    BTA_EthCommandFlashXml = 33,
+    // reserved = 34
+    BTA_EthCommandFlashIntrinsicTof = 41,               // obsolete
+    BTA_EthCommandFlashIntrinsicColor = 42,             // obsolete
+    BTA_EthCommandFlashIntrinsicStereo = 43,            // obsolete
 
     BTA_EthCommandReadBootloader = 111,
     BTA_EthCommandReadApplication = 112,
     BTA_EthCommandReadGeneric = 113,
     BTA_EthCommandReadLensCalib = 121,
     BTA_EthCommandReadWigglingCalib = 122,
-    BTA_EthCommandReadAmpCompensation = 123,      // obsolete
+    BTA_EthCommandReadAmpCompensation = 123,            // obsolete
     BTA_EthCommandReadGeometricModelParameters = 124,
     BTA_EthCommandReadOverlayCalibration = 125,
+    BTA_EthCommandReadFPPN = 126,
+    BTA_EthCommandReadFPN = 127,
+    BTA_EthCommandReadDeadPixelList = 128,
     BTA_EthCommandReadFactoryConfig = 131,
-    BTA_EthCommandReadIntrinsicTof = 141,      // obsolete
-    BTA_EthCommandReadIntrinsicColor = 142,      // obsolete
-    BTA_EthCommandReadIntrinsicStereo = 143,      // obsolete
+    // reserved = 132
+    BTA_EthCommandReadXml = 133,
+    BTA_EthCommandReadLogFiles = 134,
+    BTA_EthCommandReadIntrinsicTof = 141,               // obsolete
+    BTA_EthCommandReadIntrinsicColor = 142,             // obsolete
+    BTA_EthCommandReadIntrinsicStereo = 143,            // obsolete
 
     BTA_EthCommandRetransmissionRequest = 241,
     BTA_EthCommandDiscovery = 253,
@@ -315,7 +345,7 @@ typedef enum BTA_EthImgMode { // now also for USB
     BTA_EthImgModePhase90 = 17,
     BTA_EthImgModePhase180 = 18,
     BTA_EthImgModePhase270 = 19,
-    BTA_EthImgModeIntensity = 20,
+    BTA_EthImgModeIntensities = 20,
     BTA_EthImgModeDistAmpConfColor = 21,
     BTA_EthImgModeColor = 22,
     BTA_EthImgModeDistAmpBalance = 23,
@@ -325,6 +355,7 @@ typedef enum BTA_EthImgMode { // now also for USB
     BTA_EthImgModeAmp = 27,
     BTA_EthImgModeXYZConfColor = 28,
     BTA_EthImgModeXYZAmpColorOverlay = 29,
+    BTA_EthImgModeChannelSelection = 255,
 } BTA_EthImgMode;
 
 
@@ -334,6 +365,21 @@ typedef enum BTA_EthSubCommand { // now also for USB
     BTA_EthSubCommandParallelFlash = 1,
     BTA_EthSubCommandOtpFlash = 2
 } BTA_EthSubCommand;
+
+
+typedef struct BTA_LenscalibHeader {
+    uint16_t preamble0;
+    uint16_t preamble1;
+    uint16_t version;
+    uint16_t hardwareConfig;
+    uint16_t lensId;
+    uint16_t xRes;
+    uint16_t yRes;
+    uint16_t bytesPerPixel;
+    uint16_t expasionFactor;
+    uint16_t coordSysId;
+    uint16_t reserved[15];
+} BTA_LenscalibHeader;
 
 
 // now also for USB
@@ -346,29 +392,14 @@ typedef enum BTA_EthSubCommand { // now also for USB
 #define BTA_ETH_FRAME_DATA_HEADER_SIZE      64
 
 
-void BTAinfoEventHelperIIIIIIII(BTA_InfoEventInst *infoEventInst, uint8_t importance, BTA_Status status, const char *msg, int par1, int par2, int par3, int par4, int par5, int par6, int par7, int par8);
-void BTAinfoEventHelperISIIIII(BTA_InfoEventInst *infoEventInst, uint8_t importance, BTA_Status status, const char *msg, int par1, uint8_t *par2, int par3, int par4, int par5, int par6, int par7);
-void BTAinfoEventHelperIIIVI(BTA_InfoEventInst *infoEventInst, uint8_t importance, BTA_Status status, const char *msg, int par1, int par2, int par3, void *par4, int par5);
-void BTAinfoEventHelperIIIII(BTA_InfoEventInst *infoEventInst, uint8_t importance, BTA_Status status, const char *msg, int par1, int par2, int par3, int par4, int par5);
-void BTAinfoEventHelperIIII(BTA_InfoEventInst *infoEventInst, uint8_t importance, BTA_Status status, const char *msg, int par1, int par2, int par3, int par4);
-void BTAinfoEventHelperIII(BTA_InfoEventInst *infoEventInst, uint8_t importance, BTA_Status status, const char *msg, int par1, int par2, int par3);
-void BTAinfoEventHelperISF(BTA_InfoEventInst *infoEventInst, uint8_t importance, BTA_Status status, const char *msg, int par1, uint8_t *par2, float par3);
-void BTAinfoEventHelperSF(BTA_InfoEventInst *infoEventInst, uint8_t importance, BTA_Status status, const char *msg, uint8_t *par1, float par2);
-void BTAinfoEventHelperSV(BTA_InfoEventInst *infoEventInst, uint8_t importance, BTA_Status status, const char *msg, uint8_t *par1, void *par2);
-void BTAinfoEventHelperSI(BTA_InfoEventInst *infoEventInst, uint8_t importance, BTA_Status status, const char *msg, uint8_t *par1, int par2);
-void BTAinfoEventHelperIF(BTA_InfoEventInst *infoEventInst, uint8_t importance, BTA_Status status, const char *msg, int par1, float par2);
-void BTAinfoEventHelperII(BTA_InfoEventInst *infoEventInst, uint8_t importance, BTA_Status status, const char *msg, int par1, int par2);
-void BTAinfoEventHelperIS(BTA_InfoEventInst *infoEventInst, uint8_t importance, BTA_Status status, const char *msg, int par1, uint8_t *par2);
-void BTAinfoEventHelperS(BTA_InfoEventInst *infoEventInst, uint8_t importance, BTA_Status status, const char *msg, uint8_t *par1);
-void BTAinfoEventHelperF(BTA_InfoEventInst *infoEventInst, uint8_t importance, BTA_Status status, const char *msg, float par1);
-void BTAinfoEventHelperI(BTA_InfoEventInst *infoEventInst, uint8_t importance, BTA_Status status, const char *msg, int par1);
-void BTAinfoEventHelper(BTA_InfoEventInst *infoEventInst, uint8_t importance, BTA_Status status, const char *msg);
+void BTAinfoEventHelper(BTA_InfoEventInst *infoEventInst, uint8_t importance, BTA_Status status, const char *msg, ...);
 
+int BTAgetBytesPerPixelSum(BTA_EthImgMode imgMode);
 
-BTA_Status BTAparseGrabCallbackEnqueue(BTA_WrapperInst *winst, BTA_FrameToParse *frameToParse);
-/*      @brief  Function that handles the image processing queue and consumes the frame, respectively frees it  */
-BTA_Status BTAgrabCallbackEnqueue(BTA_WrapperInst *winst, BTA_Frame *frame);
-
+BTA_Status BTAdeserializeFrameV1(BTA_Frame **frame, uint8_t *frameSerialized, uint32_t *frameSerializedLen);
+BTA_Status BTAdeserializeFrameV2(BTA_Frame **frame, uint8_t *frameSerialized, uint32_t *frameSerializedLen);
+BTA_Status BTAdeserializeFrameV3(BTA_Frame **frame, uint8_t *frameSerialized, uint32_t *frameSerializedLen);
+BTA_Status BTAdeserializeFrameV4(BTA_Frame **frame, uint8_t *frameSerialized, uint32_t *frameSerializedLen);
 
 void BTAgetFlashCommand(BTA_FlashTarget flashTarget, BTA_FlashId flashId, BTA_EthCommand *cmd, BTA_EthSubCommand *subCmd);
 BTA_Status BTAhandleFileUpdateStatus(uint32_t fileUpdateStatus, FN_BTA_ProgressReport progressReport, BTA_InfoEventInst *infoEventInst, uint8_t *finished);
@@ -382,7 +413,21 @@ BTA_Status BTAfreeExtrinsicData(BTA_ExtrinsicData ***extData, uint16_t extDataLe
 BTA_Status flashUpdate(BTA_WrapperInst *winst, const uint8_t *filename, FN_BTA_ProgressReport progressReport, BTA_FlashTarget target);
 
 BTA_Status BTAtoByteStream(BTA_EthCommand cmd, BTA_EthSubCommand subCmd, uint32_t addr, void *data, uint32_t length, uint8_t crcEnabled, uint8_t **result, uint32_t *resultLen, uint8_t callbackIpAddrVer, uint8_t *callbackIpAddr, uint8_t callbackIpAddrLen, uint16_t callbackPort, uint32_t packetNumber, uint32_t fileSize, uint32_t fileCrc32);
-BTA_Status BTAparseControlHeader(uint8_t *request, uint8_t *data, uint32_t *payloadLength, uint32_t *flags, uint32_t *dataCrc32, BTA_InfoEventInst *infoEventInst);
+BTA_Status BTAparseControlHeader(uint8_t *request, uint8_t *data, uint32_t *payloadLength, uint32_t *flags, uint32_t *dataCrc32, uint8_t *parseError, BTA_InfoEventInst *infoEventInst);
 BTA_Status BTAparseFrame(BTA_WrapperInst *winst, BTA_FrameToParse *frameToParse, BTA_Frame **framePtr);
+
+void BTApostprocess(BTA_WrapperInst *winst, BTA_Frame *frame);
+void BTAgrab(BTA_WrapperInst *winst, BTA_Frame *frame);
+void BTAcallbackEnqueue(BTA_WrapperInst *winst, BTA_Frame *frame);
+
+BTA_Status BTAparsePostprocessGrabCallbackEnqueue(BTA_WrapperInst *winst, BTA_FrameToParse *frameToParse);
+/*      @brief  Function that handles the image processing queue and consumes the frame, respectively frees it  */
+void BTApostprocessGrabCallbackEnqueue(BTA_WrapperInst *winst, BTA_Frame *frame);
+
+
+int initShm(uint32_t shmKeyNum, uint32_t shmSize, int32_t *shmFd, uint8_t **bufShmBase, sem_t **semFullWrite, sem_t **semFullRead, sem_t **semEmptyWrite, sem_t **semEmptyRead, fifo_t **fifoFull, fifo_t **fifoEmpty, uint8_t **bufDataBase, BTA_InfoEventInst *infoEventInst);
+void closeShm(sem_t **semEmptyRead, sem_t **semEmptyWrite, sem_t **semFullRead, sem_t **semFullWrite, uint8_t **bufShmBase, uint32_t shmSize, int32_t *shmFd, uint32_t shmKeyNum, BTA_InfoEventInst *infoEventInst);
+BTA_Status BTAparseFrameFromShm(BTA_Handle handle, uint8_t *data, BTA_Frame **framePtr);
+BTA_Status BTAgrabCallbackEnqueueFromShm(BTA_WrapperInst *winst, BTA_Frame *frame);
 
 #endif

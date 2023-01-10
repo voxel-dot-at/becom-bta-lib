@@ -13,7 +13,6 @@
 #include <bta.h>
 #include <bta_helper.h>
 #include <bta_helper.h>
-#include <bta_byte_queue.h>
 #include <bvq_queue.h>
 #include <bta_oshelper.h>
 #include "bta_grabbing.h"
@@ -59,16 +58,14 @@ typedef struct BTA_StreamLibInst {
     uint8_t endReached;
 
     uint8_t *inputFilename;
-
-    BTA_GrabInst *grabInst;
 } BTA_StreamLibInst;
 
 
-BTA_Status BTASTREAMstartDiscovery(BTA_DiscoveryConfig *discoveryConfig, FN_BTA_DeviceFound deviceFound, FN_BTA_InfoEvent infoEvent, BTA_Handle *handle);
-BTA_Status BTASTREAMstopDiscovery(BTA_Handle *handle);
+//void *BTASTREAMdiscoveryRunFunction(BTA_DiscoveryInst *inst);
 BTA_Status BTASTREAMopen(BTA_Config *config, BTA_WrapperInst *winst);
 BTA_Status BTASTREAMclose(BTA_WrapperInst *winst);
 BTA_Status BTASTREAMgetDeviceInfo(BTA_WrapperInst *winst, BTA_DeviceInfo **deviceInfo);
+BTA_Status BTASTREAMgetDeviceType(BTA_WrapperInst *winst, BTA_DeviceType *deviceType);
 uint8_t BTASTREAMisRunning(BTA_WrapperInst *winst);
 uint8_t BTASTREAMisConnected(BTA_WrapperInst *winst);
 BTA_Status BTASTREAMsetFrameMode(BTA_WrapperInst *winst, BTA_FrameMode frameMode);

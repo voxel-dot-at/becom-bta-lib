@@ -12,7 +12,6 @@
 
 #include <bta.h>
 #include <bta_helper.h>
-#include <bta_frame_queueing.h>
 #include <bta_oshelper.h>
 #include "bta_grabbing.h"
 
@@ -39,8 +38,6 @@ typedef struct BTA_UartLibInst  {
 
     uint8_t uartTransmitterAddress;
     uint8_t uartReceiverAddress;
-
-    BTA_GrabInst *grabInst;
 } BTA_UartLibInst;
 
 
@@ -81,11 +78,11 @@ typedef enum BTA_UartRegAddr {
 } BTA_UartRegAddr;
 
 
-BTA_Status BTAUARTstartDiscovery(BTA_DiscoveryConfig *discoveryConfig, FN_BTA_DeviceFound deviceFound, FN_BTA_InfoEvent infoEvent, BTA_Handle *handle);
-BTA_Status BTAUARTstopDiscovery(BTA_Handle *handle);
+//void *BTAUARTdiscoveryRunFunction(BTA_DiscoveryInst *inst);
 BTA_Status BTAUARTopen(BTA_Config *config, BTA_WrapperInst *winst);
 BTA_Status BTAUARTclose(BTA_WrapperInst *winst);
 BTA_Status BTAUARTgetDeviceInfo(BTA_WrapperInst *winst, BTA_DeviceInfo **deviceInfo);
+BTA_Status BTAUARTgetDeviceType(BTA_WrapperInst *winst, BTA_DeviceType *deviceType);
 uint8_t BTAUARTisRunning(BTA_WrapperInst *winst);
 uint8_t BTAUARTisConnected(BTA_WrapperInst *winst);
 BTA_Status BTAUARTsetFrameMode(BTA_WrapperInst *winst, BTA_FrameMode frameMode);

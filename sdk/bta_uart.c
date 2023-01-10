@@ -32,7 +32,6 @@ struct BTA_InfoEventInst;
 
 /////////// Local prototypes
 static void *readFramesRunFunction(void *handle);
-static BTA_Status BTAUARTgetDeviceType(BTA_WrapperInst *winst, BTA_DeviceType *deviceType);
 //static BTA_Status toBltTofApiStatus(uint8_t status);
 //static BTA_Status flashStatusToBltTofApiStatus(uint8_t status);
 static BTA_Status toByteStream(BTA_WrapperInst *winst, BTA_UartCommand cmd, BTA_UartFlashCommand subCmd, uint32_t addr, uint8_t *data, uint32_t length, uint8_t **resultPtr, uint32_t *resultLen);
@@ -63,7 +62,7 @@ BTA_Status BTAUARTopen(BTA_Config *config, BTA_WrapperInst *winst) {
     inst->serialHandle = (void *)-1;
 
     if (!config->uartPortName) {
-        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusInvalidParameter, "BTAopen uart: No port name provided");
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusConfigParamError, "BTAopen uart: No port name provided");
         BTAUARTclose(winst);
         return BTA_StatusInvalidParameter;
     }
@@ -79,7 +78,7 @@ BTA_Status BTAUARTopen(BTA_Config *config, BTA_WrapperInst *winst) {
     }
 
     if (config->uartReceiverAddress == config->uartTransmitterAddress) {
-        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusInvalidParameter, "BTAopen uart: Receiver and transmitter adresses must not equal");
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusConfigParamError, "BTAopen uart: Receiver and transmitter adresses must not equal");
         return BTA_StatusInvalidParameter;
     }
 
@@ -121,7 +120,7 @@ BTA_Status BTAUARTclose(BTA_WrapperInst *winst) {
         BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "BTAclose UART: Failed to join readFramesThread");
     }
 
-    status = BGRBclose(&inst->grabInst);
+    status = BGRBclose(&(winst->grabInst));
     if (status != BTA_StatusOk) {
         BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "BTAclose UART: Failed to close grabber");
     }
@@ -140,7 +139,7 @@ BTA_Status BTAUARTclose(BTA_WrapperInst *winst) {
 }
 
 
-static BTA_Status BTAUARTgetDeviceType(BTA_WrapperInst *winst, BTA_DeviceType *deviceType) {
+BTA_Status BTAUARTgetDeviceType(BTA_WrapperInst *winst, BTA_DeviceType *deviceType) {
     if (!winst || !deviceType) {
         return BTA_StatusInvalidParameter;
     }
@@ -179,7 +178,7 @@ BTA_Status BTAUARTgetDeviceInfo(BTA_WrapperInst *winst, BTA_DeviceInfo **deviceI
     }
     info->deviceType = (BTA_DeviceType)reg;
     if (info->deviceType == 0) {
-        info->deviceType = BTA_DeviceTypeGenericUart;
+        info->deviceType = BTA_DeviceTypeUart;
     }
 
     status = BTAUARTreadRegister(winst, BTA_UartRegAddrSerialNrLowWord, &reg, 0);
@@ -260,11 +259,11 @@ static void *readFramesRunFunction(void *handle) {
                         BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "readFramesRunFunction: Error parsing frame");
                     }
                     else {
-                        BTAgrabCallbackEnqueue(winst, frame);
+                        BTApostprocessGrabCallbackEnqueue(winst, frame);
                     }
                 }
                 else {
-                    BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, status, "readFramesRunFunction: not an image %d", buffer[5]);
+                    BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "readFramesRunFunction: not an image %d", buffer[5]);
                 }
             }
             free(buffer);
@@ -293,14 +292,14 @@ static BTA_Status readFrame(BTA_WrapperInst *winst, uint8_t **dataPtr, uint32_t 
         preamble0 = preamble1;
         BTAserialRead(inst->serialHandle, &preamble1, 1, 0);
         if (BTAgetTickCount() > timeEnd) {
-            //BTAinfoEventHelper1(winst->infoEventInst, IMPORTANCE_ERROR, BTA_StatusTimeOut, "ReadFrame: (preamble) %d", getLastError());
+            //BTAinfoEventHelper(winst->infoEventInst, IMPORTANCE_ERROR, BTA_StatusTimeOut, "ReadFrame: (preamble) %d", getLastError());
             return BTA_StatusTimeOut;
         }
     }
     uint8_t protocolVersion;
     status = BTAserialRead(inst->serialHandle, &protocolVersion, 1, 0);
     if (status != BTA_StatusOk) {
-        BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, status, "ReadFrame: can't read (protocolVersion) %d", getLastError());
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "ReadFrame: can't read (protocolVersion) %d", getLastError());
         return status;
     }
     *dataLen = 9;
@@ -317,7 +316,7 @@ static BTA_Status readFrame(BTA_WrapperInst *winst, uint8_t **dataPtr, uint32_t 
             if (status != BTA_StatusOk) {
                 free(data);
                 data = 0;
-                BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, status, "ReadFrame: can't read (data[3], 6) %d", getLastError());
+                BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "ReadFrame: can't read (data[3], 6) %d", getLastError());
                 return status;
             }
             uint8_t headerCrc7 = crc7(&data[2], 6);
@@ -331,7 +330,7 @@ static BTA_Status readFrame(BTA_WrapperInst *winst, uint8_t **dataPtr, uint32_t 
                 // Not my concern, don't listen, do nothing
                 free(data);
                 data = 0;
-                BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_INFO, BTA_StatusInformation, "ReadFrame: transmitterAddress does not match %d", data[3]);
+                BTAinfoEventHelper(winst->infoEventInst, VERBOSE_INFO, BTA_StatusInformation, "ReadFrame: transmitterAddress does not match %d", data[3]);
                 return BTA_StatusOk;
             }
             // TODO? check receiverAddress???
@@ -348,7 +347,7 @@ static BTA_Status readFrame(BTA_WrapperInst *winst, uint8_t **dataPtr, uint32_t 
             if (status != BTA_StatusOk) {
                 free(data);
                 data = 0;
-                BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, status, "ReadFrame: can't read (payload) %d", getLastError());
+                BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "ReadFrame: can't read (payload) %d", getLastError());
                 return status;
             }
             uint16_t dataCrc16 = crc16_ccitt(&data[9], payloadLen);
@@ -485,7 +484,7 @@ static BTA_Status parseFrame(BTA_WrapperInst *winst, uint8_t *data, uint32_t dat
         default: {
             free(frame);
             frame = 0;
-            BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusInvalidVersion, "Parse frame: invalid version: %d", version);
+            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusInvalidVersion, "Parse frame: invalid version: %d", version);
             return BTA_StatusInvalidVersion;
         }
     }
@@ -560,7 +559,7 @@ BTA_Status BTAUARTsetModulationFrequency(BTA_WrapperInst *winst, uint32_t modula
     status = BTAgetNextBestModulationFrequency(deviceType, modulationFrequency, &modFreq, 0);
     if (status != BTA_StatusOk) {
         if (status == BTA_StatusNotSupported) {
-            BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusNotSupported, "BTAsetModulationFrequency: Not supported for this deviceType: %d", deviceType);
+            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusNotSupported, "BTAsetModulationFrequency: Not supported for this deviceType: %d", deviceType);
         }
         return status;
     }
@@ -614,7 +613,7 @@ BTA_Status BTAUARTwriteCurrentConfigToNvm(BTA_WrapperInst *winst) {
         }
     } while (result == 0 && BTAgetTickCount() < endTime);
     if (result != 1) {
-        BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "BTAwriteCurrentConfigToNvm() failed %d", result);
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "BTAwriteCurrentConfigToNvm() failed %d", result);
         return BTA_StatusRuntimeError;
     }
     return BTA_StatusOk;
@@ -656,7 +655,7 @@ BTA_Status BTAUARTrestoreDefaultConfig(BTA_WrapperInst *winst) {
         }
     } while (result == 0 && BTAgetTickCount() < endTime);
     if (result != 1) {
-        BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "BTArestoreDefaultConfig() failed %d", result);
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "BTArestoreDefaultConfig() failed %d", result);
         return BTA_StatusRuntimeError;
     }
     return BTA_StatusOk;
@@ -709,7 +708,7 @@ BTA_Status BTAUARTreadRegister(BTA_WrapperInst *winst, uint32_t address, uint32_
     free(sendBuffer);
     sendBuffer = 0;
     if (status != BTA_StatusOk) {
-        BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, status, "BTAreadRegister: Failed to write serial data %d", getLastError());
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "BTAreadRegister: Failed to write serial data %d", getLastError());
         BTAunlockMutex(inst->handleMutex);
         return status;
     }
@@ -729,7 +728,7 @@ BTA_Status BTAUARTreadRegister(BTA_WrapperInst *winst, uint32_t address, uint32_
                         BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "BTAreadRegister: Error parsing frame");
                     }
                     else {
-                        BTAgrabCallbackEnqueue(winst, frame);
+                        BTApostprocessGrabCallbackEnqueue(winst, frame);
                     }
                 }
                 else if (bufferLen >= 5 && buffer[5] == BTA_UartCommandResponse) {
@@ -808,7 +807,7 @@ BTA_Status BTAUARTwriteRegister(BTA_WrapperInst *winst, uint32_t address, uint32
     free(sendBuffer);
     sendBuffer = 0;
     if (status != BTA_StatusOk) {
-        BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, status, "BTAwriteRegister: Failed to write serial data %d", getLastError());
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "BTAwriteRegister: Failed to write serial data %d", getLastError());
         BTAunlockMutex(inst->handleMutex);
         return status;
     }
@@ -828,7 +827,7 @@ BTA_Status BTAUARTwriteRegister(BTA_WrapperInst *winst, uint32_t address, uint32
                         BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "readFramesRunFunction: Error parsing frame");
                     }
                     else {
-                        BTAgrabCallbackEnqueue(winst, frame);
+                        BTApostprocessGrabCallbackEnqueue(winst, frame);
                     }
                 }
                 else if (bufferLen >= 5 && buffer[5] == BTA_UartCommandResponse) {
@@ -843,23 +842,23 @@ BTA_Status BTAUARTwriteRegister(BTA_WrapperInst *winst, uint32_t address, uint32
                                     switch (buffer[12]) {
                                     case 0x0F: //Illegal write: The Address is not valid or the register is not write-enabled
                                         status = BTA_StatusIllegalOperation;
-                                        BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, status, "BTAwriteRegister: Illegal write %d", buffer[12]);
+                                        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "BTAwriteRegister: Illegal write %d", buffer[12]);
                                         break;
                                     case 0x11: //Register end reached
                                         status = BTA_StatusInvalidParameter;
-                                        BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, status, "BTAwriteRegister: Outside register range %d", buffer[12]);
+                                        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "BTAwriteRegister: Outside register range %d", buffer[12]);
                                         break;
                                     case 0xFC: //DataCrc16 mismatch
                                         status = BTA_StatusCrcError;
-                                        BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, status, "BTAwriteRegister: Cyclic redundancy check failed %d", buffer[12]);
+                                        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "BTAwriteRegister: Cyclic redundancy check failed %d", buffer[12]);
                                         break;
                                     case 0xFF: //Unknown command
                                         status = BTA_StatusRuntimeError;
-                                        BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, status, "BTAwriteRegister: Unknown command %d", buffer[12]);
+                                        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "BTAwriteRegister: Unknown command %d", buffer[12]);
                                         break;
                                     default:
                                         status = BTA_StatusUnknown;
-                                        BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, status, "BTAwriteRegister: Unrecognized error %d", buffer[12]);
+                                        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "BTAwriteRegister: Unrecognized error %d", buffer[12]);
                                     }
                                 }
                                 if (status == BTA_StatusOk) {
@@ -895,7 +894,7 @@ BTA_Status BTAUARTsetLibParam(BTA_WrapperInst *winst, BTA_LibParam libParam, flo
     }
     //switch (libParam) {
     //default:
-        BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusNotSupported, "BTAsetLibParam: LibParam is not supported %d", libParam);
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusNotSupported, "BTAsetLibParam: LibParam is not supported %d", libParam);
         return BTA_StatusNotSupported;
     //}
 }
@@ -907,31 +906,20 @@ BTA_Status BTAUARTgetLibParam(BTA_WrapperInst *winst, BTA_LibParam libParam, flo
     }
     //switch (libParam) {
     //default:
-        BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusNotSupported, "BTAgetLibParam: LibParam is not supported %d", libParam);
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusNotSupported, "BTAgetLibParam: LibParam is not supported %d", libParam);
         return BTA_StatusNotSupported;
     //}
 }
 
 
-BTA_Status BTAUARTflashUpdate(BTA_WrapperInst *winst, BTA_FlashUpdateConfig *config, FN_BTA_ProgressReport progressReport) {
+BTA_Status BTAUARTflashUpdate(BTA_WrapperInst *winst, BTA_FlashUpdateConfig *flashUpdateConfig, FN_BTA_ProgressReport progressReport) {
     return BTA_StatusNotSupported;
 }
 
 
-BTA_Status BTAUARTflashRead(BTA_WrapperInst *winst, BTA_FlashUpdateConfig *config, FN_BTA_ProgressReport progressReport, uint8_t quiet) {
+BTA_Status BTAUARTflashRead(BTA_WrapperInst *winst, BTA_FlashUpdateConfig *flashUpdateConfig, FN_BTA_ProgressReport progressReport, uint8_t quiet) {
     return BTA_StatusNotSupported;
 }
-
-
-BTA_Status BTAUARTstartDiscovery(BTA_DiscoveryConfig *config, FN_BTA_DeviceFound deviceFound, FN_BTA_InfoEvent infoEvent, BTA_Handle *handle) {
-    // TODO!
-    return BTA_StatusOk;
-}
-BTA_Status BTAUARTstopDiscovery(BTA_Handle *handle) {
-    // TODO!
-    return BTA_StatusOk;
-}
-
 
 
 
@@ -1038,7 +1026,7 @@ static BTA_Status toByteStream(BTA_WrapperInst *winst, BTA_UartCommand cmd, BTA_
         }
 
         default:
-            BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusInvalidVersion, "toByteStream: Version not supported %d", BTA_UART_PROTOCOL_VERSION);
+            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusInvalidVersion, "toByteStream: Version not supported %d", BTA_UART_PROTOCOL_VERSION);
             return BTA_StatusInvalidVersion;
     }
 }

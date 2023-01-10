@@ -20,12 +20,11 @@
 #define BTA_DISCOVERY_H_INCLUDED
 
 #define BTA_DISCOVERY_H_VER_MAJ 3
-#define BTA_DISCOVERY_H_VER_MIN 0
-#define BTA_DISCOVERY_H_VER_NON_FUNC 5
+#define BTA_DISCOVERY_H_VER_MIN 3
+#define BTA_DISCOVERY_H_VER_NON_FUNC 6
 
 
 #include <stdint.h>
-#include "bta.h"
 
 ///  @brief All interfaces currently known to the SDK
 typedef uint32_t BTA_DeviceType;
@@ -35,27 +34,6 @@ typedef uint32_t BTA_DeviceType;
 #define BTA_DeviceTypeUsb           ((uint32_t)0x0002)
 #define BTA_DeviceTypeUart          ((uint32_t)0x0003)
 #define BTA_DeviceTypeBltstream     ((uint32_t)0x000f)
-
-
-
-///  @brief This structure is used to configure the process of device discovery
-typedef struct BTA_DiscoveryConfig {
-    BTA_DeviceType deviceType;          ///< A special device type to look for, 0: Any
-
-    uint8_t *broadcastIpAddr;           ///< The UDP broadcast IP address, null: 255.255.255.255
-    uint8_t broadcastIpAddrLen;         ///< The length in bytes of broadcastIpAddr
-    uint16_t broadcastPort;             ///< The UDP port to send the broadcast to, 0: 11003
-    uint8_t *callbackIpAddr;            ///< The UDP callback IP address, null: chosen automatically
-    uint8_t callbackIpAddrLen;          ///< The length in bytes of callbackIpAddr
-    uint16_t callbackPort;              ///< The UDP port to listen for responses, 0: chosen automatically
-
-    uint8_t *uartPortName;              ///< The port name of the UART to use (ASCII coded)
-    int32_t uartBaudRate;               ///< The UART baud rate
-    uint8_t uartDataBits;               ///< The number of UART data bits used
-    uint8_t uartStopBits;               ///< 0: None, 1: One, 2: Two, 3: 1.5 stop bits
-    uint8_t uartParity;                 ///< 0: None, 1: Odd, 2: Even, 3: Mark, 4: Space Parity
-    uint8_t uartTransmitterAddress;     ///< The source address for UART communications
-} BTA_DiscoveryConfig;
 
 
 
@@ -85,6 +63,8 @@ typedef struct BTA_DeviceInfo {
     uint32_t udpDataIpAddrLen;          ///< The length in bytes of udpDataIpAddr
     uint16_t udpDataPort;               ///< The UDP port of the data interface
     uint16_t udpControlPort;            ///< The UDP port of the control interface
+
+    uint8_t* bltstreamFilename;         ///< The location of the bltstream
 } BTA_DeviceInfo;
 
 
@@ -97,47 +77,80 @@ typedef void (BTA_CALLCONV *FN_BTA_DeviceFound)(BTA_Handle handle, BTA_DeviceInf
 
 
 
+///     @brief  Callback function to report on a discovered device
+///             Do not call BTAfreeDeviceInfo on deviceInfo, because it is free'd in the lib
+///     @param  handle The handle created by BTAstartDiscovery for reference
+///     @param  deviceInfo A struct containing information about the discovered device
+///     @param  userArg A pointer set by the user in BTAstartDiscoveryEx via BTA_DiscoveryConfig->userArg
+typedef void (BTA_CALLCONV *FN_BTA_DeviceFoundEx)(BTA_Handle handle, BTA_DeviceInfo *deviceInfo, void *userArg);
+
+
+
+///  @brief This structure is used to configure the process of device discovery
+typedef struct BTA_DiscoveryConfig {
+    BTA_DeviceType deviceType;          ///< Choose between BTA_DeviceTypeEthernet, BTA_DeviceTypeUsb, BTA_DeviceTypeUart, BTA_DeviceTypeAny or the device specific one
+
+    uint8_t *broadcastIpAddr;           ///< The UDP broadcast IP address, null: 255.255.255.255
+    uint8_t broadcastIpAddrLen;         ///< The length in bytes of broadcastIpAddr
+    uint16_t broadcastPort;             ///< The UDP port to send the broadcast to, 0: 11003
+    uint8_t *callbackIpAddr;            ///< The UDP callback IP address, null: chosen automatically
+    uint8_t callbackIpAddrLen;          ///< The length in bytes of callbackIpAddr
+    uint16_t callbackPort;              ///< The UDP port to listen for responses, 0: chosen automatically
+
+    uint8_t *uartPortName;              ///< The port name of the UART to use (ASCII coded)
+    int32_t uartBaudRate;               ///< The UART baud rate
+    uint8_t uartDataBits;               ///< The number of UART data bits used
+    uint8_t uartStopBits;               ///< 0: None, 1: One, 2: Two, 3: 1.5 stop bits
+    uint8_t uartParity;                 ///< 0: None, 1: Odd, 2: Even, 3: Mark, 4: Space Parity
+    uint8_t uartTransmitterAddress;     ///< The source address for UART communications
+
+    FN_BTA_DeviceFound deviceFound;     ///< Optional. The callback to be invoked when a device has been discovered
+    FN_BTA_DeviceFoundEx deviceFoundEx; ///< Optional. The callback to be invoked when a device has been discovered
+    FN_BTA_InfoEventEx2 infoEventEx2;   ///< Optional. The callback to be invoked when an error occurs
+    void *userArg;                      ///< Optional. Set this pointer and it will be set as the third parameter in deviceFoundEx and infoEventEx2 callbacks
+} BTA_DiscoveryConfig;
 
 
 
 
-// legacy (for backward compatibility ONLY USED INTERNALLY)
-#define BTA_DeviceTypeGenericEth                    ((uint32_t)0x0001)
-#define BTA_DeviceTypeGenericUsb                    ((uint32_t)0x0002)
-#define BTA_DeviceTypeGenericUart                   ((uint32_t)0x0003)
-#define BTA_DeviceTypeGenericBltstream              ((uint32_t)0x000f)
-#define BTA_DeviceTypeArgos3dP310                   ((uint32_t)0x9ba6)
-#define BTA_DeviceTypeArgos3dP32x                   ((uint32_t)0xb320)
-#define BTA_DeviceTypeArgos3dP33x                   ((uint32_t)0x03fc)
-#define BTA_DeviceTypeSentis3dM100                  ((uint32_t)0xa9c1)
-#define BTA_DeviceTypeSentis3dP509                  ((uint32_t)0x4859)
-#define BTA_DeviceTypeSentis3dM520                  ((uint32_t)0x5032)
-#define BTA_DeviceTypeSentis3dM530                  ((uint32_t)0x5110)
-#define BTA_DeviceTypeTimUp19kS3Eth                 ((uint32_t)0x795c)
-#define BTA_DeviceTypeMultiTofPlatformMlx           ((uint32_t)0xbe41)
-#define BTA_DeviceTypeTimUp19kS3Spartan6            ((uint32_t)0x13ab)
-#define BTA_DeviceTypeEPC610TofModule               ((uint32_t)0x7a3d)
-#define BTA_DeviceTypeSentis3dP510                  ((uint32_t)0x5032)
-#define BTA_DeviceTypeSentisTofP510                 ((uint32_t)0x5032)
-#define BTA_DeviceTypeSentisTofM100                 ((uint32_t)0xa9c1)
-#define BTA_DeviceTypeSentisTofP509                 ((uint32_t)0x4859)
-#define BTA_DeviceTypeTimUp19kS3PEth                ((uint32_t)0xb620)
-#define BTA_DeviceTypeArgos3dP320                   ((uint32_t)0xb320)
-#define BTA_DeviceTypeArgos3dP321                   ((uint32_t)0xb321)
-#define BTA_DeviceTypeMlx75123ValidationPlatform    ((uint32_t)0x1e3c)
-#define BTA_DeviceTypeEvk7512x                      ((uint32_t)0x31ee)
-#define BTA_DeviceTypeEvk75027                      ((uint32_t)0x31ff)
-#define BTA_DeviceTypeEvk7512xTofCcBa               ((uint32_t)0x32ee)
-#define BTA_DeviceTypeP320S                         ((uint32_t)0x3de4)
-#define BTA_DeviceTypeGrabberBoard                  ((uint32_t)0x4762)
-#define BTA_DeviceTypeLimTesterV2                   ((uint32_t)0x4c54)
-#define BTA_DeviceTypeTimUpIrs1125                  ((uint32_t)0x5a79)
-#define BTA_DeviceTypeMlx75023TofEval               ((uint32_t)0x7502)
-#define BTA_DeviceTypeSentis3dP509Irs1020           ((uint32_t)0xb509)
-#define BTA_DeviceTypeArgos3dP510SKT                ((uint32_t)0xb510)
-#define BTA_DeviceTypeTimUp19kS3EthP                ((uint32_t)0xb620)
-#define BTA_DeviceTypeMhsCamera                     ((uint32_t)0x22d3)
 
 
+
+// legacy (for backward compatibility DO NOT USE)
+#define BTA_DeviceTypeGenericEth                    (BTA_DeviceTypeEthernet)
+#define BTA_DeviceTypeGenericUsb                    (BTA_DeviceTypeUsb)
+#define BTA_DeviceTypeGenericUart                   (BTA_DeviceTypeUart)
+#define BTA_DeviceTypeGenericBltstream              (BTA_DeviceTypeBltstream)
+#define BTA_DeviceTypeArgos3dP310                   (BTA_DeviceTypeEthernet)
+#define BTA_DeviceTypeArgos3dP32x                   (BTA_DeviceTypeEthernet)
+#define BTA_DeviceTypeArgos3dP33x                   (BTA_DeviceTypeEthernet)
+#define BTA_DeviceTypeSentis3dM100                  (BTA_DeviceTypeEthernet)
+#define BTA_DeviceTypeSentis3dP509                  (BTA_DeviceTypeEthernet)
+#define BTA_DeviceTypeSentis3dM520                  (BTA_DeviceTypeEthernet)
+#define BTA_DeviceTypeSentis3dM530                  (BTA_DeviceTypeEthernet)
+#define BTA_DeviceTypeTimUp19kS3Eth                 (BTA_DeviceTypeEthernet)
+#define BTA_DeviceTypeMultiTofPlatformMlx           (BTA_DeviceTypeEthernet)
+#define BTA_DeviceTypeArgos3dP100                   (BTA_DeviceTypeUsb)
+#define BTA_DeviceTypeTimUp19kS3Spartan6            (BTA_DeviceTypeUsb)
+#define BTA_DeviceTypeEPC610TofModule               (BTA_DeviceTypeUart)
+#define BTA_DeviceTypeSentis3dP510                  (BTA_DeviceTypeEthernet)
+#define BTA_DeviceTypeSentisTofP510                 (BTA_DeviceTypeEthernet)
+#define BTA_DeviceTypeSentisTofM100                 (BTA_DeviceTypeEthernet)
+#define BTA_DeviceTypeSentisTofP509                 (BTA_DeviceTypeEthernet)
+#define BTA_DeviceTypeTimUp19kS3PEth                (BTA_DeviceTypeEthernet)
+#define BTA_DeviceTypeArgos3dP320                   (BTA_DeviceTypeEthernet)
+#define BTA_DeviceTypeArgos3dP321                   (BTA_DeviceTypeEthernet)
+#define BTA_DeviceTypeMlx75123ValidationPlatform    (BTA_DeviceTypeEthernet)
+#define BTA_DeviceTypeEvk7512x                      (BTA_DeviceTypeEthernet)
+#define BTA_DeviceTypeEvk75027                      (BTA_DeviceTypeEthernet)
+#define BTA_DeviceTypeEvk7512xTofCcBa               (BTA_DeviceTypeEthernet)
+#define BTA_DeviceTypeP320S                         (BTA_DeviceTypeEthernet)
+#define BTA_DeviceTypeGrabberBoard                  (BTA_DeviceTypeEthernet)
+#define BTA_DeviceTypeLimTesterV2                   (BTA_DeviceTypeUart)
+#define BTA_DeviceTypeTimUpIrs1125                  (BTA_DeviceTypeEthernet)
+#define BTA_DeviceTypeMlx75023TofEval               (BTA_DeviceTypeEthernet)
+#define BTA_DeviceTypeSentis3dP509Irs1020           (BTA_DeviceTypeEthernet)
+#define BTA_DeviceTypeArgos3dP510SKT                (BTA_DeviceTypeEthernet)
+#define BTA_DeviceTypeTimUp19kS3EthP                (BTA_DeviceTypeEthernet)
 
 #endif

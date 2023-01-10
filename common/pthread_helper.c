@@ -7,11 +7,10 @@
 
 #ifdef PLAT_WINDOWS
 #   include <semaphore.h>
-#elif defined PLAT_LINUX || defined PLAT_APPLE
+#elif defined PLAT_LINUX
 #   include <semaphore.h>
 #   include <errno.h>
-#endif
-#if defined PLAT_APPLE
+#elif defined PLAT_APPLE
 #   include <dispatch/dispatch.h>
 #endif
 
@@ -19,7 +18,7 @@
 
 
 BTA_Status BTAinitMutex(void **mutex) {
-    pthread_mutex_t *mutexPosix = (pthread_mutex_t *)malloc(sizeof(pthread_mutex_t));
+    pthread_mutex_t *mutexPosix = (pthread_mutex_t *)calloc(1, sizeof(pthread_mutex_t));
     if (!mutexPosix) {
         *mutex = 0;
         return BTA_StatusOutOfMemory;
@@ -35,8 +34,8 @@ BTA_Status BTAinitMutex(void **mutex) {
 
 
 void BTAlockMutex(void *mutex) {
-    assert(mutex);
     if (!mutex) {
+        return;
     }
     int result = pthread_mutex_lock((pthread_mutex_t *)mutex);
     assert(!result);
@@ -46,8 +45,8 @@ void BTAlockMutex(void *mutex) {
 
 
 void BTAunlockMutex(void *mutex) {
-    assert(mutex);
     if (!mutex) {
+        return;
     }
     int result = pthread_mutex_unlock((pthread_mutex_t *)mutex);
     assert(!result);
@@ -260,7 +259,7 @@ BTA_Status BTAinitSemaphore(void **semaphore, int shared, int initValue) {
 #   ifdef PLAT_APPLE
         *semaphore = dispatch_semaphore_create(initValue);
 #   else
-        sem_t *semaphorePosix = (sem_t *)malloc(sizeof(sem_t));
+        sem_t *semaphorePosix = (sem_t *)calloc(1, sizeof(sem_t));
         if (!semaphorePosix) {
             *semaphore = 0;
             return BTA_StatusOutOfMemory;
@@ -340,7 +339,7 @@ BTA_Status BTAwaitSemaphoreTimed(void *semaphore, int msecsTimeout) {
         if (result != 0) {
 #           ifdef PLAT_WINDOWS
                 return BTA_StatusTimeOut;
-#           elif defined PLAT_LINUX || defined PLAT_APPLE
+#           elif defined PLAT_LINUX
                 int err = errno;
                 if (err == ETIMEDOUT) {
                     return BTA_StatusTimeOut;

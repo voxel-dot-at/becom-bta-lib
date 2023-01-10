@@ -6,6 +6,7 @@
 #ifdef PLAT_WINDOWS
 #   include <winsock2.h>
 #   include <Ws2tcpip.h>
+//#   include <iphlpapi.h>
 #else
 #   include <sys/socket.h>
 #   include <netinet/in.h>
@@ -18,21 +19,39 @@
 
 #include <bta.h>
 #include "bta_helper.h"
-#include "bta_frame_queueing.h"
+#include <bta_discovery_helper.h>
 #include <bvq_queue.h>
 #include <bta_oshelper.h>
-#include "bta_grabbing.h"
-#include <undistort.h>
-#include <circular_buffer.h>
+#include <bcb_circular_buffer.h>
+
+#include "fifo.h"
+#include <semaphore.h>
+#if defined PLAT_LINUX
+#include <sys/stat.h> // For mode constants
+#include <fcntl.h> // For O_* constants
+#include <sys/mman.h>
+#include <unistd.h>
+#else
+// not on linux, define dummies in order to satisfy compiler
+#define shm_open(a, b, c) (-1)
+#define shm_unlink(a) (-1)
+#define ftruncate(a, b, c) (-1)
+#define MAP_FAILED 0
+#define mmap(a, b, c, d, e, f) MAP_FAILED
+#define munmap(a, b) (-1)
+#define SEM_FAILED 0
+#define sem_open(a, b) SEM_FAILED
+#endif
 
 #define BTA_ETH_IP_ADDR_VER_TO_LEN_LEN      7
 #define BTA_ETH_IP_ADDR_VER_TO_LEN          0, 0, 0, 0, 4, 0, 10
 #define BTA_ETH_IP_ADDR_LEN_TO_VER_LEN      17
 #define BTA_ETH_IP_ADDR_LEN_TO_VER          0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6
 
+#define SHM_PROTOCOL_VERSION                256
 
 
-#if defined(PLAT_LINUX) || defined(PLAT_APPLE)
+#if defined PLAT_LINUX || defined PLAT_APPLE
 #   define SOCKET              int
 #   define DWORD               unsigned long
 #   define byte                unsigned char
@@ -58,8 +77,10 @@ typedef struct BTA_EthLibInst {
 
     void *udpReadThread;
     void *parseFramesThread;
+    void *shmReadThread;
     void *connectionMonitorThread;
 
+    int8_t udpDataAutoConfig;
     uint8_t *udpDataIpAddr;
     uint8_t udpDataIpAddrVer;
     uint8_t udpDataIpAddrLen;
@@ -76,9 +97,9 @@ typedef struct BTA_EthLibInst {
     uint8_t tcpDeviceIpAddrLen;
     uint16_t tcpControlPort;
 
-    cbuf_handle_t packetsToFillQueue;
+    BCB_Handle packetsToFillQueue;
     int udpDataQueueMallocCount;
-    cbuf_handle_t packetsToParseQueue;
+    BCB_Handle packetsToParseQueue;
     BVQ_QueueHandle framesToParseQueue;
 
     uint32_t keepAliveMsgTimestamp;
@@ -103,8 +124,6 @@ typedef struct BTA_EthLibInst {
     int lpDataStreamRetrReqMode;
     float lpDataStreamRetrReqsCount;
     float lpRetrReqIntervalMin;
-    //int parseFrameThreadInterval;
-    //float transmissionTimePerPacketMax;
     float lpDataStreamPacketWaitTimeout;
     float lpDataStreamRetrReqMaxAttempts;
     float lpDataStreamRetrPacketsCount;
@@ -113,11 +132,11 @@ typedef struct BTA_EthLibInst {
 } BTA_EthLibInst;
 
 
-BTA_Status BTAETHstartDiscovery(BTA_DiscoveryConfig *discoveryConfig, FN_BTA_DeviceFound deviceFound, FN_BTA_InfoEvent infoEvent, BTA_Handle *handle);
-BTA_Status BTAETHstopDiscovery(BTA_Handle *handle);
+void *BTAETHdiscoveryRunFunction(BTA_DiscoveryInst *inst);
 BTA_Status BTAETHopen(BTA_Config *config, BTA_WrapperInst *wrapperInst);
 BTA_Status BTAETHclose(BTA_WrapperInst *winst);
 BTA_Status BTAETHgetDeviceInfo(BTA_WrapperInst *winst, BTA_DeviceInfo **deviceInfo);
+BTA_Status BTAETHgetDeviceType(BTA_WrapperInst *winst, BTA_DeviceType *deviceType);
 uint8_t BTAETHisRunning(BTA_WrapperInst *winst);
 uint8_t BTAETHisConnected(BTA_WrapperInst *winst);
 BTA_Status BTAETHsetFrameMode(BTA_WrapperInst *winst, BTA_FrameMode frameMode);

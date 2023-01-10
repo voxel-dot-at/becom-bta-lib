@@ -1,22 +1,21 @@
 /**  @file bta_frame_queueing.c
-*  
+*
 *    @brief Support for queueing of frames
-*  
+*
 *    BLT_DISCLAIMER
-*  
+*
 *    @author Alex Falkensteiner
-*  
+*
 *    @cond svn
-*  
+*
 *    Information of last commit
 *    $Rev::               $:  Revision of last commit
 *    $Author::            $:  Author of last commit
 *    $Date::              $:  Date of last commit
-*  
+*
 *    @endcond
 */
 
-#include "bta_frame_queueing.h"
 #include <bta_oshelper.h>
 #include <bvq_queue.h>
 #include <stdlib.h>
@@ -29,7 +28,7 @@ BTA_Status BTA_CALLCONV BFQinit(uint32_t frameQueueLength, BTA_QueueMode frameQu
         return BTA_StatusInvalidParameter;
     }
     BVQ_QueueHandle handleTemp;
-    BTA_Status status = BVQinit(frameQueueLength, frameQueueMode, &handleTemp);
+    BTA_Status status = BVQinit(frameQueueLength, frameQueueMode, (FN_FreeItem)&BTAfreeFrame, &handleTemp);
     if (status == BTA_StatusOk) {
         *handle = handleTemp;
     }
@@ -38,7 +37,7 @@ BTA_Status BTA_CALLCONV BFQinit(uint32_t frameQueueLength, BTA_QueueMode frameQu
 
 
 BTA_Status BTA_CALLCONV BFQclose(BFQ_FrameQueueHandle *handle) {
-    return BVQclose(handle, (BTA_Status(*)(void **))&BTAfreeFrame);
+    return BVQclose(handle);
 }
 
 BTA_Status BTA_CALLCONV BFQgetCount(BFQ_FrameQueueHandle handle, uint32_t *count) {
@@ -47,7 +46,14 @@ BTA_Status BTA_CALLCONV BFQgetCount(BFQ_FrameQueueHandle handle, uint32_t *count
 }
 
 BTA_Status BTA_CALLCONV BFQenqueue(BFQ_FrameQueueHandle handle, BTA_Frame *frame) {
-    return BVQenqueue(handle, frame, (BTA_Status(*)(void **))&BTAfreeFrame);
+    return BVQenqueue(handle, frame);
+}
+
+BTA_Status BTA_CALLCONV BFQpeek(BFQ_FrameQueueHandle handle, BTA_Frame** frame, uint32_t msecsTimeout) {
+    // Memory access dilemma
+    return BTA_StatusNotSupported;
+    //BTA_Frame* frameTemp;
+    //return BVQpeek(handle, (void**)frame, msecsTimeout);
 }
 
 BTA_Status BTA_CALLCONV BFQdequeue(BFQ_FrameQueueHandle handle, BTA_Frame **frame, uint32_t msecsTimeout) {
@@ -55,5 +61,5 @@ BTA_Status BTA_CALLCONV BFQdequeue(BFQ_FrameQueueHandle handle, BTA_Frame **fram
 }
 
 BTA_Status BTA_CALLCONV BFQclear(BFQ_FrameQueueHandle handle) {
-    return BVQclear(handle, (BTA_Status(*)(void **))&BTAfreeFrame);
+    return BVQclear(handle);
 }

@@ -20,8 +20,8 @@
 #define BTA_FLASH_UPDATE_H_INCLUDED
 
 #define BTA_FLASH_UPDATE_H_VER_MAJ 3
-#define BTA_FLASH_UPDATE_H_VER_MIN 0
-#define BTA_FLASH_UPDATE_H_VER_NON_FUNC 5
+#define BTA_FLASH_UPDATE_H_VER_MIN 3
+#define BTA_FLASH_UPDATE_H_VER_NON_FUNC 6
 
 #include <stdint.h>
 
@@ -42,20 +42,23 @@ typedef enum BTA_FlashTarget {
     BTA_FlashTargetBootloader,
     BTA_FlashTargetApplication,
     BTA_FlashTargetGeneric,
-    BTA_FlashTargetPixelList,       // obsolete
+    BTA_FlashTargetPixelList,               // obsolete
     BTA_FlashTargetLensCalibration,
     BTA_FlashTargetOtp,
     BTA_FlashTargetFactoryConfig,
 	BTA_FlashTargetWigglingCalibration,
-    BTA_FlashTargetIntrinsicTof,      // obsolete
-    BTA_FlashTargetIntrinsicColor,      // obsolete
-    BTA_FlashTargetExtrinsic,      // obsolete
-    BTA_FlashTargetAmpCompensation,      // obsolete
+    BTA_FlashTargetIntrinsicTof,            // obsolete
+    BTA_FlashTargetIntrinsicColor,          // obsolete
+    BTA_FlashTargetExtrinsic,               // obsolete
+    BTA_FlashTargetAmpCompensation,         // obsolete
     BTA_FlashTargetFpn,
     BTA_FlashTargetFppn,
     BTA_FlashTargetGeometricModelParameters,
     BTA_FlashTargetOverlayCalibration,
     BTA_FlashTargetPredefinedConfig,
+    BTA_FlashTargetDeadPixelList,
+    BTA_FlashTargetXml,
+    BTA_FlashTargetLogFiles,
 } BTA_FlashTarget;
 
 

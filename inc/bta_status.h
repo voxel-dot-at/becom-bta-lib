@@ -20,23 +20,18 @@
 #define BTA_STATUS_H_INCLUDED
 
 #define BTA_STATUS_H_VER_MAJ 3
-#define BTA_STATUS_H_VER_MIN 0
-#define BTA_STATUS_H_VER_NON_FUNC 5
+#define BTA_STATUS_H_VER_MIN 3
+#define BTA_STATUS_H_VER_NON_FUNC 6
 
 
 
-///   @brief Verbosity to set in order to receive only critical events
-#define VERBOSE_CRITICAL       1
-///   @brief Verbosity to set in order to receive critical and error events
-#define VERBOSE_ERROR          2
-///   @brief Verbosity to set in order to receive critical, error and warning events
-#define VERBOSE_WARNING        4
-///   @brief Verbosity to set in order to receive critical, error, warning and informative events
-#define VERBOSE_INFO           6
-///   @brief Verbosity to set in order to receive critical, error, warning, informative and write operation events
-#define VERBOSE_WRITE_OP       8
-///   @brief Verbosity to set in order to receive critical, error, warning, informative, write- and read operation events
-#define VERBOSE_READ_OP        9
+#define VERBOSE_CRITICAL       1    ///< Verbosity to set in order to receive only critical events
+#define VERBOSE_ERROR          2    ///< Verbosity to set in order to receive critical and error events
+#define VERBOSE_WARNING        4    ///< Verbosity to set in order to receive critical, error and warning events
+#define VERBOSE_INFO           6    ///< Verbosity to set in order to receive critical, error, warning and informative events
+#define VERBOSE_WRITE_OP       8    ///< Verbosity to set in order to receive critical, error, warning, informative and write operation events
+#define VERBOSE_READ_OP        9    ///< Verbosity to set in order to receive critical, error, warning, informative, write- and read operation events
+#define VERBOSE_DEBUG         42    ///< Verbosity to set in order to receive critical, error, warning, informative, write- and read operation events
 
 
 
@@ -73,8 +68,9 @@ typedef enum BTA_Status {
     // These stati are used only in infoEvent callbacks, it is merely a placeholder rather than a state
     BTA_StatusInformation       = 1,        ///< The infoEvent message contains the actual information
     BTA_StatusWarning           = 2,        ///< The infoEvent message describes the cause of the warning
-    //BTA_StatusAlive             = 3,        ///< This could be used for alive messages...?!
-    BTA_StatusDebug             = 4,        ///< The infoEvent message status used for debugging
+    BTA_StatusAlive             = 3,        ///< This could be used for alive messages...?!
+
+    BTA_StatusConfigParamError  = 5,        ///< If BTAopen fails due to a bad parameter in BTA_Config, this status code is used in the infoEvent callback
 } BTA_Status;
 
 

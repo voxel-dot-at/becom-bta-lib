@@ -21,24 +21,27 @@
 #include "bta_helper.h"
 #include <bta_oshelper.h>
 #include <timing_helper.h>
+#include <bitconverter.h>
 #include <utils.h>
-#include "configuration.h"
+#include <mth_math.h>
 
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdarg.h>
 #include <assert.h>
-#ifdef PLAT_APPLE
-#   include <stdbool.h>
+#ifdef PLAT_LINUX
+#   include <errno.h>
 #endif
 
 #include <crc16.h>
 #include <crc32.h>
 #include <undistort.h>
-#ifndef WO_LIBJPEG
-#   include <bta_jpg.h>
-#endif
+#include <calc_bilateral.h>
+#include <calcXYZ.h>
+#include <bta_jpg.h>
 #include <bvq_queue.h>
+
 
 
 // local prototypes
@@ -47,13 +50,12 @@ static BTA_ChannelId BTAETHgetChannelId(BTA_EthImgMode imgMode, uint8_t channelI
 static BTA_DataFormat BTAETHgetDataFormat(BTA_EthImgMode imgMode, uint8_t channelIndex, uint8_t colorMode, uint8_t rawPhaseContent);
 static BTA_Unit BTAETHgetUnit(BTA_EthImgMode imgMode, uint8_t channelIndex);
 static void BTAinsertTestPattern(BTA_Frame *frame, uint16_t testPattern);
-static BTA_Status insertChannelData(BTA_WrapperInst *winst, BTA_ChannelId id, BTA_DataFormat dataFormat, uint8_t *data, uint16_t width, uint16_t height, uint32_t dataLen, uint8_t decodingEnabled, BTA_Channel *channel);
+static void insertChannelData(BTA_WrapperInst *winst, BTA_Channel *channel, uint8_t *data, uint32_t dataLen, uint8_t decodingEnabled);
 static void setMissingAsInvalid(BTA_ChannelId channelId, BTA_DataFormat dataFormat, uint8_t *channelDataStart, int channelDataLength, BTA_FrameToParse *frameToParse);
 static void logToFile(BTA_InfoEventInst *infoEventInst, BTA_Status status, const char *msg);
 
+static void insertChannelDataFromShm(BTA_WrapperInst *winst, BTA_Channel *channel, uint8_t *data, uint32_t dataLen, uint8_t decodingEnabled);
 
-static uint32_t timeStampLast = 0;
-static uint16_t frameCounterLast = 0;
 
 
 BTA_Status BTAcreateFrameToParse(BTA_FrameToParse **frameToParse) {
@@ -78,6 +80,7 @@ BTA_Status BTAinitFrameToParse(BTA_FrameToParse **frameToParse, uint64_t timesta
     ftp->timestamp = timestamp;
     ftp->frameCounter = frameCounter;
     if (frameLen > ftp->frameLen) {
+        //TODO??? free(ftp->frame);
         ftp->frame = (uint8_t *)malloc(frameLen);
         if (!ftp->frame) {
             free(ftp);
@@ -144,334 +147,26 @@ BTA_Status BTAfreeFrameToParse(BTA_FrameToParse **frameToParse) {
 }
 
 
-void BTAinfoEventHelperIIIIIIII(BTA_InfoEventInst *infoEventInst, uint8_t importance, BTA_Status status, const char *msg, int par1, int par2, int par3, int par4, int par5, int par6, int par7, int par8) {
-#   ifndef DEBUG
-    if (status == BTA_StatusDebug) return;
-#   endif
-    if (!infoEventInst) return;
-    if (importance > infoEventInst->verbosity) return;
-    char *msgTemp = (char *)malloc(strlen(msg) + 512);
-    if (msgTemp) {
-        sprintf(msgTemp, msg, par1, par2, par3, par4, par5, par6, par7, par8);
-        BTAinfoEventHelper(infoEventInst, importance, status, msgTemp);
-        free(msgTemp);
-        msgTemp = 0;
-    }
-    else {
-        BTAinfoEventHelper(infoEventInst, importance, status, msg);
-    }
-}
-
-
-void BTAinfoEventHelperISIIIII(BTA_InfoEventInst *infoEventInst, uint8_t importance, BTA_Status status, const char *msg, int par1, uint8_t *par2, int par3, int par4, int par5, int par6, int par7) {
-#   ifndef DEBUG
-    if (status == BTA_StatusDebug) return;
-#   endif
-    if (!infoEventInst) return;
-    if (importance > infoEventInst->verbosity) return;
-    char *msgTemp = (char *)malloc(strlen(msg) + 512);
-    if (msgTemp) {
-        sprintf(msgTemp, msg, par1, par2, par3, par4, par5, par6, par7);
-        BTAinfoEventHelper(infoEventInst, importance, status, msgTemp);
-        free(msgTemp);
-        msgTemp = 0;
-    }
-    else {
-        BTAinfoEventHelper(infoEventInst, importance, status, msg);
-    }
-}
-
-
-void BTAinfoEventHelperIIIVI(BTA_InfoEventInst *infoEventInst, uint8_t importance, BTA_Status status, const char *msg, int par1, int par2, int par3, void *par4, int par5) {
-#   ifndef DEBUG
-    if (status == BTA_StatusDebug) return;
-#   endif
-    if (!infoEventInst) return;
-    if (importance > infoEventInst->verbosity) return;
-    char *msgTemp = (char *)malloc(strlen(msg) + 512);
-    if (msgTemp) {
-        sprintf(msgTemp, msg, par1, par2, par3, par4, par5);
-        BTAinfoEventHelper(infoEventInst, importance, status, msgTemp);
-        free(msgTemp);
-        msgTemp = 0;
-    }
-    else {
-        BTAinfoEventHelper(infoEventInst, importance, status, msg);
-    }
-}
-
-
-void BTAinfoEventHelperIIIII(BTA_InfoEventInst *infoEventInst, uint8_t importance, BTA_Status status, const char *msg, int par1, int par2, int par3, int par4, int par5) {
-#   ifndef DEBUG
-    if (status == BTA_StatusDebug) return;
-#   endif
-    if (!infoEventInst) return;
-    if (importance > infoEventInst->verbosity) return;
-    char *msgTemp = (char *)malloc(strlen(msg) + 512);
-    if (msgTemp) {
-        sprintf(msgTemp, msg, par1, par2, par3, par4, par5);
-        BTAinfoEventHelper(infoEventInst, importance, status, msgTemp);
-        free(msgTemp);
-        msgTemp = 0;
-    }
-    else {
-        BTAinfoEventHelper(infoEventInst, importance, status, msg);
-    }
-}
-
-
-void BTAinfoEventHelperIIII(BTA_InfoEventInst *infoEventInst, uint8_t importance, BTA_Status status, const char *msg, int par1, int par2, int par3, int par4) {
-#   ifndef DEBUG
-    if (status == BTA_StatusDebug) return;
-#   endif
-    if (!infoEventInst) return;
-    if (importance > infoEventInst->verbosity) return;
-    char *msgTemp = (char *)malloc(strlen(msg) + 512);
-    if (msgTemp) {
-        sprintf(msgTemp, msg, par1, par2, par3, par4);
-        BTAinfoEventHelper(infoEventInst, importance, status, msgTemp);
-        free(msgTemp);
-        msgTemp = 0;
-    }
-    else {
-        BTAinfoEventHelper(infoEventInst, importance, status, msg);
-    }
-}
-
-
-void BTAinfoEventHelperIII(BTA_InfoEventInst *infoEventInst, uint8_t importance, BTA_Status status, const char *msg, int par1, int par2, int par3) {
-#   ifndef DEBUG
-    if (status == BTA_StatusDebug) return;
-#   endif
-    if (!infoEventInst) return;
-    if (importance > infoEventInst->verbosity) return;
-    char *msgTemp = (char *)malloc(strlen(msg) + 512);
-    if (msgTemp) {
-        sprintf(msgTemp, msg, par1, par2, par3);
-        BTAinfoEventHelper(infoEventInst, importance, status, msgTemp);
-        free(msgTemp);
-        msgTemp = 0;
-    }
-    else {
-        BTAinfoEventHelper(infoEventInst, importance, status, msg);
-    }
-}
-
-
-void BTAinfoEventHelperISF(BTA_InfoEventInst *infoEventInst, uint8_t importance, BTA_Status status, const char *msg, int par1, uint8_t *par2, float par3) {
-#   ifndef DEBUG
-    if (status == BTA_StatusDebug) return;
-#   endif
-    if (!infoEventInst) return;
-    if (importance > infoEventInst->verbosity) return;
-    char *msgTemp = (char *)malloc(strlen(msg) + 512);
-    if (msgTemp) {
-        sprintf(msgTemp, msg, par1, par2, par3);
-        BTAinfoEventHelper(infoEventInst, importance, status, msgTemp);
-        free(msgTemp);
-        msgTemp = 0;
-    }
-    else {
-        BTAinfoEventHelper(infoEventInst, importance, status, msg);
-    }
-}
-
-
-void BTAinfoEventHelperSF(BTA_InfoEventInst *infoEventInst, uint8_t importance, BTA_Status status, const char *msg, uint8_t *par1, float par2) {
-#   ifndef DEBUG
-    if (status == BTA_StatusDebug) return;
-#   endif
-    if (!infoEventInst) return;
-    if (importance > infoEventInst->verbosity) return;
-    char *msgTemp = (char *)malloc(strlen(msg) + 512);
-    if (msgTemp) {
-        sprintf(msgTemp, msg, par1, par2);
-        BTAinfoEventHelper(infoEventInst, importance, status, msgTemp);
-        free(msgTemp);
-        msgTemp = 0;
-    }
-    else {
-        BTAinfoEventHelper(infoEventInst, importance, status, msg);
-    }
-}
-
-
-void BTAinfoEventHelperSV(BTA_InfoEventInst *infoEventInst, uint8_t importance, BTA_Status status, const char *msg, uint8_t *par1, void *par2) {
-#   ifndef DEBUG
-    if (status == BTA_StatusDebug) return;
-#   endif
-    if (!infoEventInst) return;
-    if (importance > infoEventInst->verbosity) return;
-    char *msgTemp = (char *)malloc(strlen(msg) + 512);
-    if (msgTemp) {
-        sprintf(msgTemp, msg, par1, par2);
-        BTAinfoEventHelper(infoEventInst, importance, status, msgTemp);
-        free(msgTemp);
-        msgTemp = 0;
-    }
-    else {
-        BTAinfoEventHelper(infoEventInst, importance, status, msg);
-    }
-}
-
-
-void BTAinfoEventHelperSI(BTA_InfoEventInst *infoEventInst, uint8_t importance, BTA_Status status, const char *msg, uint8_t *par1, int par2) {
-#   ifndef DEBUG
-    if (status == BTA_StatusDebug) return;
-#   endif
-    if (!infoEventInst) return;
-    if (importance > infoEventInst->verbosity) return;
-    char *msgTemp = (char *)malloc(strlen(msg) + 512);
-    if (msgTemp) {
-        sprintf(msgTemp, msg, par1, par2);
-        BTAinfoEventHelper(infoEventInst, importance, status, msgTemp);
-        free(msgTemp);
-        msgTemp = 0;
-    }
-    else {
-        BTAinfoEventHelper(infoEventInst, importance, status, msg);
-    }
-}
-
-
-void BTAinfoEventHelperIF(BTA_InfoEventInst *infoEventInst, uint8_t importance, BTA_Status status, const char *msg, int par1, float par2) {
-#   ifndef DEBUG
-    if (status == BTA_StatusDebug) return;
-#   endif
-    if (!infoEventInst) return;
-    if (importance > infoEventInst->verbosity) return;
-    char *msgTemp = (char *)malloc(strlen(msg) + 512);
-    if (msgTemp) {
-        sprintf(msgTemp, msg, par1, par2);
-        BTAinfoEventHelper(infoEventInst, importance, status, msgTemp);
-        free(msgTemp);
-        msgTemp = 0;
-    }
-    else {
-        BTAinfoEventHelper(infoEventInst, importance, status, msg);
-    }
-}
-
-
-void BTAinfoEventHelperII(BTA_InfoEventInst *infoEventInst, uint8_t importance, BTA_Status status, const char *msg, int par1, int par2) {
-#   ifndef DEBUG
-    if (status == BTA_StatusDebug) return;
-#   endif
-    if (!infoEventInst) return;
-    if (importance > infoEventInst->verbosity) return;
-    char *msgTemp = (char *)malloc(strlen(msg) + 512);
-    if (msgTemp) {
-        sprintf(msgTemp, msg, par1, par2);
-        BTAinfoEventHelper(infoEventInst, importance, status, msgTemp);
-        free(msgTemp);
-        msgTemp = 0;
-    }
-    else {
-        BTAinfoEventHelper(infoEventInst, importance, status, msg);
-    }
-}
-
-
-void BTAinfoEventHelperIS(BTA_InfoEventInst *infoEventInst, uint8_t importance, BTA_Status status, const char *msg, int par1, uint8_t *par2) {
-#   ifndef DEBUG
-    if (status == BTA_StatusDebug) return;
-#   endif
-    if (!infoEventInst) return;
-    if (importance > infoEventInst->verbosity) return;
-    char *msgTemp = (char *)malloc(strlen(msg) + 512);
-    if (msgTemp) {
-        sprintf(msgTemp, msg, par1, par2);
-        BTAinfoEventHelper(infoEventInst, importance, status, msgTemp);
-        free(msgTemp);
-        msgTemp = 0;
-    }
-    else {
-        BTAinfoEventHelper(infoEventInst, importance, status, msg);
-    }
-}
-
-
-void BTAinfoEventHelperS(BTA_InfoEventInst *infoEventInst, uint8_t importance, BTA_Status status, const char *msg, uint8_t *par1) {
-#   ifndef DEBUG
-    if (status == BTA_StatusDebug) return;
-#   endif
-    if (!infoEventInst) return;
-    if (importance > infoEventInst->verbosity) return;
-    char *msgTemp = (char *)malloc(strlen(msg) + 512);
-    if (msgTemp) {
-        sprintf(msgTemp, msg, par1);
-        BTAinfoEventHelper(infoEventInst, importance, status, msgTemp);
-        free(msgTemp);
-        msgTemp = 0;
-    }
-    else {
-        BTAinfoEventHelper(infoEventInst, importance, status, msg);
-    }
-}
-
-
-void BTAinfoEventHelperF(BTA_InfoEventInst *infoEventInst, uint8_t importance, BTA_Status status, const char *msg, float par1) {
-#   ifndef DEBUG
-    if (status == BTA_StatusDebug) return;
-#   endif
-    if (!infoEventInst) return;
-    if (importance > infoEventInst->verbosity) return;
-    char *msgTemp = (char *)malloc(strlen(msg) + 512);
-    if (msgTemp) {
-        sprintf(msgTemp, msg, par1);
-        BTAinfoEventHelper(infoEventInst, importance, status, msgTemp);
-        free(msgTemp);
-        msgTemp = 0;
-    }
-    else {
-        BTAinfoEventHelper(infoEventInst, importance, status, msg);
-    }
-}
-
-
-void BTAinfoEventHelperI(BTA_InfoEventInst *infoEventInst, uint8_t importance, BTA_Status status, const char *msg, int par1) {
-#   ifndef DEBUG
-    if (status == BTA_StatusDebug) return;
-#   endif
-    if (!infoEventInst) return;
-    if (importance > infoEventInst->verbosity) return;
-    char *msgTemp = (char *)malloc(strlen(msg) + 512);
-    if (msgTemp) {
-        sprintf(msgTemp, msg, par1);
-        BTAinfoEventHelper(infoEventInst, importance, status, msgTemp);
-        free(msgTemp);
-        msgTemp = 0;
-    }
-    else {
-        BTAinfoEventHelper(infoEventInst, importance, status, msg);
-    }
-}
-
-
-void BTAinfoEventHelper(BTA_InfoEventInst *infoEventInst, uint8_t importance, BTA_Status status, const char *msg) {
+void BTAinfoEventHelper(BTA_InfoEventInst *infoEventInst, uint8_t importance, BTA_Status status, const char *msg, ...) {
+    if (!infoEventInst || importance > infoEventInst->verbosity) return;
     static uint64_t timeStart = 0;
     if (!timeStart) timeStart = BTAgetTickCount64();
-#   ifndef DEBUG
-    if (status == BTA_StatusDebug) return;
-#   endif
-    if (!infoEventInst) return;
-    if (importance > infoEventInst->verbosity) return;
-    char* msgTemp = (char *)malloc(strlen(msg) + 512);
-    if (msgTemp) {
-        sprintf(msgTemp, "%9.3f: %s", (BTAgetTickCount64() - timeStart) / 1000.0, msg);
-        if (infoEventInst->infoEventEx2) (*infoEventInst->infoEventEx2)(infoEventInst->handle, status, (int8_t *)msgTemp, infoEventInst->userArg);
-        if (infoEventInst->infoEventEx) (*infoEventInst->infoEventEx)(infoEventInst->handle, status, (int8_t *)msgTemp);
-        else if (infoEventInst->infoEvent) (*infoEventInst->infoEvent)(status, (int8_t *)msgTemp);
-        logToFile(infoEventInst, status, msgTemp);
-        free(msgTemp);
-        msgTemp = 0;
+    va_list args;
+    va_start(args, msg);
+    char infoEventMsg2[1500];
+    if (status != BTA_StatusConfigParamError) {
+        char infoEventMsg1[1000];
+        vsnprintf(infoEventMsg1, sizeof(infoEventMsg1), msg, args);
+        sprintf(infoEventMsg2, "%9.3f: %s", (BTAgetTickCount64() - timeStart) / 1000.0, infoEventMsg1);
     }
     else {
-        if (infoEventInst->infoEventEx2) (*infoEventInst->infoEventEx2)(infoEventInst->handle, status, (int8_t *)msg, infoEventInst->userArg);
-        else if (infoEventInst->infoEventEx) (*infoEventInst->infoEventEx)(infoEventInst->handle, status, (int8_t *)msg);
-        else if (infoEventInst->infoEvent) (*infoEventInst->infoEvent)(status, (int8_t *)msg);
-        logToFile(infoEventInst, status, msg);
+        vsnprintf(infoEventMsg2, sizeof(infoEventMsg2), msg, args);
     }
+    va_end(args);
+    if (infoEventInst->infoEventEx2) (*infoEventInst->infoEventEx2)(infoEventInst->handle, status, (int8_t *)infoEventMsg2, infoEventInst->userArg);
+    if (infoEventInst->infoEventEx) (*infoEventInst->infoEventEx)(infoEventInst->handle, status, (int8_t *)infoEventMsg2);
+    else if (infoEventInst->infoEvent) (*infoEventInst->infoEvent)(status, (int8_t *)infoEventMsg2);
+    logToFile(infoEventInst, status, infoEventMsg2);
 }
 
 
@@ -481,7 +176,7 @@ static void logToFile(BTA_InfoEventInst *infoEventInst, BTA_Status status, const
         const char *statusString = BTAstatusToString2(status);
         char *msgTemp = (char *)malloc(strlen(msg) + 512);
         if (msgTemp) {
-            sprintf(msgTemp, "%-100s%19s handle0x%p\n", msg, statusString, infoEventInst->handle);
+            sprintf(msgTemp, "%-100s %19s handle0x%p\n", msg, statusString, infoEventInst->handle);
             BTA_Status status2 = BTAfopen((char *)infoEventInst->infoEventFilename, "a", &file);
             if (status2 == BTA_StatusOk) {
                 BTAfwrite(file, msgTemp, (uint32_t)strlen(msgTemp), 0);
@@ -501,95 +196,68 @@ static void logToFile(BTA_InfoEventInst *infoEventInst, BTA_Status status, const
 }
 
 
-BTA_Status BTAparseGrabCallbackEnqueue(BTA_WrapperInst *winst, BTA_FrameToParse *frameToParse) {
-    assert(winst);
-    assert(frameToParse);
 
-    winst->lpDataStreamPacketsReceivedCount += frameToParse->packetCountGot;
-    winst->lpDataStreamPacketsMissedCount += frameToParse->packetCountTotal - frameToParse->packetCountGot;
 
-    BTA_Status status;
+
+void BTApostprocess(BTA_WrapperInst *winst, BTA_Frame *frame) {
+    if (winst->lpBilateralFilterWindow) {
+        BTAcalcBilateralApply(winst, frame, winst->lpBilateralFilterWindow);
+    }
+    BTAcalcXYZApply(winst, frame);
+    BTAundistortApply(winst, frame);
+}
+
+
+void BTAgrab(BTA_WrapperInst *winst, BTA_Frame *frame) {
+    if (winst->grabInst) {
+        BGRBgrab(winst->grabInst, frame);
+    }
+}
+
+
+void BTAcallbackEnqueue(BTA_WrapperInst *winst, BTA_Frame *frame) {
+    uint8_t userFreesFrame = 0;
+    if (winst->frameArrivedInst) {
+        if (winst->frameArrivedInst->frameArrived) {
+            (*(winst->frameArrivedInst->frameArrived))(frame);
+        }
+        if (winst->frameArrivedInst->frameArrivedEx) {
+            (*(winst->frameArrivedInst->frameArrivedEx))(winst->frameArrivedInst->handle, frame);
+        }
+        if (winst->frameArrivedInst->frameArrivedEx2) {
+            winst->frameArrivedInst->frameArrivedReturnOptions->userFreesFrame = 0;
+            (*(winst->frameArrivedInst->frameArrivedEx2))(winst->frameArrivedInst->handle, frame, winst->frameArrivedInst->userArg, winst->frameArrivedInst->frameArrivedReturnOptions);
+            userFreesFrame = winst->frameArrivedInst->frameArrivedReturnOptions->userFreesFrame;
+        }
+    }
+
+    if (!userFreesFrame) {
+        if (winst->frameQueue) {
+            BVQenqueue(winst->frameQueue, frame);
+        }
+        else {
+            BTAfreeFrame(&frame);
+        }
+    }
+}
+
+
+BTA_Status BTAparsePostprocessGrabCallbackEnqueue(BTA_WrapperInst *winst, BTA_FrameToParse *frameToParse) {
     BTA_Frame *frame;
-    status = BTAparseFrame(winst, frameToParse, &frame);
+    BTA_Status status = BTAparseFrame(winst, frameToParse, &frame);
     if (status != BTA_StatusOk) {
         // BTAparseFrame itself calls infoEvent on error
         return status;
     }
-    winst->lpDataStreamFramesParsedCount++;
-    BVQenqueue(winst->lpDataStreamFramesParsedPerSecFrametimes, (void *)(uint64_t)(frame->timeStamp - timeStampLast), 0);
-    timeStampLast = frame->timeStamp;
-    winst->lpDataStreamFramesParsedPerSecUpdated = BTAgetTickCount();
-
-    BTAundistortApply(winst, frame);
-
-    if (winst->grabInst) {
-        BGRBgrab(winst->grabInst, frame);
-    }
-
-    if (winst->frameArrivedInst) {
-        if (winst->frameArrivedInst->frameArrived) {
-            (*(winst->frameArrivedInst->frameArrived))(frame);
-        }
-        if (winst->frameArrivedInst->frameArrivedEx) {
-            (*(winst->frameArrivedInst->frameArrivedEx))(winst->frameArrivedInst->handle, frame);
-        }
-        if (winst->frameArrivedInst->frameArrivedEx2) {
-            winst->frameArrivedInst->frameArrivedReturnOptions->userFreesFrame = 0;
-            (*(winst->frameArrivedInst->frameArrivedEx2))(winst->frameArrivedInst->handle, frame, winst->frameArrivedInst->userArg, winst->frameArrivedInst->frameArrivedReturnOptions);
-        }
-    }
-
-    if (!winst->frameArrivedInst->frameArrivedReturnOptions->userFreesFrame) {
-        if (winst->frameQueue) {
-            status = BVQenqueue(winst->frameQueue, frame, (BTA_Status(*)(void **))&BTAfreeFrame);
-        }
-        else {
-            BTAfreeFrame(&frame);
-            status = BTA_StatusOk;
-        }
-    }
-
-    return status;
+    BTApostprocessGrabCallbackEnqueue(winst, frame);
+    return BTA_StatusOk;
 }
 
 
-BTA_Status BTAgrabCallbackEnqueue(BTA_WrapperInst *winst, BTA_Frame *frame) {
-    assert(winst);
-    assert(frame);
-
-    winst->lpDataStreamFramesParsedCount++;
-    BVQenqueue(winst->lpDataStreamFramesParsedPerSecFrametimes, (void *)(uint64_t)(frame->timeStamp - timeStampLast), 0);
-    timeStampLast = frame->timeStamp;
-    winst->lpDataStreamFramesParsedPerSecUpdated = BTAgetTickCount();
-
-    if (winst->grabInst) {
-        BGRBgrab(winst->grabInst, frame);
-    }
-
-    if (winst->frameArrivedInst) {
-        if (winst->frameArrivedInst->frameArrived) {
-            (*(winst->frameArrivedInst->frameArrived))(frame);
-        }
-        if (winst->frameArrivedInst->frameArrivedEx) {
-            (*(winst->frameArrivedInst->frameArrivedEx))(winst->frameArrivedInst->handle, frame);
-        }
-        if (winst->frameArrivedInst->frameArrivedEx2) {
-            winst->frameArrivedInst->frameArrivedReturnOptions->userFreesFrame = 0;
-            (*(winst->frameArrivedInst->frameArrivedEx2))(winst->frameArrivedInst->handle, frame, winst->frameArrivedInst->userArg, winst->frameArrivedInst->frameArrivedReturnOptions);
-        }
-    }
-
-    BTA_Status status = BTA_StatusOk;
-    if (!winst->frameArrivedInst->frameArrivedReturnOptions->userFreesFrame) {
-        if (winst->frameQueue) {
-            status = BVQenqueue(winst->frameQueue, frame, (BTA_Status(*)(void **))&BTAfreeFrame);
-        }
-        else {
-            BTAfreeFrame(&frame);
-        }
-    }
-
-    return status;
+void BTApostprocessGrabCallbackEnqueue(BTA_WrapperInst *winst, BTA_Frame *frame) {
+    BTApostprocess(winst, frame);
+    BTAgrab(winst, frame);
+    BTAcallbackEnqueue(winst, frame);
 }
 
 
@@ -598,69 +266,90 @@ void BTAgetFlashCommand(BTA_FlashTarget flashTarget, BTA_FlashId flashId, BTA_Et
     case BTA_FlashTargetBootloader:
         *cmd = BTA_EthCommandFlashBootloader;
         *subCmd = BTA_EthSubCommandNone;
-        break;
+        return;
     case BTA_FlashTargetApplication:
         *cmd = BTA_EthCommandFlashApplication;
         *subCmd = BTA_EthSubCommandNone;
-        break;
+        return;
     case BTA_FlashTargetGeneric:
         *cmd = BTA_EthCommandFlashGeneric;
         switch (flashId) {
         case BTA_FlashIdSpi:
             *subCmd = BTA_EthSubCommandSpiFlash;
-            break;
+            return;
         case BTA_FlashIdParallel:
             *subCmd = BTA_EthSubCommandParallelFlash;
-            break;
+            return;
         default:
             return;
         }
-        break;
     case BTA_FlashTargetLensCalibration:
         *cmd = BTA_EthCommandFlashLensCalib;
         *subCmd = BTA_EthSubCommandNone;
-        break;
+        return;
     case BTA_FlashTargetOtp:
         *cmd = BTA_EthCommandFlashGeneric;
         *subCmd = BTA_EthSubCommandOtpFlash;
-        break;
+        return;
     case BTA_FlashTargetFactoryConfig:
         *cmd = BTA_EthCommandFlashFactoryConfig;
         *subCmd = BTA_EthSubCommandNone;
-        break;
+        return;
     case BTA_FlashTargetWigglingCalibration:
         *cmd = BTA_EthCommandFlashWigglingCalib;
         *subCmd = BTA_EthSubCommandNone;
-        break;
-    case BTA_FlashTargetIntrinsicTof:
-        *cmd = BTA_EthCommandFlashIntrinsicTof;
+        return;
+    case BTA_FlashTargetIntrinsicTof:                   // obsolete
+        *cmd = BTA_EthCommandFlashIntrinsicTof;         // obsolete
+        *subCmd = BTA_EthSubCommandNone;                // obsolete
+        return;                                         // obsolete
+    case BTA_FlashTargetIntrinsicColor:                 // obsolete
+        *cmd = BTA_EthCommandFlashIntrinsicColor;       // obsolete
+        *subCmd = BTA_EthSubCommandNone;                // obsolete
+        return;                                         // obsolete
+    case BTA_FlashTargetExtrinsic:                      // obsolete
+        *cmd = BTA_EthCommandFlashIntrinsicStereo;      // obsolete
+        *subCmd = BTA_EthSubCommandNone;                // obsolete
+        return;                                         // obsolete
+    case BTA_FlashTargetAmpCompensation:                // obsolete
+        *cmd = BTA_EthCommandFlashAmpCompensation;      // obsolete
+        *subCmd = BTA_EthSubCommandNone;                // obsolete
+        return;                                         // obsolete
+    case BTA_FlashTargetFpn:
+        *cmd = BTA_EthCommandFlashFPN;
         *subCmd = BTA_EthSubCommandNone;
-        break;
-    case BTA_FlashTargetIntrinsicColor:
-        *cmd = BTA_EthCommandFlashIntrinsicColor;
+        return;
+    case BTA_FlashTargetFppn:
+        *cmd = BTA_EthCommandFlashFPPN;
         *subCmd = BTA_EthSubCommandNone;
-        break;
-    case BTA_FlashTargetExtrinsic:
-        *cmd = BTA_EthCommandFlashIntrinsicStereo;
-        *subCmd = BTA_EthSubCommandNone;
-        break;
-    case BTA_FlashTargetAmpCompensation:
-        *cmd = BTA_EthCommandFlashAmpCompensation;
-        *subCmd = BTA_EthSubCommandNone;
-        break;
+        return;
     case BTA_FlashTargetGeometricModelParameters:
         *cmd = BTA_EthCommandFlashGeometricModelParameters;
         *subCmd = BTA_EthSubCommandNone;
-        break;
+        return;
     case BTA_FlashTargetOverlayCalibration:
         *cmd = BTA_EthCommandFlashOverlayCalibration;
         *subCmd = BTA_EthSubCommandNone;
-        break;
+        return;
     case BTA_FlashTargetPredefinedConfig:
         *cmd = BTA_EthCommandFlashPredefinedConfig;
         *subCmd = BTA_EthSubCommandNone;
-        break;
+        return;
+    case BTA_FlashTargetDeadPixelList:
+        *cmd = BTA_EthCommandFlashDeadPixelList;
+        *subCmd = BTA_EthSubCommandNone;
+        return;
+    case BTA_FlashTargetXml:
+        *cmd = BTA_EthCommandFlashXml;
+        *subCmd = BTA_EthSubCommandNone;
+        return;
+    case BTA_FlashTargetLogFiles:
+        *cmd = (BTA_EthCommand)(BTA_EthCommandReadLogFiles - 100); // use the flash write code always (even if it doesn't exist)
+        *subCmd = BTA_EthSubCommandNone;
+        return;
     default:
+        *cmd = BTA_EthCommandNone;
+        *subCmd = BTA_EthSubCommandNone;
         return;
     }
 }
@@ -698,83 +387,83 @@ BTA_Status BTAhandleFileUpdateStatus(uint32_t fileUpdateStatus, FN_BTA_ProgressR
     case 5: // packet_crc_error
     case 6: // file_crc_error
         if (progressReport) (*progressReport)(BTA_StatusCrcError, 0);
-        BTAinfoEventHelperI(infoEventInst, VERBOSE_ERROR, BTA_StatusCrcError, "BTAflashUpdate: Packet crc error / file crc error %d", fileUpdateStatus);
+        BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusCrcError, "BTAflashUpdate: Packet crc error / file crc error %d", fileUpdateStatus);
         *finished = 1;
         return BTA_StatusCrcError;
 
     case 0:  // idle
-        BTAinfoEventHelperI(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "BTAflashUpdate: Failed. Response: idle %d", fileUpdateStatus);
+        BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "BTAflashUpdate: Failed. Response: idle %d", fileUpdateStatus);
         if (progressReport) (*progressReport)(BTA_StatusRuntimeError, 0);
         *finished = 1;
         return BTA_StatusRuntimeError;
     case 2:  // max_filesize_exceeded
-        BTAinfoEventHelperI(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "BTAflashUpdate: Failed. Response: max_filesize_exceeded %d", fileUpdateStatus);
+        BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "BTAflashUpdate: Failed. Response: max_filesize_exceeded %d", fileUpdateStatus);
         if (progressReport) (*progressReport)(BTA_StatusRuntimeError, 0);
         *finished = 1;
         return BTA_StatusRuntimeError;
     case 3:  // out_of_memory
-        BTAinfoEventHelperI(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "BTAflashUpdate: Failed. Response: out_of_memory %d", fileUpdateStatus);
+        BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "BTAflashUpdate: Failed. Response: out_of_memory %d", fileUpdateStatus);
         if (progressReport) (*progressReport)(BTA_StatusRuntimeError, 0);
         *finished = 1;
         return BTA_StatusRuntimeError;
     case 4:  // buffer_overrun
-        BTAinfoEventHelperI(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "BTAflashUpdate: Failed. Response: buffer_overrun %d", fileUpdateStatus);
+        BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "BTAflashUpdate: Failed. Response: buffer_overrun %d", fileUpdateStatus);
         if (progressReport) (*progressReport)(BTA_StatusRuntimeError, 0);
         *finished = 1;
         return BTA_StatusRuntimeError;
     case 11: // erasing_failed
-        BTAinfoEventHelperI(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "BTAflashUpdate: Failed. Response: erasing_failed %d", fileUpdateStatus);
+        BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "BTAflashUpdate: Failed. Response: erasing_failed %d", fileUpdateStatus);
         if (progressReport) (*progressReport)(BTA_StatusRuntimeError, 0);
         *finished = 1;
         return BTA_StatusRuntimeError;
     case 12: // flashing_failed
-        BTAinfoEventHelperI(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "BTAflashUpdate: Failed. Response: flashing_failed %d", fileUpdateStatus);
+        BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "BTAflashUpdate: Failed. Response: flashing_failed %d", fileUpdateStatus);
         if (progressReport) (*progressReport)(BTA_StatusRuntimeError, 0);
         *finished = 1;
         return BTA_StatusRuntimeError;
     case 13: // verifying_failed
-        BTAinfoEventHelperI(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "BTAflashUpdate: Failed. Response: verifying_failed %d", fileUpdateStatus);
+        BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "BTAflashUpdate: Failed. Response: verifying_failed %d", fileUpdateStatus);
         if (progressReport) (*progressReport)(BTA_StatusRuntimeError, 0);
         *finished = 1;
         return BTA_StatusRuntimeError;
     case 15: // wrong_packet_nr
-        BTAinfoEventHelperI(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "BTAflashUpdate: Failed. Response: wrong_packet_nr %d", fileUpdateStatus);
+        BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "BTAflashUpdate: Failed. Response: wrong_packet_nr %d", fileUpdateStatus);
         if (progressReport) (*progressReport)(BTA_StatusRuntimeError, 0);
         *finished = 1;
         return BTA_StatusRuntimeError;
     case 16: // header_version_conflict
-        BTAinfoEventHelperI(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "BTAflashUpdate: Failed. Response: header_version_conflict %d", fileUpdateStatus);
+        BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "BTAflashUpdate: Failed. Response: header_version_conflict %d", fileUpdateStatus);
         if (progressReport) (*progressReport)(BTA_StatusRuntimeError, 0);
         *finished = 1;
         return BTA_StatusRuntimeError;
     case 17: // missing_fw_identifier
-        BTAinfoEventHelperI(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "BTAflashUpdate: Failed. Response: missing_fw_identifier %d", fileUpdateStatus);
+        BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "BTAflashUpdate: Failed. Response: missing_fw_identifier %d", fileUpdateStatus);
         if (progressReport) (*progressReport)(BTA_StatusRuntimeError, 0);
         *finished = 1;
         return BTA_StatusRuntimeError;
     case 18: // wrong_fw_identifier
-        BTAinfoEventHelperI(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "BTAflashUpdate: Failed. Response: wrong_fw_identifier %d", fileUpdateStatus);
+        BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "BTAflashUpdate: Failed. Response: wrong_fw_identifier %d", fileUpdateStatus);
         if (progressReport) (*progressReport)(BTA_StatusRuntimeError, 0);
         *finished = 1;
         return BTA_StatusRuntimeError;
     case 19: // flash_boundary_exceeded
-        BTAinfoEventHelperI(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "BTAflashUpdate: Failed. Response: flash_boundary_exceeded %d", fileUpdateStatus);
+        BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "BTAflashUpdate: Failed. Response: flash_boundary_exceeded %d", fileUpdateStatus);
         if (progressReport) (*progressReport)(BTA_StatusRuntimeError, 0);
         *finished = 1;
         return BTA_StatusRuntimeError;
     case 20: // data_inconsistent
-        BTAinfoEventHelperI(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "BTAflashUpdate: Failed. Response: data_inconsistent %d", fileUpdateStatus);
+        BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "BTAflashUpdate: Failed. Response: data_inconsistent %d", fileUpdateStatus);
         if (progressReport) (*progressReport)(BTA_StatusRuntimeError, 0);
         *finished = 1;
         return BTA_StatusRuntimeError;
     case 255: // protocol_violation
-        BTAinfoEventHelperI(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "BTAflashUpdate: Failed. Response: protocol_violation %d", fileUpdateStatus);
+        BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "BTAflashUpdate: Failed. Response: protocol_violation %d", fileUpdateStatus);
         if (progressReport) (*progressReport)(BTA_StatusRuntimeError, 0);
         *finished = 1;
         return BTA_StatusRuntimeError;
     default:
         if (progressReport) (*progressReport)(BTA_StatusUnknown, 0);
-        BTAinfoEventHelperI(infoEventInst, VERBOSE_ERROR, BTA_StatusUnknown, "BTAflashUpdate: Failed. The device reported an unknown status %d", fileUpdateStatus);
+        BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusUnknown, "BTAflashUpdate: Failed. The device reported an unknown status %d", fileUpdateStatus);
         *finished = 1;
         return BTA_StatusUnknown;
     }
@@ -812,13 +501,8 @@ BTA_Status BTAreadMetrilusFromFlash(BTA_WrapperInst *winst, BTA_IntrinsicData *i
     }
     memset(intData, 0, sizeof(BTA_IntrinsicData));
     BTA_FlashUpdateConfig flashUpdateConfig;
-    memset(&flashUpdateConfig, 0, sizeof(BTA_FlashUpdateConfig));
+    BTAinitFlashUpdateConfig(&flashUpdateConfig);
     flashUpdateConfig.target = BTA_FlashTargetIntrinsicColor;
-    flashUpdateConfig.dataLen = 1024;
-    flashUpdateConfig.data = (uint8_t *)malloc(flashUpdateConfig.dataLen);
-    if (!flashUpdateConfig.data) {
-        return BTA_StatusOutOfMemory;
-    }
     BTA_Status status;
     if (quiet) status = winst->flashRead(winst, &flashUpdateConfig, 0, 1);
     else status = BTAflashRead(winst, &flashUpdateConfig, 0);
@@ -836,13 +520,13 @@ BTA_Status BTAreadMetrilusFromFlash(BTA_WrapperInst *winst, BTA_IntrinsicData *i
     }
     uint32_t metriStreamItemId = ((uint32_t*)flashUpdateConfig.data)[0];
     if (metriStreamItemId != 0x2EB27A52) {
-        if (!quiet) BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusWarning, "Intrinsic data has wrong preamble %d", status);
+        if (!quiet) BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusWarning, "Intrinsic data has wrong preamble: %d", metriStreamItemId);
         free(flashUpdateConfig.data);
         flashUpdateConfig.data = 0;
         return BTA_StatusCrcError;
     }
     if (flashUpdateConfig.dataLen < 44) {
-        if (!quiet) BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusWarning, "Intrinsic data is too short %d", status);
+        if (!quiet) BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusWarning, "Intrinsic data is too short: %d", flashUpdateConfig.dataLen);
         free(flashUpdateConfig.data);
         flashUpdateConfig.data = 0;
         return BTA_StatusInvalidParameter;
@@ -883,13 +567,8 @@ BTA_Status BTAreadGeomModelFromFlash(BTA_WrapperInst *winst, BTA_IntrinsicData *
         return BTA_StatusInvalidParameter;
     }
     BTA_FlashUpdateConfig flashUpdateConfig;
-    memset(&flashUpdateConfig, 0, sizeof(BTA_FlashUpdateConfig));
+    BTAinitFlashUpdateConfig(&flashUpdateConfig);
     flashUpdateConfig.target = BTA_FlashTargetGeometricModelParameters;
-    flashUpdateConfig.dataLen = 1024;
-    flashUpdateConfig.data = (uint8_t *)malloc(flashUpdateConfig.dataLen);
-    if (!flashUpdateConfig.data) {
-        return BTA_StatusOutOfMemory;
-    }
     BTA_Status status;
     if (quiet) status = winst->flashRead(winst, &flashUpdateConfig, 0, 1);
     else status = BTAflashRead(winst, &flashUpdateConfig, 0);
@@ -1089,48 +768,48 @@ BTA_Status flashUpdate(BTA_WrapperInst *winst, const uint8_t *filename, FN_BTA_P
     }
 
     void *file;
-    uint64_t filesize;
     BTA_Status status = BTAfopen((char *)filename, "rb", &file);
     if (status != BTA_StatusOk) {
-        BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, status, "BTAfirmwareUpdate: Could not open file %d", status);
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "BTAfirmwareUpdate: Could not open file: %s", BTAstatusToString2(status));
         return status;
     }
+    uint32_t filesize;
     status = BTAfseek(file, 0, BTA_SeekOriginEnd, &filesize);
     if (status != BTA_StatusOk) {
-        BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, status, "BTAfirmwareUpdate: fseek failed %d", status);
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "BTAfirmwareUpdate: fseek failed: %s", BTAstatusToString2(status));
         BTAfclose(file);
         return status;
     }
     status = BTAfseek(file, 0, BTA_SeekOriginBeginning, 0);
     if (status != BTA_StatusOk) {
-        BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, status, "BTAfirmwareUpdate: fseek failed %d", status);
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "BTAfirmwareUpdate: fseek failed: %s", BTAstatusToString2(status));
         BTAfclose(file);
         return status;
     }
 
-    uint8_t *cdata = (unsigned char *)malloc((uint32_t)filesize);
+    uint8_t *cdata = (unsigned char *)malloc(filesize);
     if (!cdata) {
         BTAfclose(file);
         return BTA_StatusOutOfMemory;
     }
 
     uint32_t fileSizeRead;
-    status = BTAfread(file, cdata, (uint32_t)filesize, &fileSizeRead);
+    status = BTAfread(file, cdata, filesize, &fileSizeRead);
     if (status != BTA_StatusOk || fileSizeRead != filesize) {
         BTAfclose(file);
         free(cdata);
         cdata = 0;
-        BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, status, "BTAfirmwareUpdate: Error reading firmware file %d", status);
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "BTAfirmwareUpdate: Error reading firmware file: %s. bytes read: %d", BTAstatusToString2(status), fileSizeRead);
         return status;
     }
     BTAfclose(file);
 
-    BTA_FlashUpdateConfig config;
-    memset(&config, 0, sizeof(BTA_FlashUpdateConfig));
-    config.target = target;
-    config.data = cdata;
-    config.dataLen = (uint32_t)filesize;
-    status = winst->flashUpdate(winst, &config, progressReport);
+    BTA_FlashUpdateConfig flashUpdateConfig;
+    BTAinitFlashUpdateConfig(&flashUpdateConfig);
+    flashUpdateConfig.target = target;
+    flashUpdateConfig.data = cdata;
+    flashUpdateConfig.dataLen = filesize;
+    status = winst->flashUpdate(winst, &flashUpdateConfig, progressReport);
     free(cdata);
     cdata = 0;
     return status;
@@ -1138,23 +817,15 @@ BTA_Status flashUpdate(BTA_WrapperInst *winst, const uint8_t *filename, FN_BTA_P
 
 
 BTA_Status BTAtoByteStream(BTA_EthCommand cmd, BTA_EthSubCommand subCmd, uint32_t addr, void *data, uint32_t length, uint8_t crcEnabled, uint8_t **result, uint32_t *resultLen,
-                             uint8_t callbackIpAddrVer, uint8_t *callbackIpAddr, uint8_t callbackIpAddrLen, uint16_t callbackPort,
-                             uint32_t packetNumber, uint32_t fileSize, uint32_t fileCrc32) {
+                           uint8_t callbackIpAddrVer, uint8_t *callbackIpAddr, uint8_t callbackIpAddrLen, uint16_t callbackPort,
+                           uint32_t packetNumber, uint32_t fileSize, uint32_t fileCrc32) {
     uint32_t i;
     if (!result || !resultLen) {
         return BTA_StatusInvalidParameter;
     }
     *resultLen = 0;
     uint16_t flags = 1;
-    if (crcEnabled ||
-        cmd == BTA_EthCommandFlashApplication || cmd == BTA_EthCommandFlashBootloader || cmd == BTA_EthCommandFlashGeneric ||
-        cmd == BTA_EthCommandFlashLensCalib || cmd == BTA_EthCommandFlashFactoryConfig || cmd == BTA_EthCommandFlashPredefinedConfig || cmd == BTA_EthCommandFlashWigglingCalib ||
-        cmd == BTA_EthCommandFlashIntrinsicTof || cmd == BTA_EthCommandFlashIntrinsicColor || cmd == BTA_EthCommandFlashIntrinsicStereo ||
-        cmd == BTA_EthCommandFlashAmpCompensation || cmd == BTA_EthCommandFlashGeometricModelParameters || cmd == BTA_EthCommandFlashOverlayCalibration ||
-        cmd == BTA_EthCommandReadApplication || cmd == BTA_EthCommandReadBootloader || cmd == BTA_EthCommandReadGeneric ||
-        cmd == BTA_EthCommandReadLensCalib || cmd == BTA_EthCommandReadFactoryConfig || cmd == BTA_EthCommandReadWigglingCalib ||
-        cmd == BTA_EthCommandReadIntrinsicTof || cmd == BTA_EthCommandReadIntrinsicColor || cmd == BTA_EthCommandReadIntrinsicStereo ||
-        cmd == BTA_EthCommandReadAmpCompensation || cmd == BTA_EthCommandReadGeometricModelParameters || cmd == BTA_EthCommandReadOverlayCalibration) {
+    if (crcEnabled || ((int)cmd >= (int)BTA_EthCommandFlashBootloader && (int)cmd < (int)BTA_EthCommandRetransmissionRequest)) {
         flags &= ~1;
     }
 
@@ -1176,38 +847,47 @@ BTA_Status BTAtoByteStream(BTA_EthCommand cmd, BTA_EthSubCommand subCmd, uint32_
     // Prepare payload data and length field
     uint32_t payloadLen = 0;
     switch (cmd) {
-    case BTA_EthCommandWrite:
-    case BTA_EthCommandFlashApplication:
-    case BTA_EthCommandFlashBootloader:
-    case BTA_EthCommandFlashGeneric:
-    case BTA_EthCommandFlashLensCalib:
-    case BTA_EthCommandFlashFactoryConfig:
-    case BTA_EthCommandFlashPredefinedConfig:
-    case BTA_EthCommandFlashWigglingCalib:
-    case BTA_EthCommandFlashAmpCompensation:
-    case BTA_EthCommandFlashGeometricModelParameters:
-    case BTA_EthCommandFlashOverlayCalibration:
-    case BTA_EthCommandFlashIntrinsicTof:
-    case BTA_EthCommandFlashIntrinsicColor:
-    case BTA_EthCommandFlashIntrinsicStereo:
-    case BTA_EthCommandRetransmissionRequest:
+    case BTA_EthCommandWrite:                           // 4
+    case BTA_EthCommandFlashBootloader:                 // 11
+    case BTA_EthCommandFlashApplication:                // 12
+    case BTA_EthCommandFlashGeneric:                    // 13
+    case BTA_EthCommandFlashLensCalib:                  // 21
+    case BTA_EthCommandFlashWigglingCalib:              // 22
+    case BTA_EthCommandFlashAmpCompensation:            // obsolete
+    case BTA_EthCommandFlashGeometricModelParameters:   // 24
+    case BTA_EthCommandFlashOverlayCalibration:         // 25
+    case BTA_EthCommandFlashFPPN:                       // 26
+    case BTA_EthCommandFlashFPN:                        // 27
+    case BTA_EthCommandFlashDeadPixelList:              // 28
+    case BTA_EthCommandFlashFactoryConfig:              // 31
+    case BTA_EthCommandFlashPredefinedConfig:           // 32
+    case BTA_EthCommandFlashXml:                        // 33
+    case BTA_EthCommandFlashIntrinsicTof:               // obsolete
+    case BTA_EthCommandFlashIntrinsicColor:             // obsolete
+    case BTA_EthCommandFlashIntrinsicStereo:            // obsolete
+    case BTA_EthCommandRetransmissionRequest:           // 241
         payloadLen = length;
         break;
-    case BTA_EthCommandRead:
-    case BTA_EthCommandReset:
-    case BTA_EthCommandReadApplication:
-    case BTA_EthCommandReadBootloader:
-    case BTA_EthCommandReadGeneric:
-    case BTA_EthCommandReadLensCalib:
-    case BTA_EthCommandReadFactoryConfig:
-    case BTA_EthCommandReadWigglingCalib:
-    case BTA_EthCommandReadAmpCompensation:
-    case BTA_EthCommandReadGeometricModelParameters:
-    case BTA_EthCommandReadOverlayCalibration:
-    case BTA_EthCommandReadIntrinsicTof:
-    case BTA_EthCommandReadIntrinsicColor:
-    case BTA_EthCommandReadIntrinsicStereo:
-    case BTA_EthCommandKeepAliveMsg:
+    case BTA_EthCommandRead:                            // 3
+    case BTA_EthCommandReset:                           // 7
+    case BTA_EthCommandReadBootloader:                  // 111
+    case BTA_EthCommandReadApplication:                 // 112
+    case BTA_EthCommandReadGeneric:                     // 113
+    case BTA_EthCommandReadLensCalib:                   // 121
+    case BTA_EthCommandReadWigglingCalib:               // 122
+    case BTA_EthCommandReadAmpCompensation:             // obsolete
+    case BTA_EthCommandReadGeometricModelParameters:    // 124
+    case BTA_EthCommandReadOverlayCalibration:          // 125
+    case BTA_EthCommandReadFPPN:                        // 126
+    case BTA_EthCommandReadFPN:                         // 127
+    case BTA_EthCommandReadDeadPixelList:               // 128
+    case BTA_EthCommandReadFactoryConfig:               // 131
+    case BTA_EthCommandReadXml:                         // 133
+    case BTA_EthCommandReadLogFiles:                    // 134
+    case BTA_EthCommandReadIntrinsicTof:                // obsolete
+    case BTA_EthCommandReadIntrinsicColor:              // obsolete
+    case BTA_EthCommandReadIntrinsicStereo:             // obsolete
+    case BTA_EthCommandKeepAliveMsg:                    // 254
         payloadLen = 0;
         break;
     default:
@@ -1248,6 +928,7 @@ BTA_Status BTAtoByteStream(BTA_EthCommand cmd, BTA_EthSubCommand subCmd, uint32_
         }
     }
     else {
+        // BUG!! Above is stated that only zeros should be written!
         (*result)[resultIndex++] = 4;
         for (i = 0; i < 4; i++) {
             (*result)[resultIndex++] = 0;
@@ -1256,10 +937,11 @@ BTA_Status BTAtoByteStream(BTA_EthCommand cmd, BTA_EthSubCommand subCmd, uint32_
     (*result)[resultIndex++] = (uint8_t)(callbackPort >> 8);
     (*result)[resultIndex++] = (uint8_t)callbackPort;
 
-    if ((cmd == BTA_EthCommandFlashApplication || cmd == BTA_EthCommandFlashBootloader || cmd == BTA_EthCommandFlashGeneric ||
+    if (cmd == BTA_EthCommandFlashApplication || cmd == BTA_EthCommandFlashBootloader || cmd == BTA_EthCommandFlashGeneric ||
         cmd == BTA_EthCommandFlashLensCalib || cmd == BTA_EthCommandFlashFactoryConfig || cmd == BTA_EthCommandFlashPredefinedConfig || cmd == BTA_EthCommandFlashWigglingCalib ||
-        cmd == BTA_EthCommandFlashIntrinsicTof || cmd == BTA_EthCommandFlashIntrinsicColor || cmd == BTA_EthCommandFlashIntrinsicStereo ||
-        cmd == BTA_EthCommandFlashAmpCompensation || cmd == BTA_EthCommandFlashGeometricModelParameters || cmd == BTA_EthCommandFlashOverlayCalibration)) {
+        cmd == BTA_EthCommandFlashIntrinsicTof || cmd == BTA_EthCommandFlashIntrinsicColor || cmd == BTA_EthCommandFlashIntrinsicStereo || cmd == BTA_EthCommandFlashAmpCompensation ||     // obsolete
+        cmd == BTA_EthCommandFlashGeometricModelParameters || cmd == BTA_EthCommandFlashOverlayCalibration ||
+        cmd == BTA_EthCommandFlashFPN || cmd == BTA_EthCommandFlashFPPN || cmd == BTA_EthCommandFlashDeadPixelList || cmd == BTA_EthCommandFlashXml) {
         // file transfer special
         (*result)[resultIndex++] = (uint8_t)(packetNumber >> 24);
         (*result)[resultIndex++] = (uint8_t)(packetNumber >> 16);
@@ -1306,60 +988,66 @@ BTA_Status BTAtoByteStream(BTA_EthCommand cmd, BTA_EthSubCommand subCmd, uint32_
 }
 
 
-BTA_Status BTAparseControlHeader(uint8_t *request, uint8_t *data, uint32_t *payloadLength, uint32_t *flags, uint32_t *dataCrc32, BTA_InfoEventInst *infoEventInst) {
-    if (!request || !data || !payloadLength || !flags || !dataCrc32) {
+BTA_Status BTAparseControlHeader(uint8_t *request, uint8_t *data, uint32_t *payloadLength, uint32_t *flags, uint32_t *dataCrc32, uint8_t *parseError, BTA_InfoEventInst *infoEventInst) {
+    if (!request || !data || !payloadLength || !flags ||!parseError || !dataCrc32) {
         BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusInvalidParameter, "BTAparseControlHeader: Parameters missing");
         return BTA_StatusInvalidParameter;
     }
+    *parseError = 0;
     if (data[0] != request[0] || data[1] != request[1]) {     //preamble
-        BTAinfoEventHelperIIII(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "Eth: parseControlHeader: Preamble is 0x%x%x. Expected 0x%x%x", data[1], data[0], request[1], request[0]);
+        BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "Eth: parseControlHeader: Preamble is 0x%x%x. Expected 0x%x%x", data[1], data[0], request[1], request[0]);
+        *parseError = 1;
         return BTA_StatusRuntimeError;
     }
     if (data[2] != request[2]) {        //version
-        BTAinfoEventHelperII(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "Eth: parseControlHeader: Version is %d. Expected %d", data[2], request[2]);
+        BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "Eth: parseControlHeader: Version is %d. Expected %d", data[2], request[2]);
+        *parseError = 1;
         return BTA_StatusRuntimeError;
     }
     if (data[3] != request[3]) {       //cmd
-        BTAinfoEventHelperII(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "Eth: parseControlHeader: Cmd is %d. Expected %d", data[3], request[3]);
+        BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "Eth: parseControlHeader: Cmd is %d. Expected %d", data[3], request[3]);
+        *parseError = 1;
         return BTA_StatusRuntimeError;
     }
     if (data[4] != request[4]) {       //sub cmd
-        BTAinfoEventHelperII(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "Eth: parseControlHeader: SubCmd is %d. Expected %d", data[4], request[4]);
+        BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "Eth: parseControlHeader: SubCmd is %d. Expected %d", data[4], request[4]);
+        *parseError = 1;
         return BTA_StatusRuntimeError;
     }
     if (data[12] != request[12] || data[13] != request[13] || data[14] != request[14] || data[15] != request[15]) {     //header data
-        BTAinfoEventHelperIIIIIIII(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "Eth: parseControlHeader: Data is 0x%x%x%x%x. Expected 0x%x%x%x%x", data[15], data[14], data[13], data[12], request[15], request[14], request[13], request[12]);
+        *parseError = 1;
+        BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "Eth: parseControlHeader: Data is 0x%x%x%x%x. Expected 0x%x%x%x%x", data[15], data[14], data[13], data[12], request[15], request[14], request[13], request[12]);
         return BTA_StatusRuntimeError;
     }
     if (data[5] != 0) {
         switch (data[5]) {
         case 0x0f: //ERR_TCI_ILLEGAL_REG_WRITE
         case 0x10: //ERR_TCI_ILLEGAL_REG_READ
-            BTAinfoEventHelperI(infoEventInst, VERBOSE_ERROR, BTA_StatusIllegalOperation, "Device response: %d: Illegal read/write", data[5]);
+            BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusIllegalOperation, "Device response: %d: Illegal read/write", data[5]);
             return BTA_StatusIllegalOperation;
         case 0x11: //ERR_TCI_REGISTER_END_REACHED
-            BTAinfoEventHelperI(infoEventInst, VERBOSE_ERROR, BTA_StatusInvalidParameter, "Device response: %d: Register end reached", data[5]);
+            BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusInvalidParameter, "Device response: %d: Register end reached", data[5]);
             return BTA_StatusInvalidParameter;
         case 0xfa: //CIT_STATUS_LENGTH_EXCEEDS_MAX
-            BTAinfoEventHelperI(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "Device response: %d: Length exceeds max", data[5]);
+            BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "Device response: %d: Length exceeds max", data[5]);
             return BTA_StatusRuntimeError;
         case 0xfb: //CIT_STATUS_HEADER_CRC_ERR
-            BTAinfoEventHelperI(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "Device response: %d: header crc error", data[5]);
+            BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "Device response: %d: header crc error", data[5]);
             return BTA_StatusRuntimeError;
         case 0xfc: //CIT_STATUS_DATA_CRC_ERR
-            BTAinfoEventHelperI(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "Device response: %d: Data crc error", data[5]);
+            BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "Device response: %d: Data crc error", data[5]);
             return BTA_StatusRuntimeError;
         case 0xfd: //CIT_STATUS_INVALID_LENGTH_EQ0
-            BTAinfoEventHelperI(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "Device response: %d: Invalid length equal 0", data[5]);
+            BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "Device response: %d: Invalid length equal 0", data[5]);
             return BTA_StatusRuntimeError;
         case 0xfe: //CIT_STATUS_INVALID_LENGTH_GT0
-            BTAinfoEventHelperI(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "Device response: %d: Invalid length greater than 0", data[5]);
+            BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "Device response: %d: Invalid length greater than 0", data[5]);
             return BTA_StatusRuntimeError;
         case 0xff: //CIT_STATUS_UNKNOWN_COMMAND
-            BTAinfoEventHelperI(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "Device response: %d: unknown command", data[5]);
+            BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "Device response: %d: unknown command", data[5]);
             return BTA_StatusRuntimeError;
         default:
-            BTAinfoEventHelperI(infoEventInst, VERBOSE_ERROR, BTA_StatusUnknown, "Device response: %d: Unrecognized error", data[5]);
+            BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusUnknown, "Device response: %d: Unrecognized error", data[5]);
             return BTA_StatusUnknown;
         }
     }
@@ -1370,7 +1058,7 @@ BTA_Status BTAparseControlHeader(uint8_t *request, uint8_t *data, uint32_t *payl
     }
     uint16_t headerCrc16 = crc16_ccitt(data + 2, BTA_ETH_HEADER_SIZE - 4);
     if (headerCrc16 != (((uint16_t)data[0x3e] << 8) | (uint16_t)data[0x3f]) /*|| headerCrc16 == 0xffff  ???*/) {
-        BTAinfoEventHelperI(infoEventInst, VERBOSE_ERROR, BTA_StatusCrcError, "Control header: The header CRC check failed %d", data[5]);
+        BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusCrcError, "Control header: The header CRC check failed %d", data[5]);
         return BTA_StatusCrcError;
     }
     return BTA_StatusOk;
@@ -1415,11 +1103,11 @@ static void setMissingAsInvalid(BTA_ChannelId channelId, BTA_DataFormat dataForm
         else if (blockStart >= channelDataStart && blockStart <= channelDataEnd) {
             // The missing block starts inside this channel's data
             start = blockStart;
-            length = BTAmin(blockLength, channelDataLength - (int)(blockStart - channelDataStart));
+            length = MTHmin(blockLength, channelDataLength - (int)(blockStart - channelDataStart));
         }
         else if (blockEnd >= channelDataStart && blockEnd <= channelDataEnd) {
             // The missing block ends inside this channel's data
-            start = BTAmax(blockStart, channelDataStart);
+            start = MTHmax(blockStart, channelDataStart);
             length = blockLength - (int)(start - blockStart);
         }
         if (length) {
@@ -1447,7 +1135,8 @@ static void setMissingAsInvalid(BTA_ChannelId channelId, BTA_DataFormat dataForm
                     case BTA_ChannelIdDistance:
                     case BTA_ChannelIdX:
                     case BTA_ChannelIdY:
-                    case BTA_ChannelIdZ: {
+                    case BTA_ChannelIdZ:
+                    case BTA_ChannelIdHeightMap: {
                         int16_t *ptr = (int16_t *)start;
                         for (int i = 0; i < length; i += 2) {
                             *ptr++ = INT16_MIN;
@@ -1592,8 +1281,9 @@ static void setMissingAsInvalid(BTA_ChannelId channelId, BTA_DataFormat dataForm
 
 BTA_Status BTAparseFrame(BTA_WrapperInst *winst, BTA_FrameToParse *frameToParse, BTA_Frame **framePtr) {
     uint64_t timeParseFrame = BTAgetTickCountNano() / 1000;
-    assert(winst);
-    assert(frameToParse);
+
+    winst->lpDataStreamPacketsReceivedCount += frameToParse->packetCountGot;
+    winst->lpDataStreamPacketsMissedCount += frameToParse->packetCountTotal - frameToParse->packetCountGot;
 
     frameToParse->timestamp = 0;
 
@@ -1601,11 +1291,11 @@ BTA_Status BTAparseFrame(BTA_WrapperInst *winst, BTA_FrameToParse *frameToParse,
     uint32_t dataLen = frameToParse->frameLen;
     *framePtr = 0;
     if (dataLen < 64) {
-        BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusOutOfMemory, "Parsing frame: data too short: %d", dataLen);
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusOutOfMemory, "Parsing frame: data too short: %d", dataLen);
         return BTA_StatusOutOfMemory;
     }
     if (frameToParse->packetCountGot > 0 && (!frameToParse->packetSize[0] || frameToParse->packetSize[0] == UINT16_MAX)) {
-        BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusInvalidData, "Parsing frame %d: First packet is missing, abort", frameToParse->frameCounter);
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WARNING, BTA_StatusInvalidData, "Parsing frame %d: First packet is missing, abort", frameToParse->frameCounter);
         return BTA_StatusInvalidData;
     }
     BTA_Frame *frame = (BTA_Frame *)malloc(sizeof(BTA_Frame));
@@ -1621,11 +1311,22 @@ BTA_Status BTAparseFrame(BTA_WrapperInst *winst, BTA_FrameToParse *frameToParse,
     switch (protocolVersion) {
 
     case 3: {
+        if (frameToParse->packetCountGot < frameToParse->packetCountTotal) {
+            // hack for TimIrs firmware that supports udp protocol v2 but old v3 frame protocol
+            // don't parse incomplete frames!
+            // TODO:
+            //if (winst->lpAllowIncompleteFrames > 0) {
+            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WARNING, BTA_StatusInvalidData, "Parsing frame v3 %d: %d packet(s) missing, abort", frameToParse->frameCounter, frameToParse->packetCountTotal - frameToParse->packetCountGot);
+            free(frame);
+            frame = 0;
+            return BTA_StatusInvalidData;
+        }
+
         uint16_t crc16 = (uint16_t)((data[62] << 8) | data[63]);
         if (crc16 != crc16_ccitt(data + 2, 60)) {
             free(frame);
             frame = 0;
-            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusCrcError, "Parsing frame: CRC check failed");
+            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusCrcError, "Parsing frame v3: CRC check failed");
             return BTA_StatusCrcError;
         }
 
@@ -1643,10 +1344,10 @@ BTA_Status BTAparseFrame(BTA_WrapperInst *winst, BTA_FrameToParse *frameToParse,
         i += 2;
 
         // count frame counter gaps
-        if (frame->frameCounter != (uint32_t)(frameCounterLast + 1) && timeStampLast != 0) {
+        if (frame->frameCounter > (uint32_t)(winst->frameCounterLast + winst->lpDataStreamFrameCounterGap) && winst->timeStampLast != 0) {
             winst->lpDataStreamFrameCounterGapsCount++;
         }
-        frameCounterLast = frame->frameCounter;
+        winst->frameCounterLast = frame->frameCounter;
 
         // only relevant for imgMode == BTA_EthImgModeRawPhases || imgMode == BTA_EthImgModeRawQI
         uint8_t preMetaData = data[i++];
@@ -1727,7 +1428,7 @@ BTA_Status BTAparseFrame(BTA_WrapperInst *winst, BTA_FrameToParse *frameToParse,
         frame->channels = (BTA_Channel **)malloc(frame->channelsLen * sizeof(BTA_Channel *));
         if (!frame->channels) {
             BTAfreeFrame(&frame);
-            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusOutOfMemory, "Parsing frame: Could not allocate b");
+            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusOutOfMemory, "Parsing frame v3: Could not allocate b");
             return BTA_StatusOutOfMemory;
         }
         for (uint8_t chInd = 0; chInd < frame->channelsLen; chInd++) {
@@ -1743,7 +1444,7 @@ BTA_Status BTAparseFrame(BTA_WrapperInst *winst, BTA_FrameToParse *frameToParse,
                 // free channels created so far
                 frame->channelsLen = chInd;
                 BTAfreeFrame(&frame);
-                BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusOutOfMemory, "Parsing frame: Could not allocate c");
+                BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusOutOfMemory, "Parsing frame v3: Could not allocate c");
                 return BTA_StatusOutOfMemory;
             }
             channel->id = BTAETHgetChannelId(imgMode, chInd);
@@ -1763,11 +1464,7 @@ BTA_Status BTAparseFrame(BTA_WrapperInst *winst, BTA_FrameToParse *frameToParse,
 
             // Calculate dataLen and channelDataInputLen
             uint32_t channelDataInputLen;
-#           ifndef WO_LIBJPEG
-                uint8_t jpgDecodingEnabled = winst->jpgInst && winst->jpgInst->enabled;
-#           else
-                uint8_t jpgDecodingEnabled = 0;
-#           endif
+            uint8_t jpgDecodingEnabled = winst->jpgInst && winst->jpgInst->enabled;
             if (channel->dataFormat == BTA_DataFormatJpeg) {
                 if (!jpgDecodingEnabled) {
                     channel->dataLen = lengthColorChannel;
@@ -1817,7 +1514,7 @@ BTA_Status BTAparseFrame(BTA_WrapperInst *winst, BTA_FrameToParse *frameToParse,
                 // free channels created so far
                 frame->channelsLen = chInd;
                 BTAfreeFrame(&frame);
-                BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusOutOfMemory, "Parsing frame: Could not allocate d");
+                BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusOutOfMemory, "Parsing frame v3: Could not allocate d");
                 return BTA_StatusOutOfMemory;
             }
 
@@ -1829,7 +1526,7 @@ BTA_Status BTAparseFrame(BTA_WrapperInst *winst, BTA_FrameToParse *frameToParse,
                     // free channels created so far
                     frame->channelsLen = chInd;
                     BTAfreeFrame(&frame);
-                    BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusOutOfMemory, "Parsing frame: data too short %d", dataLen);
+                    BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusOutOfMemory, "Parsing frame v3: data too short %d", dataLen);
                     return BTA_StatusOutOfMemory;
                 }
 
@@ -1856,19 +1553,15 @@ BTA_Status BTAparseFrame(BTA_WrapperInst *winst, BTA_FrameToParse *frameToParse,
                     }
                 }
                 else if (channel->dataFormat == BTA_DataFormatJpeg) {
-                    //uint32_t millisStart = BTAgetTickCount();
                     BTA_Status status = BTA_StatusNotSupported;
-#                   ifndef WO_LIBJPEG
                     if (jpgDecodingEnabled) {
                         status = BTAdecodeJpgToRgb24(winst, data + i, channelDataInputLen, channel->data, channel->dataLen);
                     }
-#                   endif
                     if (status == BTA_StatusOk) {
                         channel->dataFormat = BTA_DataFormatRgb24;
                     }
                     else {
                         free(channel->data);
-                        channel->data = 0;
                         channel->data = (uint8_t *)malloc(channelDataInputLen);
                         if (!channel->data) {
                             free(channel);
@@ -1876,13 +1569,13 @@ BTA_Status BTAparseFrame(BTA_WrapperInst *winst, BTA_FrameToParse *frameToParse,
                             // free channels created so far
                             frame->channelsLen = chInd;
                             BTAfreeFrame(&frame);
-                            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusOutOfMemory, "Parsing frame: Could not allocate e");
+                            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusOutOfMemory, "Parsing frame v3: Could not allocate e");
                             return BTA_StatusOutOfMemory;
                         }
                         memcpy(channel->data, data + i, channelDataInputLen);
                     }
                 }
-                else if (channel->dataFormat == BTA_DataFormatUInt16Mlx12S) {
+                else if (channel->dataFormat == BTA_DataFormatSInt16Mlx12S) {
                     int16_t *channelDataTempSrc = (int16_t *)(data + i);
                     int16_t *channelDataTempDst = (int16_t *)channel->data;
                     for (int32_t j = 0; j < channel->xRes * channel->yRes; j++) {
@@ -1894,7 +1587,7 @@ BTA_Status BTAparseFrame(BTA_WrapperInst *winst, BTA_FrameToParse *frameToParse,
                 else if (channel->dataFormat == BTA_DataFormatUInt16Mlx12U) {
                     memcpy(channel->data, data + i, channel->dataLen);
                 }
-                else if (channel->dataFormat == BTA_DataFormatUInt16Mlx1C11S) {
+                else if (channel->dataFormat == BTA_DataFormatSInt16Mlx1C11S) {
                     int16_t *channelDataTempSrc = (int16_t *)(data + i);
                     int16_t *channelDataTempDst = (int16_t *)channel->data;
                     for (int32_t j = 0; j < channel->xRes * channel->yRes; j++) {
@@ -1946,6 +1639,8 @@ BTA_Status BTAparseFrame(BTA_WrapperInst *winst, BTA_FrameToParse *frameToParse,
                 }
             }
         }
+        frame->metadataLen = 0;
+        frame->metadata = 0;
 
         if (winst->lpTestPatternEnabled) {
             BTAinsertTestPattern(frame, winst->lpTestPatternEnabled);
@@ -1966,75 +1661,104 @@ BTA_Status BTAparseFrame(BTA_WrapperInst *winst, BTA_FrameToParse *frameToParse,
             frame->channels[3] = channelTemp;
         }
         if (i != dataLen) {
-            BTAinfoEventHelperII(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "Parsing frame: Unexpected payload length, i: %d  dataLen: %d", i, dataLen);
+            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "Parsing frame v3: Unexpected payload length, i: %d  dataLen: %d", i, dataLen);
         }
         *framePtr = frame;
 
         uint64_t durParseFrame = BTAgetTickCountNano() / 1000 - timeParseFrame;
-        winst->lpDataStreamParseFrameDuration = (float)BTAmax(durParseFrame, (uint64_t)winst->lpDataStreamParseFrameDuration);
+        winst->lpDataStreamParseFrameDuration = (float)MTHmax(durParseFrame, (uint64_t)winst->lpDataStreamParseFrameDuration);
+
+        BVQenqueue(winst->lpDataStreamFramesParsedPerSecFrametimes, (void *)(size_t)(frame->timeStamp - winst->timeStampLast));
+        winst->timeStampLast = frame->timeStamp;
+        winst->lpDataStreamFramesParsedPerSecUpdated = BTAgetTickCount();
+        winst->lpDataStreamFramesParsedCount++;
 
         return BTA_StatusOk;
     }
 
-	case 4: {
+    case 4: {
+        if (frameToParse->packetCountGot < frameToParse->packetCountTotal && winst->lpAllowIncompleteFrames < 1) {
+            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WARNING, BTA_StatusInvalidData, "Parsing frame v4 %d: A packet is missing, abort", frameToParse->frameCounter);
+            free(frame);
+            frame = 0;
+            return BTA_StatusInvalidData;
+        }
+
         uint8_t *dataHeader = data + 4;
         uint16_t headerLength = *((uint16_t *)dataHeader);
         dataHeader += 2;
         if (dataLen < headerLength) {
             free(frame);  // no channels created so far, so only free this one memory
             frame = 0;
-            BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusOutOfMemory, "Parsing header v4: data too short: %d", dataLen);
+            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusOutOfMemory, "Parsing header v4: data too short! dataLen %d, headerLen %d", dataLen, headerLength);
             return BTA_StatusOutOfMemory;
         }
         uint16_t crc16 = *((uint16_t *)(data + headerLength - 2));
         if (crc16 != crc16_ccitt(data + 2, headerLength - 4)) {
             free(frame);  // no channels created so far, so only free this one memory
             frame = 0;
-            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusCrcError, "Parsing frame v4: CRC check failed");
+            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusCrcError, "Parsing frame v4: CRC check failed! read 0x%x, calculated 0x%x", crc16, crc16_ccitt(data + 2, headerLength - 4));
             return BTA_StatusCrcError;
         }
         uint8_t *dataStream = data + headerLength;
 
         // Count and check descriptors
         uint8_t infoValid = 0;
+        uint8_t aliveMsg = 0;
         uint8_t channelCount = 0;
+        uint8_t metadataCount = 0;
         uint8_t *dataHeaderTemp = dataHeader;
         while (1) {
             BTA_Data4DescBase *data4DescBase = (BTA_Data4DescBase *)dataHeaderTemp;
             switch (data4DescBase->descriptorType) {
-                case 1:  // FrameInfoV1
-                    infoValid = 1;
-                    dataHeaderTemp += data4DescBase->descriptorLen;
-                    break;
-                case 2:  // TofV1
-                case 3:  // TofWithMetadataV1
-                case 4:  // ColorV1
-                    channelCount++;
-                    dataHeaderTemp += data4DescBase->descriptorLen;
-                    break;
-                case 0xfffe:  // EOF
-                    break;
-                default:
-                    free(frame);  // no channels created so far, so only free this one memory
-                    frame = 0;
-                    BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusInvalidVersion, "Parsing frame v4: Descriptor %d not supported", data4DescBase->descriptorType);
-                    return BTA_StatusInvalidVersion;
+            case btaData4DescriptorTypeFrameInfoV1:
+                infoValid = 1;
+                dataHeaderTemp += data4DescBase->descriptorLen;
+                break;
+            case btaData4DescriptorTypeTofV1:
+            case btaData4DescriptorTypeTofWithMetadataV1:
+            case btaData4DescriptorTypeColorV1:
+                channelCount++;
+                dataHeaderTemp += data4DescBase->descriptorLen;
+                break;
+            case btaData4DescriptorTypeAliveMsgV1:
+                aliveMsg++;
+                dataHeaderTemp += data4DescBase->descriptorLen;
+                break;
+            case btaData4DescriptorTypeMetadataV1:
+                metadataCount++;
+                dataHeaderTemp += data4DescBase->descriptorLen;
+                break;
+            case btaData4DescriptorTypeEof:
+                break;
+            default:
+                free(frame);  // no channels created so far, so only free this one memory
+                frame = 0;
+                BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusInvalidVersion, "Parsing frame v4: Descriptor %d not supported", data4DescBase->descriptorType);
+                return BTA_StatusInvalidVersion;
             }
-            if (data4DescBase->descriptorType == 0xfffe) {
+            if (data4DescBase->descriptorType == btaData4DescriptorTypeEof) {
                 dataHeaderTemp += 2;
                 break;
             }
         }
         dataHeaderTemp += 2; // crc16
         if (dataHeaderTemp - data != headerLength) {
-            BTAinfoEventHelperII(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusInvalidData, "Parsing header v4: Unexpected header length: i: %d  headerLen: %d", (int)(dataHeaderTemp - data), headerLength);
+            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusInvalidData, "Parsing header v4: Unexpected header length: i: %d  headerLen: %d", (int)(dataHeaderTemp - data), headerLength);
+        }
+
+        if (!infoValid && aliveMsg && !channelCount && !metadataCount) {
+            // alive message
+            free(frame);
+            frame = 0;
+            return BTA_StatusOk;
         }
 
         if (!infoValid) {
             memset(frame, 0, sizeof(BTA_Frame));
         }
         if (channelCount) {
-            frame->channels = (BTA_Channel **)malloc(channelCount * sizeof(BTA_Channel *));
+            frame->channels = (BTA_Channel **)calloc(channelCount, sizeof(BTA_Channel *));
             if (!frame->channels) {
                 free(frame);  // no channels created so far, so only free this one memory
                 frame = 0;
@@ -2047,125 +1771,178 @@ BTA_Status BTAparseFrame(BTA_WrapperInst *winst, BTA_FrameToParse *frameToParse,
             frame->channels = 0;
             frame->channelsLen = 0;
         }
+        if (metadataCount) {
+            frame->metadata = (BTA_Metadata **)calloc(metadataCount, sizeof(BTA_Metadata *));
+            if (!frame->metadata) {
+                BTAfreeFrame(&frame);
+                BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusOutOfMemory, "Parsing frame v4: Could not allocate c");
+                return BTA_StatusOutOfMemory;
+            }
+            frame->metadataLen = metadataCount;
+        }
+        else {
+            frame->metadata = 0;
+            frame->metadataLen = 0;
+        }
 
         // Parse descriptors
         int chInd = 0;
-#       ifndef WO_LIBJPEG
-            uint8_t jpgDecodingEnabled = winst->jpgInst && winst->jpgInst->enabled;
-#       else
-            uint8_t jpgDecodingEnabled = 0;
-#       endif
+        int mdInd = 0;
+        uint8_t jpgDecodingEnabled = winst->jpgInst && winst->jpgInst->enabled;
         while (1) {
             BTA_Data4DescBase *data4DescBase = (BTA_Data4DescBase *)dataHeader;
             dataHeader += data4DescBase->descriptorLen;
             switch (data4DescBase->descriptorType) {
-                case 1: {  // FrameInfoV1
-                    BTA_Data4DescFrameInfoV1 *data4DescFrameInfoV1 = (BTA_Data4DescFrameInfoV1 *)data4DescBase;
-                    frame->frameCounter = data4DescFrameInfoV1->frameCounter;
-                    frame->timeStamp = data4DescFrameInfoV1->timestamp;
-                    frame->mainTemp = data4DescFrameInfoV1->mainTemp / 100.0f;
-                    frame->ledTemp = data4DescFrameInfoV1->ledTemp / 100.0f;
-                    frame->genericTemp = data4DescFrameInfoV1->genericTemp / 100.0f;
-                    frame->firmwareVersionMajor = data4DescFrameInfoV1->firmwareVersion >> 11;
-                    frame->firmwareVersionMinor = (data4DescFrameInfoV1->firmwareVersion >> 6) & 0x1f;
-                    frame->firmwareVersionNonFunc = data4DescFrameInfoV1->firmwareVersion & 0x3f;
+            case btaData4DescriptorTypeFrameInfoV1: {
+                BTA_Data4DescFrameInfoV1 *data4DescFrameInfoV1 = (BTA_Data4DescFrameInfoV1 *)data4DescBase;
+                frame->frameCounter = data4DescFrameInfoV1->frameCounter;
+                frame->timeStamp = data4DescFrameInfoV1->timestamp;
+                frame->mainTemp = ((int16_t)data4DescFrameInfoV1->mainTemp) / 100.0f;
+                frame->ledTemp = ((int16_t)data4DescFrameInfoV1->ledTemp) / 100.0f;
+                frame->genericTemp = ((int16_t)data4DescFrameInfoV1->genericTemp) / 100.0f;
+                frame->firmwareVersionMajor = data4DescFrameInfoV1->firmwareVersion >> 11;
+                frame->firmwareVersionMinor = (data4DescFrameInfoV1->firmwareVersion >> 6) & 0x1f;
+                frame->firmwareVersionNonFunc = data4DescFrameInfoV1->firmwareVersion & 0x3f;
 
-                    // count frame counter gaps
-                    if (frame->frameCounter != (uint32_t)(frameCounterLast + 1) && timeStampLast != 0) {
-                        winst->lpDataStreamFrameCounterGapsCount++;
-                    }
-                    frameCounterLast = frame->frameCounter;
-                    break;
+                // count frame counter gaps
+                if (frame->frameCounter != (uint32_t)(winst->frameCounterLast + 1) && winst->timeStampLast != 0) {
+                    winst->lpDataStreamFrameCounterGapsCount++;
                 }
-                case 2: {  // TofV1
-                    BTA_Data4DescTofV1 *data4DescTofV1 = (BTA_Data4DescTofV1 *)data4DescBase;
-                    BTA_Channel *channel = (BTA_Channel *)malloc(sizeof(BTA_Channel));
-                    if (!channel) {
-                        // free channels created so far
-                        frame->channelsLen = chInd;
-                        BTAfreeFrame(&frame);
-                        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusOutOfMemory, "Parsing frame v4 TofV1: Could not allocate channel");
-                        return BTA_StatusOutOfMemory;
-                    }
-                    frame->channels[chInd] = channel;
-                    channel->lensIndex = data4DescTofV1->lensIndex;
-                    channel->flags = data4DescTofV1->flags;
-                    channel->unit = (BTA_Unit)data4DescTofV1->unit;
-                    channel->sequenceCounter = data4DescTofV1->sequenceCounter;
-                    channel->integrationTime = data4DescTofV1->integrationTime;
-                    channel->modulationFrequency = data4DescTofV1->modulationFrequency * 10000;
-                    channel->gain = 0;
-                    channel->metadata = 0;
-                    channel->metadataLen = 0;
-                    if (dataStream + data4DescTofV1->dataLen > data + dataLen) {
-                        // free channels created so far
-                        frame->channelsLen = chInd;
-                        BTAfreeFrame(&frame);
-                        BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusOutOfMemory, "Parsing frame v4: data too short: %d", dataLen);
-                        return BTA_StatusOutOfMemory;
-                    }
-                    if (!winst->lpTestPatternEnabled) {
-                        setMissingAsInvalid((BTA_ChannelId)data4DescTofV1->channelId, (BTA_DataFormat)data4DescTofV1->dataFormat, dataStream, data4DescTofV1->dataLen, frameToParse);
-                        insertChannelData(winst, (BTA_ChannelId)data4DescTofV1->channelId, (BTA_DataFormat)data4DescTofV1->dataFormat, dataStream,
-                                          data4DescTofV1->width, data4DescTofV1->height, data4DescTofV1->dataLen, 0, channel);
-                    }
-                    else {
-                        channel->data = 0;
-                        channel->dataLen = 0;
-                    }
-                    dataStream += data4DescTofV1->dataLen;
-                    chInd++;
-                    break;
-                }
-                case 4: {  // ColorV1
-                    BTA_Data4DescColorV1 *data4DescColorV1 = (BTA_Data4DescColorV1 *)data4DescBase;
-                    BTA_Channel *channel = (BTA_Channel *)malloc(sizeof(BTA_Channel));
-                    if (!channel) {
-                        // free channels created so far
-                        frame->channelsLen = chInd;
-                        BTAfreeFrame(&frame);
-                        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusOutOfMemory, "Parsing frame v4 ColorV1: Could not allocate channel");
-                        return BTA_StatusOutOfMemory;
-                    }
-                    frame->channels[chInd] = channel;
-                    channel->lensIndex = data4DescColorV1->lensIndex;
-                    channel->flags = data4DescColorV1->flags;
-                    channel->unit = BTA_UnitUnitLess;
-                    channel->sequenceCounter = 0;
-                    channel->integrationTime = data4DescColorV1->integrationTime;
-                    channel->modulationFrequency = 0;
-                    channel->gain = data4DescColorV1->gain;
-                    channel->metadata = 0;
-                    channel->metadataLen = 0;
-                    if (dataStream + data4DescColorV1->dataLen > data + dataLen) {
-                        // free channels created so far
-                        frame->channelsLen = chInd;
-                        BTAfreeFrame(&frame);
-                        BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusOutOfMemory, "Parsing frame v4: data too short: %d", dataLen);
-                        return BTA_StatusOutOfMemory;
-                    }
-                    if (!winst->lpTestPatternEnabled) {
-                        setMissingAsInvalid(BTA_ChannelIdColor, (BTA_DataFormat)data4DescColorV1->colorFormat, dataStream, data4DescColorV1->dataLen, frameToParse);
-                        insertChannelData(winst, BTA_ChannelIdColor, (BTA_DataFormat)data4DescColorV1->colorFormat, dataStream,
-                                          data4DescColorV1->width, data4DescColorV1->height, data4DescColorV1->dataLen, jpgDecodingEnabled, channel);
-                    }
-                    else {
-                        channel->data = 0;
-                        channel->dataLen = 0;
-                    }
-                    dataStream += data4DescColorV1->dataLen;
-                    chInd++;
-                    break;
-                }
-                case 0xfffe:
-                    break;
-
-                default:
-                    // unreachable because the descriptor was checked before
-                    assert(0);
-                    return BTA_StatusIllegalOperation;
+                winst->frameCounterLast = frame->frameCounter;
+                break;
             }
-            if (data4DescBase->descriptorType == 0xfffe) {
+            case btaData4DescriptorTypeTofV1: {
+                BTA_Data4DescTofV1 *data4DescTofV1 = (BTA_Data4DescTofV1 *)data4DescBase;
+                BTA_Channel *channel = (BTA_Channel *)malloc(sizeof(BTA_Channel));
+                if (!channel) {
+                    // free channels created so far
+                    frame->channelsLen = chInd;
+                    BTAfreeFrame(&frame);
+                    BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusOutOfMemory, "Parsing frame v4 TofV1: Could not allocate channel");
+                    return BTA_StatusOutOfMemory;
+                }
+                frame->channels[chInd] = channel;
+                channel->id = (BTA_ChannelId)data4DescTofV1->channelId;
+                channel->xRes = data4DescTofV1->width;
+                channel->yRes = data4DescTofV1->height;
+                channel->dataFormat = (BTA_DataFormat)data4DescTofV1->dataFormat;
+                channel->unit = (BTA_Unit)data4DescTofV1->unit;
+                channel->integrationTime = data4DescTofV1->integrationTime;
+                channel->modulationFrequency = data4DescTofV1->modulationFrequency * 10000;
+                channel->metadata = 0;
+                channel->metadataLen = 0;
+                channel->lensIndex = data4DescTofV1->lensIndex;
+                channel->flags = data4DescTofV1->flags;
+                channel->sequenceCounter = data4DescTofV1->sequenceCounter;
+                channel->gain = 0;
+                if (dataStream + data4DescTofV1->dataLen > data + dataLen) {
+                    // free channels created so far
+                    frame->channelsLen = chInd;
+                    BTAfreeFrame(&frame);
+                    BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusOutOfMemory, "Parsing frame v4: data too short: %d", dataLen);
+                    return BTA_StatusOutOfMemory;
+                }
+                if (!winst->lpTestPatternEnabled) {
+                    setMissingAsInvalid((BTA_ChannelId)data4DescTofV1->channelId, (BTA_DataFormat)data4DescTofV1->dataFormat, dataStream, data4DescTofV1->dataLen, frameToParse);
+                    insertChannelData(winst, channel, dataStream, data4DescTofV1->dataLen, 0);
+                }
+                else {
+                    channel->data = 0;
+                    channel->dataLen = 0;
+                }
+                dataStream += data4DescTofV1->dataLen;
+                chInd++;
+                break;
+            }
+            case btaData4DescriptorTypeColorV1: {
+                BTA_Data4DescColorV1 *data4DescColorV1 = (BTA_Data4DescColorV1 *)data4DescBase;
+                BTA_Channel *channel = (BTA_Channel *)malloc(sizeof(BTA_Channel));
+                if (!channel) {
+                    // free channels created so far
+                    frame->channelsLen = chInd;
+                    BTAfreeFrame(&frame);
+                    BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusOutOfMemory, "Parsing frame v4 ColorV1: Could not allocate channel");
+                    return BTA_StatusOutOfMemory;
+                }
+                frame->channels[chInd] = channel;
+                channel->id = BTA_ChannelIdColor;
+                channel->xRes = data4DescColorV1->width;
+                channel->yRes = data4DescColorV1->height;
+                channel->dataFormat = (BTA_DataFormat)data4DescColorV1->colorFormat;
+                channel->unit = BTA_UnitUnitLess;
+                channel->integrationTime = data4DescColorV1->integrationTime;
+                channel->modulationFrequency = 0;
+                channel->metadata = 0;
+                channel->metadataLen = 0;
+                channel->lensIndex = data4DescColorV1->lensIndex;
+                channel->flags = data4DescColorV1->flags;
+                channel->sequenceCounter = 0;
+                channel->gain = data4DescColorV1->gain;
+                if (dataStream + data4DescColorV1->dataLen > data + dataLen) {
+                    // free channels created so far
+                    frame->channelsLen = chInd;
+                    BTAfreeFrame(&frame);
+                    BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusOutOfMemory, "Parsing frame v4: data too short: %d", dataLen);
+                    return BTA_StatusOutOfMemory;
+                }
+                if (!winst->lpTestPatternEnabled) {
+                    setMissingAsInvalid(BTA_ChannelIdColor, (BTA_DataFormat)data4DescColorV1->colorFormat, dataStream, data4DescColorV1->dataLen, frameToParse);
+                    insertChannelData(winst, channel, dataStream, data4DescColorV1->dataLen, jpgDecodingEnabled);
+                }
+                else {
+                    channel->data = 0;
+                    channel->dataLen = 0;
+                }
+                dataStream += data4DescColorV1->dataLen;
+                chInd++;
+                break;
+            }
+            case btaData4DescriptorTypeAliveMsgV1:
+                //BTA_Data4DescBase *data4DescMsgV1 = (BTA_Data4DescBase *)data4DescBase;
+                // nothing to do
+                break;
+            case btaData4DescriptorTypeMetadataV1: {
+                BTA_Data4DescMetadataV1 *data4DescMetadataV1 = (BTA_Data4DescMetadataV1 *)data4DescBase;
+                BTA_Metadata *metadata = (BTA_Metadata *)malloc(sizeof(BTA_Metadata));
+                if (!metadata) {
+                    // free metadatas created so far
+                    frame->metadataLen = mdInd;
+                    BTAfreeFrame(&frame);
+                    BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusOutOfMemory, "Parsing frame v4 ColorV1: Could not allocate channel");
+                    return BTA_StatusOutOfMemory;
+                }
+                metadata->id = (BTA_MetadataId)data4DescMetadataV1->metadataId;
+                metadata->dataLen = data4DescMetadataV1->dataLen;
+                if (dataStream + metadata->dataLen > data + dataLen) {
+                    // free metadatas created so far
+                    frame->metadataLen = mdInd;
+                    BTAfreeFrame(&frame);
+                    BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusOutOfMemory, "Parsing frame v4: data too short: %d", dataLen);
+                    return BTA_StatusOutOfMemory;
+                }
+                metadata->data = (uint8_t *)malloc(metadata->dataLen);
+                if (!metadata->data) {
+                    free(metadata);
+                    frame->metadataLen = mdInd;
+                    BTAfreeFrame(&frame);
+                    BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusOutOfMemory, "Parsing frame v4: data too short: %d", dataLen);
+                    return BTA_StatusOutOfMemory;
+                }
+                memcpy(metadata->data, dataStream, metadata->dataLen);
+                frame->metadata[mdInd] = metadata;
+                dataStream += data4DescMetadataV1->dataLen;
+                mdInd++;
+                break;
+            }
+            case btaData4DescriptorTypeEof:
+                break;
+
+            default:
+                // unreachable because the descriptor was checked before
+                assert(0);
+                return BTA_StatusIllegalOperation;
+            }
+            if (data4DescBase->descriptorType == btaData4DescriptorTypeEof) {
                 frame->sequenceCounter = 0;
                 break;
             }
@@ -2176,20 +1953,25 @@ BTA_Status BTAparseFrame(BTA_WrapperInst *winst, BTA_FrameToParse *frameToParse,
         }
 
         if ((int)(dataStream - data) != (int)dataLen) {
-            BTAinfoEventHelperII(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusWarning, "Parsing frame v4: Unexpected payload length, i: %d  dataLen: %d", (int)(dataStream - data), dataLen);
+            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusWarning, "Parsing frame v4: Unexpected payload length, i: %d  dataLen: %d", (int)(dataStream - data), dataLen);
         }
         *framePtr = frame;
 
         uint64_t durParseFrame = BTAgetTickCountNano() / 1000 - timeParseFrame;
-        winst->lpDataStreamParseFrameDuration = (float)BTAmax(durParseFrame, (uint64_t)winst->lpDataStreamParseFrameDuration);
+        winst->lpDataStreamParseFrameDuration = (float)MTHmax(durParseFrame, (uint64_t)winst->lpDataStreamParseFrameDuration);
+
+        BVQenqueue(winst->lpDataStreamFramesParsedPerSecFrametimes, (void *)(size_t)(frame->timeStamp - winst->timeStampLast));
+        winst->timeStampLast = frame->timeStamp;
+        winst->lpDataStreamFramesParsedPerSecUpdated = BTAgetTickCount();
+        winst->lpDataStreamFramesParsedCount++;
 
         return BTA_StatusOk;
-	}
+    }
 
     default:
         free(frame);
         frame = 0;
-        BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusInvalidVersion, "Parsing frame: Version not supported: %d", protocolVersion);
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusInvalidVersion, "Parsing frame: Version not supported: %d", protocolVersion);
         return BTA_StatusInvalidVersion;
     }
 }
@@ -2198,97 +1980,95 @@ BTA_Status BTAparseFrame(BTA_WrapperInst *winst, BTA_FrameToParse *frameToParse,
 //---------------------------------------------------------------------
 // copy data with special cases (also convert from SentisTofM100 coordinate system to BltTofApi coordinat system)
 // channel->data must already be allocated (considering jpeg and possible decompression)
-static BTA_Status insertChannelData(BTA_WrapperInst *winst, BTA_ChannelId id, BTA_DataFormat dataFormat, uint8_t *data, uint16_t width, uint16_t height, uint32_t dataLen, uint8_t decodingEnabled, BTA_Channel *channel) {
-
-    channel->id = id;
-    channel->dataFormat = dataFormat;
-    channel->xRes = width;
-    channel->yRes = height;
+static void insertChannelData(BTA_WrapperInst *winst, BTA_Channel *channel, uint8_t *data, uint32_t dataLen, uint8_t decodingEnabled) {
     channel->dataLen = dataLen;
-
-    if (id == BTA_ChannelIdX) {
+    if (!(channel->flags & 0x2) && channel->id == BTA_ChannelIdX) {
         channel->id = BTA_ChannelIdZ;
         channel->data = (uint8_t *)malloc(channel->dataLen);
         if (!channel->data) {
-            return BTA_StatusOutOfMemory;
+            channel->dataLen = 0;
+            return;
         }
         memcpy(channel->data, data, channel->dataLen);
     }
-    else if (id == BTA_ChannelIdY) {
+    else if (!(channel->flags & 0x2) && channel->id == BTA_ChannelIdY) {
         channel->id = BTA_ChannelIdX;
         channel->data = (uint8_t *)malloc(channel->dataLen);
         if (!channel->data) {
-            return BTA_StatusOutOfMemory;
+            channel->dataLen = 0;
+            return;
         }
         int16_t *channelDataTempSrc = (int16_t *)data;
         int16_t *channelDataTempDst = (int16_t *)channel->data;
-        int px = dataLen / (dataFormat & 0xf);
+        int px = dataLen / (channel->dataFormat & 0xf);
         for (int32_t j = 0; j < px; j++) {
             *channelDataTempDst++ = -*channelDataTempSrc++;
-        }
+         }
     }
-    else if (id == BTA_ChannelIdZ) {
+    else if (!(channel->flags & 0x2) && channel->id == BTA_ChannelIdZ) {
         channel->id = BTA_ChannelIdY;
         channel->data = (uint8_t *)malloc(channel->dataLen);
         if (!channel->data) {
-            return BTA_StatusOutOfMemory;
+            channel->dataLen = 0;
+            return;
         }
         int16_t *channelDataTempSrc = (int16_t *)data;
         int16_t *channelDataTempDst = (int16_t *)channel->data;
-        int px = dataLen / (dataFormat & 0xf);
+        int px = dataLen / (channel->dataFormat & 0xf);
         for (int32_t j = 0; j < px; j++) {
             *channelDataTempDst++ = -*channelDataTempSrc++;
         }
     }
-    else if (decodingEnabled && dataFormat == BTA_DataFormatJpeg) {
+    else if (decodingEnabled && channel->dataFormat == BTA_DataFormatJpeg) {
         channel->dataFormat = BTA_DataFormatRgb24;
-        channel->dataLen = width * height * 3;
+        channel->dataLen = channel->xRes * channel->yRes * 3;
         channel->data = (uint8_t *)malloc(channel->dataLen);
         if (!channel->data) {
-            return BTA_StatusOutOfMemory;
+            channel->dataLen = 0;
+            return;
         }
-        BTA_Status status = BTA_StatusNotSupported;
-#       ifndef WO_LIBJPEG
-            status = BTAdecodeJpgToRgb24(winst, data, dataLen, channel->data, channel->dataLen);
-#       endif
+        BTA_Status status = BTAdecodeJpgToRgb24(winst, data, dataLen, channel->data, channel->dataLen);
         if (status != BTA_StatusOk) {
             memset(channel->data, 0, channel->dataLen);
         }
     }
-    else if (dataFormat == BTA_DataFormatUInt16Mlx12S) {
+    else if (channel->dataFormat == BTA_DataFormatSInt16Mlx12S) {
         channel->data = (uint8_t *)malloc(channel->dataLen);
         if (!channel->data) {
-            return BTA_StatusOutOfMemory;
+            channel->dataLen = 0;
+            return;
         }
         int16_t *channelDataTempSrc = (int16_t *)data;
         int16_t *channelDataTempDst = (int16_t *)channel->data;
-        int px = dataLen / (dataFormat & 0xf);
+        int px = dataLen / (channel->dataFormat & 0xf);
         for (int32_t j = 0; j < px; j++) {
             *channelDataTempDst++ = (*channelDataTempSrc & 0x0800) ? (*channelDataTempSrc | 0xf800) : *channelDataTempSrc;
             channelDataTempSrc++;
         }
     }
-    else if (dataFormat == BTA_DataFormatUInt16Mlx1C11S) {
+    else if (channel->dataFormat == BTA_DataFormatSInt16Mlx1C11S) {
         channel->data = (uint8_t *)malloc(channel->dataLen);
         if (!channel->data) {
-            return BTA_StatusOutOfMemory;
+            channel->dataLen = 0;
+            return;
         }
         int16_t *channelDataTempSrc = (int16_t *)data;
         int16_t *channelDataTempDst = (int16_t *)channel->data;
-        int px = dataLen / (dataFormat & 0xf);
+        int px = dataLen / (channel->dataFormat & 0xf);
         for (int32_t j = 0; j < px; j++) {
             *channelDataTempDst++ = (*channelDataTempSrc & 0x0400) ? (*channelDataTempSrc | 0xfc00) : *channelDataTempSrc;
             channelDataTempSrc++;
         }
     }
-    else if (dataFormat == BTA_DataFormatUInt16Mlx1C11U) {
+    else if (channel->dataFormat == BTA_DataFormatUInt16Mlx1C11U) {
         channel->data = (uint8_t *)malloc(channel->dataLen);
         if (!channel->data) {
-            return BTA_StatusOutOfMemory;
+            channel->dataLen = 0;
+            return;
         }
         uint16_t *channelDataTempSrc = (uint16_t *)data;
         uint16_t *channelDataTempDst = (uint16_t *)channel->data;
-        int px = dataLen / (dataFormat & 0xf);
+        int px = dataLen / (channel->dataFormat & 0xf);
         for (int32_t j = 0; j < px; j++) {
             *channelDataTempDst++ = *channelDataTempSrc++ & 0x07ff;
         }
@@ -2296,11 +2076,11 @@ static BTA_Status insertChannelData(BTA_WrapperInst *winst, BTA_ChannelId id, BT
     else {
         channel->data = (uint8_t *)malloc(channel->dataLen);
         if (!channel->data) {
-            return BTA_StatusOutOfMemory;
+            channel->dataLen = 0;
+            return;
         }
         memcpy(channel->data, data, channel->dataLen);
     }
-    return BTA_StatusOk;
 }
 
 
@@ -2391,9 +2171,9 @@ static void BTAinsertTestPattern(BTA_Frame *frame, uint16_t testPattern) {
         case BTA_DataFormatSInt16:
         case BTA_DataFormatUInt16:
         case BTA_DataFormatRgb565:
-        case BTA_DataFormatUInt16Mlx12S:
+        case BTA_DataFormatSInt16Mlx12S:
         case BTA_DataFormatUInt16Mlx12U:
-        case BTA_DataFormatUInt16Mlx1C11S:
+        case BTA_DataFormatSInt16Mlx1C11S:
         case BTA_DataFormatUInt16Mlx1C11U:
         case BTA_DataFormatYuv422: {
             uint16_t *channelDataTempDst = (uint16_t *)channel->data;
@@ -2454,7 +2234,8 @@ static void BTAinsertTestPattern(BTA_Frame *frame, uint16_t testPattern) {
         }
         case BTA_DataFormatJpeg:
         case BTA_DataFormatRgb24:
-        case BTA_DataFormatYuv444: {
+        case BTA_DataFormatYuv444:
+        case BTA_DataFormatYuv444UYV: {
             channel->dataFormat = BTA_DataFormatRgb24;
             uint8_t *channelDataTempDst = (uint8_t *)channel->data;
             int x, y;
@@ -2470,7 +2251,7 @@ static void BTAinsertTestPattern(BTA_Frame *frame, uint16_t testPattern) {
         }
         case BTA_DataFormatUnknown:
             assert(0);
-            //BTAinfoEventHelper1(infoEventInst, IMPORTANCE_ERROR, BTA_StatusNotSupported, "parseFrame: DataFormat not supported %d", dataFormat);
+            //BTAinfoEventHelper(infoEventInst, IMPORTANCE_ERROR, BTA_StatusNotSupported, "parseFrame: DataFormat not supported %d", dataFormat);
             break;
         }
     }
@@ -2482,7 +2263,7 @@ static BTA_ChannelId BTAETHgetChannelId(BTA_EthImgMode imgMode, uint8_t channelI
     case BTA_EthImgModeRawdistAmp:
         switch (channelIndex) {
         case 0:
-            return BTA_ChannelIdPhase;
+            return BTA_ChannelIdRawDist;
         case 1:
             return BTA_ChannelIdAmplitude;
         default:
@@ -2681,7 +2462,7 @@ static BTA_ChannelId BTAETHgetChannelId(BTA_EthImgMode imgMode, uint8_t channelI
         default:
             return BTA_ChannelIdUnknown;
         }
-    case BTA_EthImgModeIntensity:
+    case BTA_EthImgModeIntensities:
         switch (channelIndex) {
         case 0:
             return BTA_ChannelIdGrayScale;
@@ -2948,7 +2729,7 @@ static BTA_DataFormat BTAETHgetDataFormat(BTA_EthImgMode imgMode, uint8_t channe
                 return BTA_DataFormatUnknown;
             }
         }
-    case BTA_EthImgModeIntensity:
+    case BTA_EthImgModeIntensities:
         switch (channelIndex) {
         case 0:
             return BTA_DataFormatUInt16;
@@ -2998,10 +2779,10 @@ static BTA_DataFormat BTAETHgetDataFormat(BTA_EthImgMode imgMode, uint8_t channe
     case BTA_EthImgModeRawPhases:
     case BTA_EthImgModeRawQI:
         if (rawPhaseContent == 0) {
-            return BTA_DataFormatUInt16Mlx1C11S;
+            return BTA_DataFormatSInt16Mlx1C11S;
         }
         if (rawPhaseContent == 1) {
-            return BTA_DataFormatUInt16Mlx12S;
+            return BTA_DataFormatSInt16Mlx12S;
         }
         if (rawPhaseContent == 2) {
             return BTA_DataFormatUInt16Mlx1C11U;
@@ -3181,4 +2962,500 @@ static BTA_Unit BTAETHgetUnit(BTA_EthImgMode imgMode, uint8_t channelIndex) {
     default:
         return BTA_UnitUnitLess;
     }
+}
+
+
+int BTAgetBytesPerPixelSum(BTA_EthImgMode imgMode) {
+    switch (imgMode) {
+    case BTA_EthImgModeAmp:
+    case BTA_EthImgModeDist:
+    case BTA_EthImgModePhase0:
+    case BTA_EthImgModePhase90:
+    case BTA_EthImgModePhase180:
+    case BTA_EthImgModePhase270:
+    case BTA_EthImgModeIntensities:
+        return 2;
+    case BTA_EthImgModeDistConfExt:
+        return 3;
+    case BTA_EthImgModeDistAmp:
+    case BTA_EthImgModeXAmp:
+    case BTA_EthImgModeRawdistAmp:
+    case BTA_EthImgModePhase0_180:
+        case BTA_EthImgModePhase90_270:
+        return 4;
+    case BTA_EthImgModeDistAmpConf:
+        return 5;
+    case BTA_EthImgModeDistAmpBalance:
+    case BTA_EthImgModeXYZ:
+        return 6;
+    case BTA_EthImgModeXYZAmp:
+    case BTA_EthImgModeDistXYZ:
+    case BTA_EthImgModeTest:
+    case BTA_EthImgModePhase0_90_180_270:
+    case BTA_EthImgModePhase270_180_90_0:
+        return 8;
+    case BTA_EthImgModeDistAmpColor:
+    case BTA_EthImgModeDistAmpConfColor:
+    case BTA_EthImgModeXYZConfColor:
+    case BTA_EthImgModeXYZAmpColorOverlay:
+    case BTA_EthImgModeXYZColor:
+    case BTA_EthImgModeDistColor:
+    case BTA_EthImgModeColor:
+    case BTA_EthImgModeRawPhases:
+    case BTA_EthImgModeRawQI:
+        // ERROR!!! NOT SUPPORTED!!!!
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+
+
+
+
+
+
+
+
+int initShm(uint32_t shmKeyNum, uint32_t shmSize, int32_t *shmFd, uint8_t **bufShmBase, sem_t **semFullWrite, sem_t **semFullRead, sem_t **semEmptyWrite, sem_t **semEmptyRead, fifo_t **fifoFull, fifo_t **fifoEmpty, uint8_t **bufDataBase, BTA_InfoEventInst *infoEventInst) {
+#   if defined PLAT_LINUX
+    const int nameLen = 222;
+    char name[nameLen];
+    snprintf(name, nameLen, "/%d_shm", shmKeyNum);
+    *shmFd = shm_open(name, O_RDWR, S_IRUSR | S_IWUSR);
+    if (*shmFd == -1) {
+        BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "error in shm_open, errno %s (%d)", strerror(errno), errno);
+        return 0;
+    }
+    *bufShmBase = (uint8_t *)mmap(0, shmSize, PROT_WRITE | PROT_READ, MAP_SHARED, *shmFd, 0);
+    if (*bufShmBase == MAP_FAILED) {
+        BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "error in mmap, errno %s (%d)", strerror(errno), errno);
+        closeShm(0, 0, 0, 0, 0, 0, shmFd, shmKeyNum, infoEventInst);
+        return 0;
+    }
+    snprintf(name, nameLen, "%d_sem_full_write", shmKeyNum);
+    *semFullWrite = sem_open(name, 0);
+    if (*semFullWrite == SEM_FAILED) {
+        BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "error in sem_open sem_full_write, errno %s (%d)", strerror(errno), errno);
+        closeShm(0, 0, 0, semFullWrite, bufShmBase, shmSize, shmFd, shmKeyNum, infoEventInst);
+        return 0;
+    }
+    snprintf(name, nameLen, "%d_sem_full_read", shmKeyNum);
+    *semFullRead = sem_open(name, 0);
+    if (*semFullRead == SEM_FAILED) {
+        BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "error in sem_open sem_full_read, errno %s (%d)", strerror(errno), errno);
+        closeShm(0, 0, semFullRead, semFullWrite, bufShmBase, shmSize, shmFd, shmKeyNum, infoEventInst);
+        return 0;
+    }
+    snprintf(name, nameLen, "%d_sem_empty_write", shmKeyNum);
+    *semEmptyWrite = sem_open(name, 0);
+    if (*semEmptyWrite == SEM_FAILED) {
+        BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "error in sem_open sem_empty_write, errno %s (%d)", strerror(errno), errno);
+        closeShm(0, semEmptyWrite, semFullRead, semFullWrite, bufShmBase, shmSize, shmFd, shmKeyNum, infoEventInst);
+        return 0;
+    }
+    snprintf(name, nameLen, "%d_sem_empty_read", shmKeyNum);
+    *semEmptyRead = sem_open(name, 0);
+    if (*semEmptyRead == SEM_FAILED) {
+        BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "error in sem_open sem_empty_read, errno %s (%d)", strerror(errno), errno);
+        closeShm(semEmptyRead, semEmptyWrite, semFullRead, semFullWrite, bufShmBase, shmSize, shmFd, shmKeyNum, infoEventInst);
+        return 0;
+    }
+    *fifoFull = (fifo_t *)*bufShmBase;
+    *fifoEmpty = (fifo_t *)(*bufShmBase + getSize(*fifoFull));
+    *bufDataBase = *bufShmBase + getSize(*fifoFull) + getSize(*fifoEmpty);
+    return 1;
+#   elif defined PLAT_WINDOWS
+    return 0;
+#   endif
+}
+
+
+void closeShm(sem_t **semEmptyRead, sem_t **semEmptyWrite, sem_t **semFullRead, sem_t **semFullWrite, uint8_t **bufShmBase, uint32_t shmSize, int32_t *shmFd, uint32_t shmKeyNum, BTA_InfoEventInst *infoEventInst) {
+#   if defined PLAT_LINUX
+    if (shmKeyNum) {
+        const int nameLen = 222;
+        char name[nameLen];
+        if (semEmptyRead) {
+            snprintf(name, nameLen, "%d_sem_empty_read", shmKeyNum);
+            int err = sem_unlink(name);
+            if (err) {
+                BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "sem_unlink returned %d, errno %s (%d)", err, strerror(errno), errno);
+            }
+            err = sem_close(*semEmptyRead);
+            if (err) {
+                BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "sem_close returned %d, errno %s (%d)", err, strerror(errno), errno);
+            }
+            *semEmptyRead = 0;
+        }
+        if (semEmptyWrite) {
+            snprintf(name, nameLen, "%d_sem_empty_write", shmKeyNum);
+            int err = sem_unlink(name);
+            if (err) {
+                BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "sem_unlink returned %d, errno %s (%d)", err, strerror(errno), errno);
+            }
+            err = sem_close(*semEmptyWrite);
+            if (err) {
+                BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "sem_close returned %d, errno %s (%d)", err, strerror(errno), errno);
+            }
+            *semEmptyWrite = 0;
+        }
+        if (semFullRead) {
+            snprintf(name, nameLen, "%d_sem_full_read", shmKeyNum);
+            int err = sem_unlink(name);
+            if (err) {
+                BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "sem_unlink returned %d, errno %s (%d)", err, strerror(errno), errno);
+            }
+            err = sem_close(*semFullRead);
+            if (err) {
+                BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "sem_close returned %d, errno %s (%d)", err, strerror(errno), errno);
+            }
+            *semFullRead = 0;
+        }
+        if (semFullWrite) {
+            snprintf(name, nameLen, "%d_sem_full_write", shmKeyNum);
+            int err = sem_unlink(name);
+            if (err) {
+                BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "sem_unlink returned %d, errno %s (%d)", err, strerror(errno), errno);
+            }
+            err = sem_close(*semFullWrite);
+            if (err) {
+                BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "sem_close returned %d, errno %s (%d)", err, strerror(errno), errno);
+            }
+            *semFullWrite = 0;
+        }
+        if (bufShmBase && shmSize) {
+            munmap(*bufShmBase, shmSize);
+        }
+        if (shmFd) {
+            close(*shmFd);
+            *shmFd = 0;
+        }
+        snprintf(name, nameLen, "/%d_shm", shmKeyNum);
+        shm_unlink(name);
+    }
+#   endif
+}
+
+
+BTA_Status BTAparseFrameFromShm(BTA_Handle handle, uint8_t *data, BTA_Frame **framePtr) {
+    BTA_WrapperInst *winst = (BTA_WrapperInst *)handle;
+    if (!winst) {
+        return BTA_StatusInvalidParameter;
+    }
+
+    uint64_t timeParseFrame = BTAgetTickCountNano() / 1000;
+    *framePtr = 0;
+    BTA_Frame *frame = (BTA_Frame *)malloc(sizeof(BTA_Frame));
+    if (!frame) {
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusOutOfMemory, "Parsing frame: Could not allocate a");
+        return BTA_StatusOutOfMemory;
+    }
+
+    // 2 bytes 'dont care'
+    uint32_t i = 2;
+    uint16_t protocolVersion = (data[i] << 8) | data[i + 1];
+    i += 2;
+    switch (protocolVersion) {
+
+    case 4: {
+        uint8_t *dataHeader = data + 4;
+        uint16_t headerLength = *((uint16_t *)dataHeader);
+        dataHeader += 2;
+        uint8_t *dataStream = data + headerLength;
+
+        // Count and check descriptors
+        uint8_t infoValid = 0;
+        uint8_t aliveMsg = 0;
+        uint8_t channelCount = 0;
+        uint8_t metadataCount = 0;
+        uint8_t *dataHeaderTemp = dataHeader;
+        while (1) {
+            BTA_Data4DescBase *data4DescBase = (BTA_Data4DescBase *)dataHeaderTemp;
+            switch (data4DescBase->descriptorType) {
+            case btaData4DescriptorTypeFrameInfoV1:
+                infoValid = 1;
+                dataHeaderTemp += data4DescBase->descriptorLen;
+                break;
+            case btaData4DescriptorTypeTofV1:
+            case btaData4DescriptorTypeTofWithMetadataV1:
+            case btaData4DescriptorTypeColorV1:
+                channelCount++;
+                dataHeaderTemp += data4DescBase->descriptorLen;
+                break;
+            case btaData4DescriptorTypeAliveMsgV1:
+                aliveMsg = 1;
+                dataHeaderTemp += data4DescBase->descriptorLen;
+                break;
+            case btaData4DescriptorTypeMetadataV1:
+                metadataCount++;
+                dataHeaderTemp += data4DescBase->descriptorLen;
+                break;
+            case btaData4DescriptorTypeEof:
+                break;
+            default:
+                free(frame);  // no channels created so far, so only free this one memory
+                frame = 0;
+                BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusInvalidVersion, "Parsing frame v4: Descriptor %d not supported", data4DescBase->descriptorType);
+                return BTA_StatusInvalidVersion;
+            }
+            if (data4DescBase->descriptorType == btaData4DescriptorTypeEof) {
+                dataHeaderTemp += 2;
+                break;
+            }
+        }
+        dataHeaderTemp += 2; // crc16
+        if (dataHeaderTemp - data != headerLength) {
+            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusInvalidData, "Parsing header v4: Unexpected header length: i: %d  headerLen: %d", (int)(dataHeaderTemp - data), headerLength);
+        }
+
+        if (!infoValid && aliveMsg && !channelCount && !metadataCount) {
+            // alive message
+            free(frame);
+            frame = 0;
+            return BTA_StatusOk;
+        }
+
+        if (!infoValid) {
+            memset(frame, 0, sizeof(BTA_Frame));
+        }
+        if (channelCount) {
+            frame->channels = (BTA_Channel **)malloc(channelCount * sizeof(BTA_Channel *));
+            if (!frame->channels) {
+                free(frame);  // no channels created so far, so only free this one memory
+                frame = 0;
+                BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusOutOfMemory, "Parsing frame v4: Could not allocate b");
+                return BTA_StatusOutOfMemory;
+            }
+            frame->channelsLen = channelCount;
+        }
+        else {
+            frame->channels = 0;
+            frame->channelsLen = 0;
+        }
+        if (metadataCount) {
+            frame->metadata = (BTA_Metadata **)malloc(metadataCount * sizeof(BTA_Metadata *));
+            if (!frame->metadata) {
+                free(frame);  // no metadata created so far, so only free this one memory
+                frame = 0;
+                BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusOutOfMemory, "Parsing frame v4: Could not allocate c");
+                return BTA_StatusOutOfMemory;
+            }
+            frame->metadataLen = metadataCount;
+        }
+        else {
+            frame->metadata = 0;
+            frame->metadataLen = 0;
+        }
+
+        // Parse descriptors
+        int chInd = 0;
+        int mdInd = 0;
+        uint8_t jpgDecodingEnabled = winst->jpgInst && winst->jpgInst->enabled;
+        while (1) {
+            BTA_Data4DescBase *data4DescBase = (BTA_Data4DescBase *)dataHeader;
+            dataHeader += data4DescBase->descriptorLen;
+            switch (data4DescBase->descriptorType) {
+            case btaData4DescriptorTypeFrameInfoV1: {
+                BTA_Data4DescFrameInfoV1 *data4DescFrameInfoV1 = (BTA_Data4DescFrameInfoV1 *)data4DescBase;
+                frame->frameCounter = data4DescFrameInfoV1->frameCounter;
+                frame->timeStamp = data4DescFrameInfoV1->timestamp;
+                frame->mainTemp = data4DescFrameInfoV1->mainTemp / 100.0f;
+                frame->ledTemp = data4DescFrameInfoV1->ledTemp / 100.0f;
+                frame->genericTemp = data4DescFrameInfoV1->genericTemp / 100.0f;
+                frame->firmwareVersionMajor = data4DescFrameInfoV1->firmwareVersion >> 11;
+                frame->firmwareVersionMinor = (data4DescFrameInfoV1->firmwareVersion >> 6) & 0x1f;
+                frame->firmwareVersionNonFunc = data4DescFrameInfoV1->firmwareVersion & 0x3f;
+
+                // count frame counter gaps
+                if (frame->frameCounter != (uint32_t)(winst->frameCounterLast + winst->lpDataStreamFrameCounterGap) && winst->timeStampLast != 0) {
+                    winst->lpDataStreamFrameCounterGapsCount++;
+                }
+                winst->frameCounterLast = frame->frameCounter;
+                break;
+            }
+            case btaData4DescriptorTypeTofV1: {
+                BTA_Data4DescTofV1 *data4DescTofV1 = (BTA_Data4DescTofV1 *)data4DescBase;
+                BTA_Channel *channel = (BTA_Channel *)malloc(sizeof(BTA_Channel));
+                if (!channel) {
+                    // free channels created so far
+                    frame->channelsLen = chInd;
+                    BTAfreeFrame(&frame);
+                    BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusOutOfMemory, "Parsing frame v4 TofV1: Could not allocate channel");
+                    return BTA_StatusOutOfMemory;
+                }
+                frame->channels[chInd] = channel;
+
+                channel->id = (BTA_ChannelId)data4DescTofV1->channelId;
+                channel->xRes = data4DescTofV1->width;
+                channel->yRes = data4DescTofV1->height;
+                channel->dataFormat = (BTA_DataFormat)data4DescTofV1->dataFormat;
+                channel->unit = (BTA_Unit)data4DescTofV1->unit;
+                channel->integrationTime = data4DescTofV1->integrationTime;
+                channel->modulationFrequency = data4DescTofV1->modulationFrequency * 10000;
+                channel->metadata = 0;
+                channel->metadataLen = 0;
+                channel->lensIndex = data4DescTofV1->lensIndex;
+                channel->flags = data4DescTofV1->flags;
+                channel->sequenceCounter = data4DescTofV1->sequenceCounter;
+                channel->gain = 0;
+                if (!winst->lpTestPatternEnabled) {
+                    insertChannelDataFromShm(winst, channel, dataStream, data4DescTofV1->dataLen, 0);
+                }
+                else {
+                    channel->data = 0;
+                    channel->dataLen = 0;
+                }
+                dataStream += data4DescTofV1->dataLen;
+                chInd++;
+                break;
+            }
+            case btaData4DescriptorTypeColorV1: {
+                BTA_Data4DescColorV1 *data4DescColorV1 = (BTA_Data4DescColorV1 *)data4DescBase;
+                BTA_Channel *channel = (BTA_Channel *)malloc(sizeof(BTA_Channel));
+                if (!channel) {
+                    // free channels created so far
+                    frame->channelsLen = chInd;
+                    BTAfreeFrame(&frame);
+                    BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusOutOfMemory, "Parsing frame v4 ColorV1: Could not allocate channel");
+                    return BTA_StatusOutOfMemory;
+                }
+                frame->channels[chInd] = channel;
+
+                channel->id = BTA_ChannelIdColor;
+                channel->xRes = data4DescColorV1->width;
+                channel->yRes = data4DescColorV1->height;
+                channel->dataFormat = (BTA_DataFormat)data4DescColorV1->colorFormat;
+                channel->unit = BTA_UnitUnitLess;
+                channel->integrationTime = data4DescColorV1->integrationTime;
+                channel->modulationFrequency = 0;
+                channel->metadata = 0;
+                channel->metadataLen = 0;
+                channel->lensIndex = data4DescColorV1->lensIndex;
+                channel->flags = data4DescColorV1->flags;
+                channel->sequenceCounter = 0;
+                channel->gain = data4DescColorV1->gain;
+                if (!winst->lpTestPatternEnabled) {
+                    insertChannelDataFromShm(winst, channel, dataStream, data4DescColorV1->dataLen, jpgDecodingEnabled);
+                }
+                else {
+                    channel->data = 0;
+                    channel->dataLen = 0;
+                }
+                dataStream += data4DescColorV1->dataLen;
+                chInd++;
+                break;
+            }
+            case btaData4DescriptorTypeAliveMsgV1:
+                //BTA_Data4DescBase *data4DescMsgV1 = (BTA_Data4DescBase *)data4DescBase;
+                // nothing to do
+                break;
+
+            case btaData4DescriptorTypeMetadataV1: {
+                BTA_Data4DescMetadataV1 *data4DescMetadataV1 = (BTA_Data4DescMetadataV1 *)data4DescBase;
+                BTA_Metadata *metadata = (BTA_Metadata *)malloc(sizeof(BTA_Metadata));
+                if (!metadata) {
+                    // free metadatas created so far
+                    frame->metadataLen = mdInd;
+                    BTAfreeFrame(&frame);
+                    BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusOutOfMemory, "Parsing frame v4 ColorV1: Could not allocate channel");
+                    return BTA_StatusOutOfMemory;
+                }
+                frame->metadata[mdInd] = metadata;
+                metadata->id = (BTA_MetadataId)data4DescMetadataV1->metadataId;
+                metadata->dataLen = data4DescMetadataV1->dataLen;
+                metadata->id = (BTA_MetadataId)data4DescMetadataV1->metadataId;
+                metadata->data = dataStream;
+                dataStream += data4DescMetadataV1->dataLen;
+                mdInd++;
+                break;
+            }
+            case btaData4DescriptorTypeEof:
+                break;
+
+            default:
+                // unreachable because the descriptor was checked before
+                assert(0);
+                return BTA_StatusIllegalOperation;
+            }
+            if (data4DescBase->descriptorType == btaData4DescriptorTypeEof) {
+                frame->sequenceCounter = 0;
+                break;
+            }
+        }
+
+        if (winst->lpTestPatternEnabled) {
+            BTAinsertTestPattern(frame, winst->lpTestPatternEnabled);
+        }
+
+        *framePtr = frame;
+
+        uint64_t durParseFrame = BTAgetTickCountNano() / 1000 - timeParseFrame;
+        winst->lpDataStreamParseFrameDuration = (float)MTHmax(durParseFrame, (uint64_t)winst->lpDataStreamParseFrameDuration);
+
+        BVQenqueue(winst->lpDataStreamFramesParsedPerSecFrametimes, (void *)(size_t)(frame->timeStamp - winst->timeStampLast));
+        winst->timeStampLast = frame->timeStamp;
+        winst->lpDataStreamFramesParsedPerSecUpdated = BTAgetTickCount();
+        winst->lpDataStreamFramesParsedCount++;
+
+        return BTA_StatusOk;
+    }
+
+    default:
+        free(frame);
+        frame = 0;
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusInvalidVersion, "Parsing frame: Version not supported: %d", protocolVersion);
+        return BTA_StatusInvalidVersion;
+    }
+}
+
+
+BTA_Status BTAgrabCallbackEnqueueFromShm(BTA_WrapperInst *winst, BTA_Frame *frame) {
+    assert(winst);
+    assert(frame);
+
+    //BTAcalcXYZApply(winst, frame);
+    //BTAundistortApply(winst, frame);
+
+    if (winst->grabInst) {
+        BGRBgrab(winst->grabInst, frame);
+    }
+
+    uint8_t userFreesFrame = 0;
+    if (winst->frameArrivedInst) {
+        if (winst->frameArrivedInst->frameArrived) {
+            (*(winst->frameArrivedInst->frameArrived))(frame);
+        }
+        if (winst->frameArrivedInst->frameArrivedEx) {
+            (*(winst->frameArrivedInst->frameArrivedEx))(winst->frameArrivedInst->handle, frame);
+        }
+        if (winst->frameArrivedInst->frameArrivedEx2) {
+            winst->frameArrivedInst->frameArrivedReturnOptions->userFreesFrame = 0;
+            (*(winst->frameArrivedInst->frameArrivedEx2))(winst->frameArrivedInst->handle, frame, winst->frameArrivedInst->userArg, winst->frameArrivedInst->frameArrivedReturnOptions);
+            userFreesFrame = winst->frameArrivedInst->frameArrivedReturnOptions->userFreesFrame;
+        }
+    }
+
+    if (userFreesFrame) {
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusInvalidParameter, "userFreesFrame is not supported with shared memory interface!!!");
+    }
+    return BTAfreeFrameFromShm(&frame);
+}
+
+
+static void insertChannelDataFromShm(BTA_WrapperInst *winst, BTA_Channel *channel, uint8_t *data, uint32_t dataLen, uint8_t decodingEnabled) {
+    channel->dataLen = dataLen;
+
+    if (channel->id != BTA_ChannelIdColor && !(channel->flags & 0x2)) {
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusWarning, "insertChannelDataFromShm: coordinate system should be transformed! (avoided bc zero-copy)");
+    }
+    else if (decodingEnabled && channel->dataFormat == BTA_DataFormatJpeg) {
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusWarning, "insertChannelDataFromShm: jpg should be decoded! (avoided bc zero-copy)");
+    }
+    else if (channel->dataFormat == BTA_DataFormatSInt16Mlx12S || channel->dataFormat == BTA_DataFormatSInt16Mlx1C11S || channel->dataFormat == BTA_DataFormatUInt16Mlx1C11U) {
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusWarning, "insertChannelDataFromShm: bit operations should be performed! (avoided bc zero-copy)");
+    }
+    channel->data = data;
+    return;
 }

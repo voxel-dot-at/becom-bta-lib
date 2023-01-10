@@ -33,11 +33,12 @@ typedef struct BVQ_QueueInst {
     uint32_t queueCount;       ///< count of valid items in  queue (from index queuePos backwards) (0 >= queueCount <= queueLength)
     void *semQueueCount;
     void *queueMutex;
+    FN_FreeItem freeItem;
 } BVQ_QueueInst;
 
 
 
-BTA_Status BVQinit(uint32_t queueLength, BTA_QueueMode queueMode, BVQ_QueueHandle *handle) {
+BTA_Status BTA_CALLCONV BVQinit(uint32_t queueLength, BTA_QueueMode queueMode, FN_FreeItem freeItem, BVQ_QueueHandle *handle) {
     if (!handle) {
         return BTA_StatusInvalidParameter;
     }
@@ -45,7 +46,7 @@ BTA_Status BVQinit(uint32_t queueLength, BTA_QueueMode queueMode, BVQ_QueueHandl
         *handle = 0;
         return BTA_StatusOk;
     }
-    BVQ_QueueInst *inst = (BVQ_QueueInst *)malloc(sizeof(BVQ_QueueInst));
+    BVQ_QueueInst *inst = (BVQ_QueueInst *)calloc(1, sizeof(BVQ_QueueInst));
     if (!inst) {
         return BTA_StatusOutOfMemory;
     }
@@ -67,48 +68,53 @@ BTA_Status BVQinit(uint32_t queueLength, BTA_QueueMode queueMode, BVQ_QueueHandl
         inst = 0;
         return BTA_StatusRuntimeError;
     }
+    inst->freeItem = freeItem;
     *handle = inst;
     return BTA_StatusOk;
 }
 
 
-BTA_Status BVQclose(BVQ_QueueHandle *handle, BTA_Status(*freeItem)(void **)) {
+BTA_Status BTA_CALLCONV BVQclose(BVQ_QueueHandle *handle) {
     int err;
-    BVQ_QueueInst **inst = (BVQ_QueueInst **)handle;
-    if (!inst) {
+    if (!handle) {
         return BTA_StatusInvalidParameter;
     }
-    if (!*inst) {
+    BVQ_QueueInst *inst = (BVQ_QueueInst *)*handle;
+    if (!inst) {
         return BTA_StatusOk;
     }
-    BTA_Status status = BVQclear(*inst, freeItem);
+    BTA_Status status = BVQclear(inst);
     if (status != BTA_StatusOk) {
         return status;
     }
-    err = BTAcloseMutex((*inst)->queueMutex);
+    err = BTAcloseMutex(inst->queueMutex);
     if (err != 0) {
         return BTA_StatusRuntimeError;
     }
-    free((*inst)->queue);
-    free(*inst);
-    *inst = 0;
+    err = BTAcloseSemaphore(inst->semQueueCount);
+    if (err != 0) {
+        return BTA_StatusRuntimeError;
+    }
+    free(inst->queue);
+    free(inst);
+    *handle = 0;
     return BTA_StatusOk;
 }
 
 
-BTA_Status BVQclear(BVQ_QueueHandle handle, BTA_Status(*freeItem)(void **)) {
+BTA_Status BTA_CALLCONV BVQclear(BVQ_QueueHandle handle) {
     BVQ_QueueInst *inst = (BVQ_QueueInst *)handle;
     if (!inst) {
         return BTA_StatusInvalidParameter;
     }
     BTAlockMutex(inst->queueMutex);
-    if (freeItem) {
+    if (inst->freeItem) {
         while (inst->queueCount) {
             int32_t index = inst->queuePos - inst->queueCount + 1;
             if (index < 0) {
                 index += inst->queueLength;
             }
-            (*freeItem)(&inst->queue[index]);
+            (*inst->freeItem)(&inst->queue[index]);
             BTAwaitSemaphore(inst->semQueueCount);
             inst->queueCount--;
         }
@@ -118,7 +124,7 @@ BTA_Status BVQclear(BVQ_QueueHandle handle, BTA_Status(*freeItem)(void **)) {
 }
 
 
-uint32_t BVQgetLength(BVQ_QueueHandle handle) {
+uint32_t BTA_CALLCONV BVQgetLength(BVQ_QueueHandle handle) {
     BVQ_QueueInst *inst = (BVQ_QueueInst *)handle;
     if (!inst) {
         return 0;
@@ -127,7 +133,7 @@ uint32_t BVQgetLength(BVQ_QueueHandle handle) {
 }
 
 
-uint32_t BVQgetCount(BVQ_QueueHandle handle) {
+uint32_t BTA_CALLCONV BVQgetCount(BVQ_QueueHandle handle) {
     BVQ_QueueInst *inst = (BVQ_QueueInst *)handle;
     if (!inst) {
         return 0;
@@ -136,7 +142,7 @@ uint32_t BVQgetCount(BVQ_QueueHandle handle) {
 }
 
 
-BTA_Status BVQenqueue(BVQ_QueueHandle handle, void *item, BTA_Status(*freeItem)(void **)) {
+BTA_Status BTA_CALLCONV BVQenqueue(BVQ_QueueHandle handle, void *item) {
     BVQ_QueueInst *inst = (BVQ_QueueInst *)handle;
     if (!inst || !item) {
         return BTA_StatusInvalidParameter;
@@ -148,8 +154,8 @@ BTA_Status BVQenqueue(BVQ_QueueHandle handle, void *item, BTA_Status(*freeItem)(
             inst->queuePos = 0;
         }
         if (inst->queueCount == inst->queueLength) {
-            if (freeItem) {
-                (*freeItem)(&inst->queue[inst->queuePos]);
+            if (inst->freeItem) {
+                (*inst->freeItem)(&inst->queue[inst->queuePos]);
             }
             inst->queue[inst->queuePos] = item;
         }
@@ -175,8 +181,8 @@ BTA_Status BVQenqueue(BVQ_QueueHandle handle, void *item, BTA_Status(*freeItem)(
             inst->queueCount++;
         }
         else {
-            if (freeItem) {
-                (*freeItem)(&item);
+            if (inst->freeItem) {
+                (*inst->freeItem)(&item);
             }
         }
         BTAunlockMutex(inst->queueMutex);
@@ -206,11 +212,15 @@ BTA_Status BVQenqueue(BVQ_QueueHandle handle, void *item, BTA_Status(*freeItem)(
 }
 
 
-BTA_Status BVQpeek(BVQ_QueueHandle handle, void **item, uint32_t msecsTimeout) {
+BTA_Status BTA_CALLCONV BVQpeek(BVQ_QueueHandle handle, void **item, uint32_t msecsTimeout) {
     // todo: use timed semaphore
     BVQ_QueueInst *inst = (BVQ_QueueInst *)handle;
     if (!item || !inst) {
         return BTA_StatusInvalidParameter;
+    }
+    if (inst->queueMode == BTA_QueueModeDropOldest && inst->freeItem) {
+        // Peek is not allowed if the void pointer could be dropped at any time
+        return BTA_StatusIllegalOperation;
     }
     uint32_t endTime = BTAgetTickCount() + msecsTimeout;
     do {
@@ -232,9 +242,10 @@ BTA_Status BVQpeek(BVQ_QueueHandle handle, void **item, uint32_t msecsTimeout) {
 }
 
 
-BTA_Status BVQdequeue(BVQ_QueueHandle handle, void **item, uint32_t msecsTimeout) {
+BTA_Status BTA_CALLCONV BVQdequeue(BVQ_QueueHandle handle, void **item, uint32_t msecsTimeout) {
     BVQ_QueueInst *inst = (BVQ_QueueInst *)handle;
     if (!inst) {
+        if (item) *item = 0;
         return BTA_StatusInvalidParameter;
     }
     BTA_Status status = BTAwaitSemaphoreTimed(inst->semQueueCount, msecsTimeout);
@@ -247,19 +258,21 @@ BTA_Status BVQdequeue(BVQ_QueueHandle handle, void **item, uint32_t msecsTimeout
     if (index < 0) {
         index += inst->queueLength;
     }
-    if (item) {
-        *item = inst->queue[index];
-    }
+    if (item) *item = inst->queue[index];
     inst->queueCount--;
     BTAunlockMutex(inst->queueMutex);
     return BTA_StatusOk;
 }
 
 
-BTA_Status BVQgetList(BVQ_QueueHandle handle, void ***list, uint32_t *listLen) {
+BTA_Status BTA_CALLCONV BVQgetList(BVQ_QueueHandle handle, void ***list, uint32_t *listLen) {
     BVQ_QueueInst *inst = (BVQ_QueueInst *)handle;
     if (!inst || !list || !listLen) {
         return BTA_StatusInvalidParameter;
+    }
+    if (inst->queueMode == BTA_QueueModeDropOldest && inst->freeItem) {
+        // getList is not allowed if the void pointer could be dropped at any time
+        return BTA_StatusIllegalOperation;
     }
     BTAlockMutex(inst->queueMutex);
     *listLen = inst->queueCount;

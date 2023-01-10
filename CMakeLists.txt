@@ -25,6 +25,7 @@ if(NOT MSVC)
 endif()
 option(BTA_WO_JPEG "disable jpeg support" OFF)
 
+
 option(BTA_WO_UART "disable uart transport" OFF)
 option(BTA_WO_USB "disable usb transport" OFF)
 option(BTA_WO_ETH "disable eth transport" OFF)
@@ -216,6 +217,7 @@ if(NOT MSVC)
     endif()
     if( BTA_WO_USB )
       message("will not build USB support. " ${BTA_WO_USB} )
+      add_definitions( -DBTA_WO_USB )
     endif()
     
     if(LIBJPEG_FOUND)
@@ -238,6 +240,10 @@ if(NOT MSVC)
     endif()
 endif()
 
+if (APPLE)
+  message("APPLE platform detected! Disabling P100 and USB")
+  add_definitions( -DBTA_WO_USB -DBTA_WO_P100 )
+endif()
 
 # add_subdirectory (common) 
 add_subdirectory (sdk) 

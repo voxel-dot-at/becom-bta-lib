@@ -1,11 +1,5 @@
-
-# binaries
-*.o
-*.a
-*.lo
-
-# editor stuff
+# ignore editor backups etc
 *~
+*.bak
 
-# output directories
-dist/
+

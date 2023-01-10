@@ -1,18 +1,18 @@
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#include <assert.h>
+#include <time.h>
 
 #include <bta.h>
 #include <utils.h>
 #include "bta_helper.h"
 #include "bta_grabbing.h"
-#include "bta_frame_queueing.h"
 #include <bta_oshelper.h>
 #include <timing_helper.h>
 #include <pthread_helper.h>
-#include <stdlib.h>
-#include <stdio.h>
-#include <string.h>
-#include <assert.h>
-#include <errno.h>
-#include <time.h>
+#include <mth_math.h>
+
 
 
 static const int32_t grabbingQueueLength = 250000000;
@@ -103,7 +103,7 @@ BTA_Status BGRBinit(BTA_GrabbingConfig *config, uint8_t *libNameVer, BTA_DeviceI
         inst->grabbingFilename = 0;
         free(inst);
         inst = 0;
-        BTAinfoEventHelperI(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "BTAstartGrabbing: Could not start grabbingThread, error: %d", result);
+        BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "BTAstartGrabbing: Could not start grabbingThread, error: %d", result);
         return BTA_StatusRuntimeError;
     }
 
@@ -150,7 +150,7 @@ BTA_Status BGRBgrab(BTA_GrabInst *inst, BTA_Frame *frame) {
         return status;
     }
     if (frameserializedLenTemp != frameserializedLen) {
-        BTAinfoEventHelperII(inst->infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "Grabbing: Error, BTAserializeFrame result %d differs from BTAgetSerializedLength %d", frameserializedLenTemp, frameserializedLen);
+        BTAinfoEventHelper(inst->infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "Grabbing: Error, BTAserializeFrame result %d differs from BTAgetSerializedLength %d", frameserializedLenTemp, frameserializedLen);
         return BTA_StatusRuntimeError;
     }
     frameSerialized[frameserializedLen + sizeof(frameserializedLen) + 0] = (uint8_t)(frameserializedLen >> 0);
@@ -164,7 +164,7 @@ BTA_Status BGRBgrab(BTA_GrabInst *inst, BTA_Frame *frame) {
         BTAlockMutex(inst->grabbingQueueMutex);
         if (inst->grabbingQueueCount + frameserializedLen <= grabbingQueueLength) {
             // there is enough space
-            int32_t portion1 = BTAmin((grabbingQueueLength - inst->grabbingQueuePos), frameserializedLen);
+            int32_t portion1 = MTHmin((grabbingQueueLength - inst->grabbingQueuePos), frameserializedLen);
             int32_t portion2 = frameserializedLen - portion1;
             memcpy(inst->grabbingQueue + inst->grabbingQueuePos, frameSerialized, portion1);
             inst->grabbingQueuePos += portion1;
@@ -224,7 +224,7 @@ static void *grabRunFunction(void *handle) {
                 index += grabbingQueueLength;
             }
             // Length is QueueCount or only until end of ringbuffer only
-            bufferLen = BTAmin(inst->grabbingQueueCount, grabbingQueueLength - index);
+            bufferLen = MTHmin(inst->grabbingQueueCount, grabbingQueueLength - index);
             buffer = (uint8_t *)malloc(bufferLen);
             memcpy(buffer, inst->grabbingQueue + index, bufferLen);
             inst->grabbingQueueCount -= bufferLen;
@@ -303,6 +303,7 @@ BTA_Status BGRBclose(BTA_GrabInst **instPtr) {
             status = BTAfLargeReadLine(file, &line);
             if (status == BTA_StatusOk) {
                 if (BTAstartsWith(btaGrabTotalFrameCountKey, line)) {
+                    free(line);
                     char msg[100];
                     msg[0] = 0;
                     sprintf(msg, "%s%012d\n", btaGrabTotalFrameCountKey, inst->totalFrameCount);
@@ -310,6 +311,7 @@ BTA_Status BGRBclose(BTA_GrabInst **instPtr) {
                     BTAfLargeWrite(file, msg, (uint32_t)strlen(msg), 0);
                     break;
                 }
+                free(line);
             }
         }
         BTAfLargeClose(file);

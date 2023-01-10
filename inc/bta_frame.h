@@ -20,8 +20,8 @@
 #define BTA_FRAME_H_INCLUDED
 
 #define BTA_FRAME_H_VER_MAJ 3
-#define BTA_FRAME_H_VER_MIN 0
-#define BTA_FRAME_H_VER_NON_FUNC 5
+#define BTA_FRAME_H_VER_MIN 3
+#define BTA_FRAME_H_VER_NON_FUNC 6
 
 #include "bta_status.h"
 #include <stdint.h>
@@ -31,28 +31,49 @@
 ///     @brief  Enumerator with valid frame modes to be passed with BTAsetFrameMode.
 ///             Not all frame modes are supported by all the cameras, please check the user manual.
 typedef enum BTA_FrameMode {
-    BTA_FrameModeCurrentConfig = 0, ///< The sensors settings are not changed and data is passed through (according to device's current calculation/image mode settings)
-    BTA_FrameModeDistAmp,           ///< Distance, Amplitude
-    BTA_FrameModeZAmp,              ///< Z coordinates, Amplitude
-    BTA_FrameModeDistAmpFlags,      ///< Distance, Amplitude, Flags (see camera user manual)
-    BTA_FrameModeXYZ,               ///< X, Y, Z coordinates
-    BTA_FrameModeXYZAmp,            ///< X, Y, Z coordinates, Amplitude
-    BTA_FrameModeDistAmpColor,      ///< Distance, Amplitude, Color
-    BTA_FrameModeXYZAmpFlags,       ///< X, Y, Z coordinates, Amplitude, Flags (see camera user manual)
-    BTA_FrameModeRawPhases,         ///< Raw phase data untouched as delivered by the sensor
-    BTA_FrameModeIntensities,       ///< Intensity (Ambient light)
-    BTA_FrameModeDistColor,         ///< Distance, RGB data
-	BTA_FrameModeDistAmpBalance,    ///< Distance, Amplitude, Balance (see camera user manual)
-    BTA_FrameModeXYZColor,          ///< X, Y, Z coordinates, RGB data overlay (see camera user manual)
-    BTA_FrameModeDist,              ///< Distance
-    BTA_FrameModeDistConfExt,       ///< Distance, Confidence (Different image processing behaviour, consult camera software manual)
-    BTA_FrameModeAmp,               ///< Amplitude
-    BTA_FrameModeRawdistAmp,        ///< Distance raw, Amplitude
-    BTA_FrameModeRawPhasesExt,      ///< Up to 8 channels of BTA_ChannelIdRawPhase
-    BTA_FrameModeRawQI,             ///< BTA_ChannelIdRawI and BTA_ChannelIdRawQ
-    BTA_FrameModeXYZConfColor,      ///< Cartesian, Confidence, RGB
-    BTA_FrameModeXYZAmpColorOverlay ///< Cartesian, Amplitude, RGB, overlay
+    BTA_FrameModeCurrentConfig = 0,      ///< The sensors settings are not changed and data is passed through (according to device's current calculation/image mode settings)
+    BTA_FrameModeDistAmp,                ///< Distance, Amplitude
+    BTA_FrameModeZAmp,                   ///< Z coordinates, Amplitude
+    BTA_FrameModeDistAmpFlags,           ///< Distance, Amplitude, Flags (see camera user manual)
+    BTA_FrameModeXYZ,                    ///< X, Y, Z coordinates
+    BTA_FrameModeXYZAmp,                 ///< X, Y, Z coordinates, Amplitude
+    BTA_FrameModeDistAmpColor,           ///< Distance, Amplitude, Color
+    BTA_FrameModeXYZAmpFlags,            ///< X, Y, Z coordinates, Amplitude, Flags (see camera user manual)
+    BTA_FrameModeRawPhases,              ///< Raw phase data untouched as delivered by the sensor
+    BTA_FrameModeIntensities,            ///< Intensity (Ambient light)
+    BTA_FrameModeDistColor,              ///< Distance, RGB data
+	BTA_FrameModeDistAmpBalance,         ///< Distance, Amplitude, Balance (see camera user manual)
+    BTA_FrameModeXYZColor,               ///< X, Y, Z coordinates, RGB data overlay (see camera user manual)
+    BTA_FrameModeDist,                   ///< Distance
+    BTA_FrameModeDistConfExt,            ///< Distance, Confidence (Different image processing behaviour, consult camera software manual)
+    BTA_FrameModeAmp,                    ///< Amplitude
+    BTA_FrameModeRawdistAmp,             ///< Distance raw, Amplitude
+    BTA_FrameModeRawPhasesExt,           ///< Up to 8 channels of BTA_ChannelIdRawPhase
+    BTA_FrameModeRawQI,                  ///< BTA_ChannelIdRawI and BTA_ChannelIdRawQ
+    BTA_FrameModeXYZConfColor,           ///< Cartesian, Confidence, RGB
+    BTA_FrameModeXYZAmpColorOverlay,     ///< Cartesian, Amplitude, RGB, overlay
+    BTA_FrameModeDistAmpConf,            ///< Distance, Amplitude, Confidence (see camera user manual)
+    BTA_FrameModeChannelSelection = 255, ///< Frame mode is defined by channel selection registers (see camera user manual)
 } BTA_FrameMode;
+
+
+///     @brief Enumerator with channel selection values. These are used to select the content and shape of the channels to be streamed
+typedef enum BTA_ChannelSelection {
+    BTA_ChannelSelectionInactive,
+    BTA_ChannelSelectionDistance,
+    BTA_ChannelSelectionAmplitude,
+    BTA_ChannelSelectionX,
+    BTA_ChannelSelectionY,
+    BTA_ChannelSelectionZ,
+    BTA_ChannelSelectionConfidence,
+    BTA_ChannelSelectionHeightMap,
+    BTA_ChannelSelectionStdev,
+    BTA_ChannelSelectionColor0,
+    BTA_ChannelSelectionOverlay0,
+    BTA_ChannelSelectionColor1,
+    BTA_ChannelSelectionOverlay1,
+    BTA_ChannelSelectionAmplitude8,
+} BTA_ChannelSelection;
 
 
 ///     @brief Enumerator with channel IDs. They allow the identification of the various channels in a BTA_Frame
@@ -63,21 +84,22 @@ typedef enum BTA_ChannelId {
     BTA_ChannelIdX =              0x4,
     BTA_ChannelIdY =              0x8,
     BTA_ChannelIdZ =             0x10,
+    BTA_ChannelIdHeightMap =     0x11,
     BTA_ChannelIdConfidence =    0x20,
     BTA_ChannelIdFlags =         0x40,
-    BTA_ChannelIdPhase0 =        0x80,
-    BTA_ChannelIdPhase90 =      0x100,
-    BTA_ChannelIdPhase180 =     0x200,
-    BTA_ChannelIdPhase270 =     0x400,
-    BTA_ChannelIdRawPhase =      0x81,
+    BTA_ChannelIdPhase0 =        0x80,   // Used for raw sensor output (phase shift 0°)
+    BTA_ChannelIdPhase90 =      0x100,   // Used for raw sensor output (phase shift 90°)
+    BTA_ChannelIdPhase180 =     0x200,   // Used for raw sensor output (phase shift 180°)
+    BTA_ChannelIdPhase270 =     0x400,   // Used for raw sensor output (phase shift 270°)
+    BTA_ChannelIdRawPhase =      0x81,   // Used for raw sensor output (variable phase shift)
     BTA_ChannelIdRawQ =          0x82,
     BTA_ChannelIdRawI =          0x83,
     BTA_ChannelIdTest =         0x800,
     BTA_ChannelIdColor =       0x1000,
-    BTA_ChannelIdAmbient =     0x2000,
-    BTA_ChannelIdPhase =       0x4000,
-    BTA_ChannelIdGrayScale =   0x8000,
+    BTA_ChannelIdRawDist =     0x4000,   // Unfiltered unitless distance values (full unumbiguous range) scaled to full range of corresponding BTA_DataFormat (former BTA_ChannelIdPhase)
+    BTA_ChannelIdGrayScale =   0x8000,   // Same as color, but no special dataFormats and color encodings
     BTA_ChannelIdBalance =    0x10000,
+    BTA_ChannelIdStdDev =     0x20000,
 
     BTA_ChannelIdCustom01 = 0x1000000,
     BTA_ChannelIdCustom02 = 0x2000000,
@@ -91,6 +113,8 @@ typedef enum BTA_ChannelId {
     BTA_ChannelIdCustom10 = 0xa000000,
 } BTA_ChannelId;
 
+#define BTA_ChannelIdPhase BTA_ChannelIdRawDist   // deprecated because confusing naming
+
 
 ///     @brief Enumerator with data formats which allows the parsing of the data in BTA_Channel.
 ///            The lowbyte stands for width (number of bytes) where known.
@@ -99,8 +123,8 @@ typedef enum BTA_DataFormat {
     BTA_DataFormatUnknown         = 0x0,
     BTA_DataFormatUInt8           = 0x11,
     BTA_DataFormatUInt16          = 0x12,
-    BTA_DataFormatUInt16Mlx1C11S  = 0x62,
-    BTA_DataFormatUInt16Mlx12S    = 0x72,
+    BTA_DataFormatSInt16Mlx1C11S  = 0x62,
+    BTA_DataFormatSInt16Mlx12S    = 0x72,
     BTA_DataFormatUInt16Mlx1C11U  = 0x82,
     BTA_DataFormatUInt16Mlx12U    = 0x92,
     //BTA_DataFormatUInt24          = 0x13,
@@ -117,10 +141,14 @@ typedef enum BTA_DataFormat {
     BTA_DataFormatRgb565          = 0x42,
     BTA_DataFormatRgb24           = 0x43,
 	BTA_DataFormatJpeg            = 0x50,
-    BTA_DataFormatYuv422          = 0x52,
-    BTA_DataFormatYuv444          = 0x53,
+    BTA_DataFormatYuv422          = 0x52, //YUV
+    BTA_DataFormatYuv444          = 0x53, //YUV
+    BTA_DataFormatYuv444UYV       = 0x63, //UYV
 } BTA_DataFormat;
 
+// legacy, do not use
+#define BTA_DataFormatUInt16Mlx1C11S BTA_DataFormatSInt16Mlx1C11S
+#define BTA_DataFormatUInt16Mlx12S BTA_DataFormatSInt16Mlx12S
 
 ///     @brief Enumerator with units which allows the interpretation of the data in a channel
 typedef enum BTA_Unit {
@@ -166,6 +194,7 @@ typedef struct BTA_Channel {
 	uint32_t flags;                     ///< More information on the channel content
     uint8_t sequenceCounter;            ///< If multiple sequences were captured, they can be distinguished by the sequence counter
     float gain;                         ///< The magnitude of amplification the sensor produces
+    //uint8_t channelDataIsShared;        ///<
 } BTA_Channel;
 
 
@@ -182,6 +211,9 @@ typedef struct BTA_Frame {
     BTA_Channel **channels;             ///< Data containing channelsLen Channel structs
     uint8_t channelsLen;                ///< The number of BTA_Channel pointers stored in channels
     uint8_t sequenceCounter;            ///< DEPRECATED
+    BTA_Metadata **metadata;            ///< List of pointers to additional generic data
+    uint32_t metadataLen;               ///< The number of BTA_Metadata pointers stored in metadata
+    //uint32_t shmOffset;                 ///< in case of shared memory, this is the 'id' that is returned to the camera's shared memory management
     /*TODO uint16_t deviceType;
     BTA_DeviceType interfaceType;
     uint16_t protocolVersion;*/

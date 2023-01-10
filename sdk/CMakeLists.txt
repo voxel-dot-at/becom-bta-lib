@@ -7,21 +7,28 @@ include_directories ("${PROJECT_SOURCE_DIR}/inc"  "${PROJECT_SOURCE_DIR}/common"
 # use_c99()
 
 set(COMMON_SRC
-  ../common/bta_byte_queue.c
+  ../common/bcb_circular_buffer.c
+  ../common/bitconverter.c
   ../common/bta_jpg.c
   ../common/bta_oshelper.c 
   ../common/bvq_queue.c
-  ../common/circular_buffer.c
+  ../common/calcXYZ.c
+  ../common/calc_bilateral.c
   ../common/crc16.c
   ../common/crc32.c
   ../common/crc7.c
-  ../common/ping.cc
+  ../common/fifo.c
+  ../common/ping.c
   ../common/pthread_helper.c
   ../common/sockets_helper.c
   ../common/timing_helper.c
   ../common/undistort.c
   ../common/utils.c
-  )
+  ../common/fastBF/fspecial_gauss.c
+  ../common/fastBF/imfilter.c
+  ../common/fastBF/maxFilter.c
+  ../common/fastBF/shiftableBF.c
+)
 
 file(GLOB HEADERS ../inc/*.h)
 
@@ -35,11 +42,21 @@ endif()
 message(" usb sources: " ${USB_SRC} )
 
 add_library(bta SHARED
-  bta.c bta_eth_helper.c bta_grabbing.c bta_stream.c
-  bta_uart_helper.c
+  bta.c
+  bta_discovery_helper.c
   bta_eth.c
+  bta_eth_helper.c
   bta_frame_queueing.c
-  bta_helper.c bta_uart.c
+  bta_grabbing.c
+  bta_helper.c
+  bta_p100.c
+  bta_p100_helper.c
+  bta_processing.c
+  bta_serialization.c
+  bta_stream.c
+  bta_uart.c
+  bta_uart_helper.c
+  bta_usb.c
   ${COMMON_SRC}
   ${USB_SRC}
   )

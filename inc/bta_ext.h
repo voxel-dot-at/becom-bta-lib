@@ -20,8 +20,8 @@
 #define BTA_EXT_H_INCLUDED
 
 #define BTA_EXT_H_VER_MAJ 3
-#define BTA_EXT_H_VER_MIN 0
-#define BTA_EXT_H_VER_NON_FUNC 5
+#define BTA_EXT_H_VER_MIN 3
+#define BTA_EXT_H_VER_NON_FUNC 6
 
 #include "bta.h"
 
@@ -44,71 +44,81 @@ typedef enum BTA_QueueMode {
 ///             Some information about the state of the library can be retrieved by reading various LibParams.
 ///             Never are they affecting the devices configuration (registers).
 typedef enum BTA_LibParam {
-    BTA_LibParamKeepAliveMsgInterval = 0,       ///< The interval in seconds. If no communication during this time, a keep alive is sent. (Supported only by Ethernet cameras).
-    BTA_LibParamCrcControlEnabled,              ///< Set > 0 in order to activate CRC sums for the control connection. (Supported only by Ethernet cameras).
+    BTA_LibParamKeepAliveMsgInterval = 0,               ///< The interval in seconds. If no communication during this time, a keep alive is sent. (Supported only by Ethernet cameras).
+    BTA_LibParamCrcControlEnabled,                      ///< Set > 0 in order to activate CRC sums for the control connection. (Supported only by Ethernet cameras).
 
-    BTA_LibParamBltStreamTotalFrameCount,       ///< Readonly. Contains the total amount of frames loaded from bltstream file.
-    BTA_LibParamBltStreamAutoPlaybackSpeed,     ///< Set > 0 in order to activate playback at recording rate times this factor. Set to 0 to pause playback.
-    BTA_LibParamBltStreamPos,                   ///< Get and set the index in the bltstream file. The first frame has index 0. If set, BTA_LibParamStreamAutoPlaybackSpeed is set to 0.
-    BTA_LibParamBltStreamPosIncrement,          ///< Writeonly. Set the increment to which position to jump to in the bltstream file. If set, BTA_LibParamStreamAutoPlaybackSpeed is set to 0.
+    BTA_LibParamBltstreamTotalFrameCount,               ///< Readonly. Contains the total amount of frames loaded from bltstream file.
+    BTA_LibParamBltstreamAutoPlaybackSpeed,             ///< Set > 0 in order to activate playback at recording rate times this factor. Set to 0 to pause playback.
+    BTA_LibParamBltstreamPos,                           ///< Get and set the index in the bltstream file. The first frame has index 0. If set, BTA_LibParamStreamAutoPlaybackSpeed is set to 0.
+    BTA_LibParamBltstreamPosIncrement,                  ///< Writeonly. Set the increment to which position to jump to in the bltstream file. If set, BTA_LibParamStreamAutoPlaybackSpeed is set to 0.
 
-    BTA_LibParamTestPatternEnabled,             ///< override camera data with test data:
-                                                ///< > 0: Testpattern depending on the connected interface
+    BTA_LibParamTestPatternEnabled,                     ///< override camera data with test data:
+                                                        ///< > 0: Testpattern depending on the connected interface
 
-    BTA_LibParamPauseCaptureThread,             ///< Set > 0 in order to pause internal capture thread. It saves CPU and/or bandwith, depending on the configuration and interface.
-    BTA_LibParamDisableDataScaling,             ///< This is only relevant for implementations where depth is calculated in the lib rather than the camera.
-    BTA_LibParamUndistortRgb,                   ///< > 0: Channels of the kind BTA_ChannelIdColor are undistorted if intrinsic data for that configuration is present
+    BTA_LibParamPauseCaptureThread,                     ///< Set > 0 in order to pause internal capture thread. It saves CPU and/or bandwith, depending on the configuration and interface.
+    BTA_LibParamDisableDataScaling,                     ///< This is only relevant for implementations where depth is calculated in the lib rather than the camera.
+    BTA_LibParamUndistortRgb,                           ///< > 0: Channels of the kind BTA_ChannelIdColor are undistorted if intrinsic data for that configuration is present
 
-    BTA_LibParamInfoEventVerbosity,             ///< Modify the BTA_Config parameter after BTAopen
-    BTA_LibParamEnableJpgDecoding,              ///< Enable jpg decoding (default on) or send raw jpeg data instead
+    BTA_LibParamInfoEventVerbosity,                     ///< Modify the BTA_Config parameter after BTAopen
+    BTA_LibParamEnableJpgDecoding,                      ///< Enable jpg decoding (default on) or send raw jpeg data instead
 
-    BTA_LibParamDataStreamReadFailedCount,      ///< Readonly: count of failed socket reads (read to clear!)
-    BTA_LibParamDataStreamBytesReceivedCount,   ///< Readonly: count of bytes received (read to clear!)
-    BTA_LibParamDataStreamPacketsReceivedCount, ///< Readonly: count of received packets (read to clear!)
-    BTA_LibParamDataStreamPacketsMissedCount,   ///< Readonly: count of packets missed (not received) (read to clear!)
-    BTA_LibParamDataStreamPacketsToParse,       ///< Readonly: count of packets queued for parsing (max since last read, read to clear!)
-    BTA_LibParamDataStreamParseFrameDuration,   ///< Readonly: microseconds needed to parse a frame (max since last read, read to clear!) [ms]
-    BTA_LibParamDataStreamFrameCounterGapsCount,///< Readonly: this value increases by 1 every time a frameCounter is found not to be consequtive
-    BTA_LibParamDataStreamFramesParsedCount,    ///< Readonly: count of frames parsed (read to clear!)
-    BTA_LibParamDataStreamFramesParsedPerSec,   ///< Readonly: Frames parsed per second
+    BTA_LibParamDataStreamReadFailedCount,              ///< Readonly: count of failed socket reads (read to clear!)
+    BTA_LibParamDataStreamBytesReceivedCount,           ///< Readonly: count of bytes received (read to clear!)
+    BTA_LibParamDataStreamPacketsReceivedCount,         ///< Readonly: count of received packets (read to clear!)
+    BTA_LibParamDataStreamPacketsMissedCount,           ///< Readonly: count of packets missed (not received) (read to clear!)
+    BTA_LibParamDataStreamPacketsToParse,               ///< Readonly: count of packets queued for parsing (max since last read, read to clear!)
+    BTA_LibParamDataStreamParseFrameDuration,           ///< Readonly: microseconds needed to parse a frame (max since last read, read to clear!) [ms]
+    BTA_LibParamDataStreamFrameCounterGapsCount,        ///< Readonly: this value increases by 1 every time two consecutive frameCounters are further apart than specified in BTA_LibParamDataStreamFrameCounterGap
+    BTA_LibParamDataStreamFramesParsedCount,            ///< Readonly: count of frames parsed (read to clear!)
+    BTA_LibParamDataStreamFramesParsedPerSec,           ///< Readonly: Frames parsed per second
 
-    BTA_LibParamDataStreamRetrReqMode,          ///< Retransmission requests for repeating the sending of data stream data
-                                                ///< 0: Retransmission off. Frames are delivered incompletely as soon as the timeout strikes or a newer frame is complete
-                                                ///< 1: Retransmission with low latency first. Frames are delivered as completely as possible but within the timeout and before a newer frame is complete
-                                                ///< 2: Retransmission with completeness first. DEBUG Not yet implemented DEBUG
-    BTA_LibParamDataStreamPacketWaitTimeout,    ///< The time to wait for any packet of a certain frame to arrive before taking further action [ms]
-    BTA_LibParamDataStreamRetrReqIntervalMin,   ///< How long the Api should wait before repeating a retransmission request (gaps excluded [ms]
-    BTA_LibParamDataStreamRetrReqMaxAttempts,   ///< If no packet was received within BTA_LibParamDataStreamPacketWaitTimeout, attempt a retransmission request for all missing packets this many times before giving up
-    BTA_LibParamDataStreamRetrReqsCount,        ///< The number of packets requested for retransmissions (read to clear!)
-    BTA_LibParamDataStreamRetransPacketsCount,  ///< The number of packets received that have the retransmission flag set (read to clear!)
-    BTA_LibParamDataStreamNdasReceived,         ///< The number of NDAs received (read to clear!)
-    BTA_LibParamDataStreamRedundantPacketCount, ///< The number of packets received a second (or more) time (read to clear!)
-    //BTA_LibParamDataStreamParseFrameThreadInterval, ///< This is the longest time to wait for a new packet before doing the periodic timeout checks and (if needed) frame parsing [ms]
-    //BTA_LibParamTransmissionTimePerPacketMax,   ///< The maximum time to wait for a frame to complete per it's packetCount
+    BTA_LibParamDataStreamRetrReqMode,                  ///< Retransmission requests for repeating the sending of data stream data
+                                                        ///< 0: Retransmission off. Frames are delivered incompletely as soon as the timeout strikes or a newer frame is complete
+                                                        ///< 1: Retransmission with low latency first. Frames are delivered as completely as possible but within the timeout and before a newer frame is complete
+                                                        ///< 2: Retransmission with completeness first. DEBUG Not yet implemented DEBUG
+    BTA_LibParamDataStreamPacketWaitTimeout,            ///< The time to wait for any packet of a certain frame to arrive before taking further action [ms]
+    BTA_LibParamDataStreamRetrReqIntervalMin,           ///< How long the Api should wait before repeating a retransmission request (gaps excluded) [ms]
+    BTA_LibParamDataStreamRetrReqMaxAttempts,           ///< If no packet was received within BTA_LibParamDataStreamPacketWaitTimeout, attempt a retransmission request for all missing packets this many times before giving up
+    BTA_LibParamDataStreamRetrReqsCount,                ///< The number of packets requested for retransmissions (read to clear!)
+    BTA_LibParamDataStreamRetransPacketsCount,          ///< The number of packets received that have the retransmission flag set (read to clear!)
+    BTA_LibParamDataStreamNdasReceived,                 ///< The number of NDAs received (read to clear!)
+    BTA_LibParamDataStreamRedundantPacketCount,         ///< The number of packets received multiple times (read to clear!)
 
-
-    BTA_LibParamDataSockOptRcvtimeo,            ///< Lets you read and set the timeout of the socket [ms]
-    BTA_LibParamDataSockOptRcvbuf,              ///< Lets you modify the size of the receiving buffer of the socket [bytes]
+    BTA_LibParamDataSockOptRcvtimeo,                    ///< Lets you read and set the timeout of the socket [ms]
+    BTA_LibParamDataSockOptRcvbuf,                      ///< Lets you modify the size of the receiving buffer of the socket [bytes]
 
 
-    BTA_LibParamDebugFlags01 = 5000,            ///< For debug purposes
-    BTA_LibParamDebugValue01,                   ///< For debug purposes
-    BTA_LibParamDebugValue02,                   ///< For debug purposes
-    BTA_LibParamDebugValue03,                   ///< For debug purposes
-    BTA_LibParamDebugValue04,                   ///< For debug purposes
-    BTA_LibParamDebugValue05,                   ///< For debug purposes
-    BTA_LibParamDebugValue06,                   ///< For debug purposes
-    BTA_LibParamDebugValue07,                   ///< For debug purposes
-    BTA_LibParamDebugValue08,                   ///< For debug purposes
-    BTA_LibParamDebugValue09,                   ///< For debug purposes
-    BTA_LibParamDebugValue10,                   ///< For debug purposes
+    BTA_LibParamDataStreamFrameCounterGap = 50,         ///< This value is used to count gaps in BTA_LibParamDataStreamFrameCounterGapsCount
+
+
+    BTA_LibParamCalcXYZ = 100,                          ///< > 0: If a distance Channel is available and the lenscalib can be read from the device, channels X, Y and Z are added accordingly
+    BTA_LibParamOffsetForCalcXYZ = 101,                 ///< This offset is applied to the distance channel before calculating the cartesian coordinates
+    BTA_LibParamBilateralFilterWindow = 102,            ///< The bilateral filter with this window size is applied (before calcXYZ)
+
+    BTA_LIBParamDataStreamAllowIncompleteFrames = 200,  ///< Set this parameter to 1 if you wish to receive incomplete frames (pixels are invalidated according to manual)
+
+    BTA_LibParamDebugFlags01 = 5000,                    ///< For debug purposes
+    BTA_LibParamDebugValue01,                           ///< For debug purposes
+    BTA_LibParamDebugValue02,                           ///< For debug purposes
+    BTA_LibParamDebugValue03,                           ///< For debug purposes
+    BTA_LibParamDebugValue04,                           ///< For debug purposes
+    BTA_LibParamDebugValue05,                           ///< For debug purposes
+    BTA_LibParamDebugValue06,                           ///< For debug purposes
+    BTA_LibParamDebugValue07,                           ///< For debug purposes
+    BTA_LibParamDebugValue08,                           ///< For debug purposes
+    BTA_LibParamDebugValue09,                           ///< For debug purposes
+    BTA_LibParamDebugValue10,                           ///< For debug purposes
 
 
     // for backward compatibility
-    BTA_LibParamStreamTotalFrameCount = BTA_LibParamBltStreamTotalFrameCount,           ///< Obsolete, use BTA_LibParamBltStreamTotalFrameCount!
-    BTA_LibParamStreamAutoPlaybackSpeed = BTA_LibParamBltStreamAutoPlaybackSpeed,       ///< Obsolete, use BTA_LibParamBltStreamAutoPlaybackSpeed!
-    BTA_LibParamStreamPos = BTA_LibParamBltStreamPos,                                   ///< Obsolete, use BTA_LibParamBltStreamPos!
-    BTA_LibParamStreamPosIncrement = BTA_LibParamBltStreamPosIncrement,                 ///< Obsolete, use BTA_LibParamBltStreamPosIncrement!
+    BTA_LibParamStreamTotalFrameCount = BTA_LibParamBltstreamTotalFrameCount,           ///< Obsolete, use BTA_LibParamBltstreamTotalFrameCount!
+    BTA_LibParamBltStreamTotalFrameCount = BTA_LibParamBltstreamTotalFrameCount,        ///< Obsolete, use BTA_LibParamBltstreamTotalFrameCount!
+    BTA_LibParamStreamAutoPlaybackSpeed = BTA_LibParamBltstreamAutoPlaybackSpeed,       ///< Obsolete, use BTA_LibParamBltstreamAutoPlaybackSpeed!
+    BTA_LibParamBltStreamAutoPlaybackSpeed = BTA_LibParamBltstreamAutoPlaybackSpeed,    ///< Obsolete, use BTA_LibParamBltstreamAutoPlaybackSpeed!
+    BTA_LibParamStreamPos = BTA_LibParamBltstreamPos,                                   ///< Obsolete, use BTA_LibParamBltstreamPos!
+    BTA_LibParamBltStreamPos = BTA_LibParamBltstreamPos,                                ///< Obsolete, use BTA_LibParamBltstreamPos!
+    BTA_LibParamStreamPosIncrement = BTA_LibParamBltstreamPosIncrement,                 ///< Obsolete, use BTA_LibParamBltstreamPosIncrement!
+    BTA_LibParamBltStreamPosIncrement = BTA_LibParamBltstreamPosIncrement,              ///< Obsolete, use BTA_LibParamBltstreamPosIncrement!
     BTA_LibParamBytesReceivedStream = BTA_LibParamDataStreamBytesReceivedCount,         ///< Obsolete, use BTA_LibParamDataStreamBytesReceivedCount!
     BTA_LibParamFramesParsedCount = BTA_LibParamDataStreamFramesParsedCount,            ///< Obsolete, use BTA_LibParamDataStreamFramesParsedCount!
 
@@ -116,7 +126,7 @@ typedef enum BTA_LibParam {
 
 
 
-///     @brief  Configuration structure to be passed with BTAstartDiscovery.
+///     @brief  Configuration structure to be passed with BTAstartGrabbing.
 typedef struct BTA_GrabbingConfig {
     uint8_t *filename;                                      ///< The filename of the *.bltstream file. Where the grabbing process stores the stream. (ASCII coded).
 } BTA_GrabbingConfig;
@@ -158,7 +168,7 @@ typedef struct BTA_ExtrinsicData {
 ///     @brief  This struct is used for the representation of the BTA_Config struct.
 ///             Programming languages that don't use header files are able to query the elements of BTA_Config generically.
 typedef struct BTA_ConfigStructOrg {
-    char const *variableName;                           ///< The name of the field in the BTA_Config
+    const char *variableName;                           ///< The name of the field in the BTA_Config
     uint8_t pointer;                                    ///< 1 --> field is a pointer, 0 --> field is not a pointer
 } BTA_ConfigStructOrg;
 
@@ -256,6 +266,13 @@ DLLEXPORT BTA_Status BTA_CALLCONV BTAsendReset(BTA_Handle handle);
 
 
 
+///     @brief  Fills the flash update/read config structure with standard values
+///     @param  config Pointer to the structure to be initialized to standard values
+///     @return Please refer to bta_status.h
+DLLEXPORT BTA_Status BTA_CALLCONV BTAinitFlashUpdateConfig(BTA_FlashUpdateConfig *config);
+
+
+
 ///     @brief  Allows sending large data to the device.
 ///             Mainly this is used for sending calibration data and firmware updates.
 ///             This function handles the complete transfer of the file and blocks during transmission.
@@ -310,7 +327,8 @@ DLLEXPORT BTA_Status BTA_CALLCONV BTAfppnUpdate(BTA_Handle handle, const uint8_t
 ///             During transmission, progress is reported repeatedly when possible (report BTA_StatusOk with percentage).
 ///     @param  handle Handle of the device to be used
 ///     @param  flashUpdateConfig Must contain the flash target and flash id to read from and optionally the flash address.
-///                               Must also have have the pointer data with preallocated space denoted in dataLen.
+///                               Can have have the pointer data with preallocated space denoted in dataLen.
+///                               If dataLen is 0 the function will allocate the needed memory but the user is still responsible for freeing it.
 ///                               On return it contains the data read and its actual length.
 ///     @param  progressReport Callback function for reporting the status and progress during transfer
 ///     @return Please refer to bta_status.h
@@ -394,14 +412,17 @@ typedef void* BFQ_FrameQueueHandle;
 ///             BTA_StatusOutOfMemory if mode set to BTA_QueueModeAvoidDrop and queue is full
 DLLEXPORT BTA_Status BTA_CALLCONV BFQinit(uint32_t frameQueueLength, BTA_QueueMode frameQueueMode, BFQ_FrameQueueHandle *handle);
 
+
 ///     @brief  Closes the instance of the queue instantiated with BFQinit
 ///     @param handle The pointer to the handle (of type BFQ_FrameQueueHandle) to be closed and free'd
 DLLEXPORT BTA_Status BTA_CALLCONV BFQclose(BFQ_FrameQueueHandle *handle);
+
 
 ///     @brief  Function to query the current amount of frames in the queue
 ///     @param handle Handle of the queue
 ///     @param count Pointer that points to the result on return
 DLLEXPORT BTA_Status BTA_CALLCONV BFQgetCount(BFQ_FrameQueueHandle handle, uint32_t *count);
+
 
 ///     @brief Enqueues a frame. The queue does not clone the frame, so please do not call BTAfreeFrame after enqueueing it.
 ///     @param handle Handle of the queue
@@ -409,6 +430,16 @@ DLLEXPORT BTA_Status BTA_CALLCONV BFQgetCount(BFQ_FrameQueueHandle handle, uint3
 ///     @return BTA_StatusOk on success
 ///             BTA_StatusOutOfMemory if mode set to BTA_QueueModeAvoidDrop and queue is full
 DLLEXPORT BTA_Status BTA_CALLCONV BFQenqueue(BFQ_FrameQueueHandle handle, BTA_Frame *frame);
+
+
+///     @brief Peek a frame. You get the exact same frame that was enqueued, not a clone. But it stays in the queue, so do not call BTAfreeFrame on it
+///     @param handle Handle of the queue
+///     @param frame Pointer to the frame on return
+///     @param timeout The maximum time in [ms] to wait for a frame to become available if the queue is currently empty. (0: infinite!)
+///     @return BTA_StatusOk on success
+///             BTA_StatusTimeOut if there is no frame in the queue
+DLLEXPORT BTA_Status BTA_CALLCONV BFQpeek(BFQ_FrameQueueHandle handle, BTA_Frame** frame, uint32_t timeout);
+
 
 ///     @brief Dequeues a frame. You get the exact same frame that was enqueued, not a clone. So now is the time to call BTAfreeFrame (when frame is no longer needed)
 ///     @param handle Handle of the queue
@@ -418,12 +449,46 @@ DLLEXPORT BTA_Status BTA_CALLCONV BFQenqueue(BFQ_FrameQueueHandle handle, BTA_Fr
 ///             BTA_StatusTimeOut if there is no frame in the queue
 DLLEXPORT BTA_Status BTA_CALLCONV BFQdequeue(BFQ_FrameQueueHandle handle, BTA_Frame **frame, uint32_t timeout);
 
+
 ///     @brief Empties the queue. Also, BTAfreeFrame is called on all the inserted frames.
 ///     @param handle Handle of the queue
 ///     @return BTA_StatusOk on success
 DLLEXPORT BTA_Status BTA_CALLCONV BFQclear(BFQ_FrameQueueHandle handle);
 
 
+
+
+
+
+// ------------------------------------------------------------------------------------------------------------------------------------------------------------
+// ------------------------------------------------------------------------------------------------------------------------------------------------------------
+// ------------------------------------------------------------------------------------------------------------------------------------------------------------
+// ------------------------------------------------------------------------------------------------------------------------------------------------------------
+// ------------------------------------------------------------------------------------------------------------------------------------------------------------
+// ------------------------------------------------------------------------------------------------------------------------------------------------------------
+// Averaging of frames and channels, for your convenience------------------------------------------------------------------------------------------------------
+
+
+///     @brief Calculates the average of multiple frames
+///     @param frames A list of pointers to BTA_Frame
+///     @param framesLen Lenght of the list frames
+///     @param minValidPixelPercentage If a pixel is invalid in more frames than this percentage, the resulting pixel will also be invalid
+///                                    If there are less invalid values for a specific pixel than this threshold, the remaining valid values are
+///                                    averaged and invalid values are ignored
+///     @param result A newly allocated frame with all frames averaged into one (same channels, same format, same resolution, ...)
+///     @return BTA_StatusOk on success
+DLLEXPORT BTA_Status BTA_CALLCONV BTAaverageFrames(BTA_Frame** frames, int framesLen, float minValidPixelPercentage, BTA_Frame** result);
+
+
+///     @brief Calculates the average of multiple channels
+///     @param channels A list of pointers to BTA_Channel
+///     @param channelsLen Lenght of the list channels
+///     @param minValidPixelPercentage If a pixel is invalid in more channels than this percentage, the resulting pixel will also be invalid
+///                                    If there are less invalid values for a specific pixel than this threshold, the remaining valid values are
+///                                    averaged and invalid values are ignored
+///     @param result A newly allocated channel with all channels averaged into one (same format, same resolution, ...)
+///     @return BTA_StatusOk on success
+DLLEXPORT BTA_Status BTA_CALLCONV BTAaverageChannels(BTA_Channel **channels, int channelsLen, float minValidPixelPercentage, BTA_Channel **result);
 
 
 
@@ -437,17 +502,16 @@ DLLEXPORT BTA_Status BTA_CALLCONV BFQclear(BFQ_FrameQueueHandle handle);
 // ------------------------------------------------------------------------------------------------------------------------------------------------------------
 // Undocumented utility functions - use at your own risk ------------------------------------------------------------------------------------------------------
 
-
 DLLEXPORT uint8_t BTA_CALLCONV BTAisEthDevice(uint16_t deviceType);
 DLLEXPORT uint8_t BTA_CALLCONV BTAisUsbDevice(uint16_t deviceType);
 DLLEXPORT uint8_t BTA_CALLCONV BTAisP100Device(uint16_t deviceType);
 DLLEXPORT uint8_t BTA_CALLCONV BTAisUartDevice(uint16_t deviceType);
 
 DLLEXPORT BTA_Status BTA_CALLCONV BTAinsertChannelIntoFrame(BTA_Frame *frame, BTA_Channel *channel);
-DLLEXPORT BTA_Status BTA_CALLCONV BTAinsertChannelDataIntoFrame(BTA_Frame *frame, BTA_ChannelId id, uint16_t xRes, uint16_t yRes, BTA_DataFormat dataFormat, BTA_Unit unit, uint32_t integrationTime, uint32_t modulationFrequency, uint8_t *data, uint32_t dataLen);
+DLLEXPORT BTA_Status BTA_CALLCONV BTAinsertChannelIntoFrame2(BTA_Frame *frame, BTA_ChannelId id, uint16_t xRes, uint16_t yRes, BTA_DataFormat dataFormat, BTA_Unit unit, uint32_t integrationTime, uint32_t modulationFrequency, uint8_t *data, uint32_t dataLen);
 DLLEXPORT BTA_Status BTA_CALLCONV BTAremoveChannelFromFrame(BTA_Frame *frame, BTA_Channel *channel);
 DLLEXPORT BTA_Status BTA_CALLCONV BTAcloneChannel(BTA_Channel *channelSrc, BTA_Channel **channelDst);
-DLLEXPORT BTA_Status BTA_CALLCONV BTAcloneChannelNoMemcpy(BTA_Channel *channelSrc, BTA_Channel **channelDst, uint8_t *dataNew);
+DLLEXPORT BTA_Status BTA_CALLCONV BTAcloneChannelEmpty(BTA_Channel *channelSrc, BTA_Channel **channelDst);
 DLLEXPORT BTA_Status BTA_CALLCONV BTAinsertMetadataIntoChannel(BTA_Channel *channel, BTA_Metadata *metadata);
 DLLEXPORT BTA_Status BTA_CALLCONV BTAinsertMetadataDataIntoChannel(BTA_Channel *channel, BTA_MetadataId id, void *data, uint32_t dataLen);
 DLLEXPORT BTA_Status BTA_CALLCONV BTAcloneMetadata(BTA_Metadata *metadataSrc, BTA_Metadata **metadataDst);
@@ -461,8 +525,12 @@ DLLEXPORT BTA_Status BTA_CALLCONV BTAchangeDataFormat(BTA_Channel *channel, BTA_
 DLLEXPORT BTA_Status BTA_CALLCONV BTAfreeChannel(BTA_Channel **channel);
 DLLEXPORT BTA_Status BTA_CALLCONV BTAfreeMetadata(BTA_Metadata **metadata);
 
-DLLEXPORT BTA_Status BTA_CALLCONV BTAgetValidModulationFrequencies(BTA_DeviceType deviceType, const uint32_t **modulationFrequencies, int32_t *modulationFrequenciesCount);
-DLLEXPORT BTA_Status BTA_CALLCONV BTAgetNextBestModulationFrequency(BTA_DeviceType deviceType, uint32_t modFreq, uint32_t *validModFreq, int32_t *index);
+///     @brief Sets or cleares the videoMode flag in register Mode0
+///     @param handle Handle of the queue
+///     @param modulationFrequencies address of a ponter: on return this points to the list in static memory. do not free or modify!
+///     @return BTA_StatusOk on success
+DLLEXPORT BTA_Status BTA_CALLCONV BTAgetValidModulationFrequencies(BTA_Handle handle, const uint32_t **modulationFrequencies, int32_t *modulationFrequenciesCount);
+DLLEXPORT BTA_Status BTA_CALLCONV BTAgetNextBestModulationFrequency(BTA_Handle handle, uint32_t modFreq, uint32_t *validModFreq, int32_t *index);
 
 
 ///     @brief Sets or cleares the videoMode flag in register Mode0
@@ -478,6 +546,13 @@ DLLEXPORT int BTA_CALLCONV BTAframeModeToImageMode(int deviceType, BTA_FrameMode
 
 DLLEXPORT void BTA_CALLCONV BTAsleep(uint32_t milliseconds);
 
+DLLEXPORT BTA_Status BTAgetNetworkBroadcastAddrs(uint8_t ***localIpAddrs, uint8_t ***networkBroadcastAddrs, uint32_t *networkBroadcastAddrsLen);
+DLLEXPORT void BTAfreeNetworkBroadcastAddrs(uint8_t ***localIpAddrs, uint8_t ***networkBroadcastAddrs, uint32_t networkBroadcastAddrsLen);
+
+DLLEXPORT void BTAgeneratePlanarView(int16_t *chX, int16_t *chY, int16_t *chZ, uint16_t *chAmp, int resX, int resY, int planarViewResX, int planarViewResY, float planarViewScale, int16_t *planarViewZ, uint16_t *planarViewAmp);
+
+
+DLLEXPORT BTA_Status BTA_CALLCONV BTAfreeFrameFromShm(BTA_Frame **frame);
 #ifdef __cplusplus
 }
 #endif

@@ -16,7 +16,7 @@ BTA_Status BTAserialOpen(uint8_t *portName, uint32_t baudRate, uint8_t dataBits,
         baudRate != CBR_2400 && baudRate != CBR_4800 && baudRate != CBR_9600 && baudRate != CBR_14400 &&
         baudRate != CBR_19200 && baudRate != CBR_38400 && baudRate != CBR_56000 && baudRate != CBR_57600 &&
         baudRate != CBR_115200 && baudRate != CBR_128000 && baudRate != CBR_256000) {
-        //BTAinfoEventHelper1(infoEventInst, IMPORTANCE_ERROR, intInvalidParameter, "BTAserialOpen: invalid baud rate %d", baudRate);
+        //BTAinfoEventHelper(infoEventInst, IMPORTANCE_ERROR, intInvalidParameter, "BTAserialOpen: invalid baud rate %d", baudRate);
         return BTA_StatusInvalidParameter;
     }
     if (!dataBits) {
@@ -35,7 +35,7 @@ BTA_Status BTAserialOpen(uint8_t *portName, uint32_t baudRate, uint8_t dataBits,
             stopBits = TWOSTOPBITS;
             break;
         default:
-            //BTAinfoEventHelper1(infoEventInst, IMPORTANCE_ERROR, intInvalidParameter, "BTAserialOpen: invalid stop bits %d", stopBits);
+            //BTAinfoEventHelper(infoEventInst, IMPORTANCE_ERROR, intInvalidParameter, "BTAserialOpen: invalid stop bits %d", stopBits);
             return BTA_StatusInvalidParameter;
         }
     }
@@ -57,7 +57,7 @@ BTA_Status BTAserialOpen(uint8_t *portName, uint32_t baudRate, uint8_t dataBits,
             parity = SPACEPARITY;
             break;
         default:
-            //BTAinfoEventHelper1(infoEventInst, IMPORTANCE_ERROR, intInvalidParameter, "BTAserialOpen: invalid parity %d", parity);
+            //BTAinfoEventHelper(infoEventInst, IMPORTANCE_ERROR, intInvalidParameter, "BTAserialOpen: invalid parity %d", parity);
             return BTA_StatusInvalidParameter;
         }
     }
@@ -69,14 +69,14 @@ BTA_Status BTAserialOpen(uint8_t *portName, uint32_t baudRate, uint8_t dataBits,
     *handle = CreateFile(wUartPortName, GENERIC_READ | GENERIC_WRITE, 0, 0, OPEN_EXISTING, 0, 0);
     if (*handle == INVALID_HANDLE_VALUE) {
         *handle = (void *)-1;
-        //BTAinfoEventHelper1(infoEventInst, IMPORTANCE_ERROR, intInvalidParameter, "BTAserialOpen: error in CreateFile %d", GetLastError());
+        //BTAinfoEventHelper(infoEventInst, IMPORTANCE_ERROR, intInvalidParameter, "BTAserialOpen: error in CreateFile %d", GetLastError());
         return BTA_StatusRuntimeError;
     }
 
     DCB dcbSerialParams = { 0 };
     dcbSerialParams.DCBlength = sizeof(dcbSerialParams);
     if (!GetCommState(*handle, &dcbSerialParams)) {
-        //BTAinfoEventHelper1(infoEventInst, IMPORTANCE_ERROR, intInvalidParameter, "BTAserialOpen: error in GetCommState %d", GetLastError());
+        //BTAinfoEventHelper(infoEventInst, IMPORTANCE_ERROR, intInvalidParameter, "BTAserialOpen: error in GetCommState %d", GetLastError());
         return BTA_StatusRuntimeError;
     }
     dcbSerialParams.BaudRate = baudRate;
@@ -84,7 +84,7 @@ BTA_Status BTAserialOpen(uint8_t *portName, uint32_t baudRate, uint8_t dataBits,
     dcbSerialParams.StopBits = stopBits;
     dcbSerialParams.Parity = parity;
     if (!SetCommState(*handle, &dcbSerialParams)) {
-        //BTAinfoEventHelper1(infoEventInst, IMPORTANCE_ERROR, intInvalidParameter, "BTAserialOpen: error in SetCommState %d", GetLastError());
+        //BTAinfoEventHelper(infoEventInst, IMPORTANCE_ERROR, intInvalidParameter, "BTAserialOpen: error in SetCommState %d", GetLastError());
         return BTA_StatusRuntimeError;
     }
     COMMTIMEOUTS timeouts;
@@ -94,7 +94,7 @@ BTA_Status BTAserialOpen(uint8_t *portName, uint32_t baudRate, uint8_t dataBits,
     timeouts.WriteTotalTimeoutMultiplier = 10;
     timeouts.WriteTotalTimeoutConstant = 250;
     if (!SetCommTimeouts(*handle, &timeouts)) {
-        //BTAinfoEventHelper1(infoEventInst, IMPORTANCE_ERROR, intInvalidParameter, "BTAserialOpen: error in SetCommTimeouts %d", GetLastError());
+        //BTAinfoEventHelper(infoEventInst, IMPORTANCE_ERROR, intInvalidParameter, "BTAserialOpen: error in SetCommTimeouts %d", GetLastError());
         return BTA_StatusRuntimeError;
     }
     return BTA_StatusOk;

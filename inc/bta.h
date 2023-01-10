@@ -20,8 +20,8 @@
 #define BTA_H_INCLUDED
 
 #define BTA_VER_MAJ 3
-#define BTA_VER_MIN 0
-#define BTA_VER_NON_FUNC 5
+#define BTA_VER_MIN 3
+#define BTA_VER_NON_FUNC 6
 
 #if (defined(WIN32) || defined(WIN64)) && !defined(PLAT_WINDOWS) && !defined(PLAT_LINUX) && !defined(PLAT_APPLE)
 #   define PLAT_WINDOWS
@@ -40,7 +40,7 @@
 #   ifdef COMPILING_DLL
 #       define DLLEXPORT __declspec(dllexport)
 #   else
-#       define DLLEXPORT
+#       define DLLEXPORT __declspec(dllimport)
 #   endif
 #elif defined PLAT_LINUX || defined PLAT_APPLE
     //must be empty
@@ -51,15 +51,15 @@
 #   error "Please define PLAT_WINDOWS, PLAT_LINUX or PLAT_APPLE in your makefile/project"
 #endif
 
+
 ///     @brief  The handle to hold the instance created by BTAopen
 typedef void* BTA_Handle;
 
-// forward declaration
-struct BTA_FrameArrivedReturnOptions;
+
+#include <stdint.h>
 
 #include "bta_status.h"
 #include "bta_frame.h"
-#include "bta_discovery.h"
 #include "bta_flash_update.h"
 #include "bta_ext.h"
 
@@ -93,6 +93,9 @@ typedef void (BTA_CALLCONV *FN_BTA_InfoEventEx)(BTA_Handle handle, BTA_Status st
 typedef void (BTA_CALLCONV *FN_BTA_InfoEventEx2)(BTA_Handle handle, BTA_Status status, int8_t *msg, void *userArg);
 
 
+#include "bta_discovery.h"
+
+
 
 ///     @brief  Callback function to report on data frames from the sensor.
 ///             The implementation of this function in the application must copy the relevant data and return immediately.
@@ -113,15 +116,27 @@ typedef void (BTA_CALLCONV *FN_BTA_FrameArrivedEx)(BTA_Handle handle, BTA_Frame 
 
 
 
+///     @brief  Structure for the user for use in frameArrivedEx2
+///             The user can inform the BltTofApi about how he handled the callback
+typedef struct BTA_FrameArrivedReturnOptions {
+    uint8_t userFreesFrame;             ///< If the user sets this to true, the BltTofApi won't free the frame
+} BTA_FrameArrivedReturnOptions;
+
+
+
 ///     @brief  Callback function to report on data frames from the sensor.
 ///             The implementation of this function in the application must copy the relevant data and return immediately.
 ///             The BTA_Frame may NOT be altered!
 ///             Do not call BTAfreeFrame on frame, because it is free'd in the lib.
 ///     @param  handle The handle as identification for the device
 ///     @param  frame A pointer to the structure containing the data frame
-///     @param  userArg A pointer set by the user via BTA_Config->userArg
+///     @param  userArg A pointer set by the user in BTAopen via BTA_Config->userArg
 ///     @param  frameArrivedReturnOptions An empty pointer to a struct where the user can give information to the BltTofApi
 typedef void (BTA_CALLCONV *FN_BTA_FrameArrivedEx2)(BTA_Handle handle, BTA_Frame *frame, void *userArg, struct BTA_FrameArrivedReturnOptions *frameArrivedReturnOptions);
+
+
+
+#include "bta_discovery.h"
 
 
 
@@ -135,6 +150,7 @@ typedef void (BTA_CALLCONV *FN_BTA_FrameArrivedEx2)(BTA_Handle handle, BTA_Frame
 #elif defined PLAT_APPLE
 #define BTA_PRAGMA_ALIGN __attribute__((aligned(BTA_CONFIG_STRUCT_STRIDE)))
 #endif
+
 ///     @brief  Configuration structure to be passed with BTAopen
 typedef struct BTA_Config {
     BTA_PRAGMA_ALIGN uint8_t *udpDataIpAddr;                ///< The IP address for the UDP data interface (The address the device is configured to stream to)
@@ -176,7 +192,7 @@ typedef struct BTA_Config {
     BTA_PRAGMA_ALIGN FN_BTA_FrameArrived frameArrived;      ///< Callback function pointer to the function to be called when a frame is ready (optional) (deprecated, use frameArrivedEx/2)
     BTA_PRAGMA_ALIGN FN_BTA_FrameArrivedEx frameArrivedEx;  ///< Callback function pointer to the function to be called when a frame is ready (optional)
     BTA_PRAGMA_ALIGN FN_BTA_FrameArrivedEx2 frameArrivedEx2;///< Callback function pointer to the function to be called when a frame is ready (optional)
-    BTA_PRAGMA_ALIGN void *userArg;                         ///< Set this pointer and it will be set as the third parameter frameArrivedEx2 callback for your convenience
+    BTA_PRAGMA_ALIGN void *userArg;                         ///< Set this pointer and it will be set as the third parameter in frameArrivedEx2 and infoEventEx2 callbacks
 
     BTA_PRAGMA_ALIGN uint16_t frameQueueLength;             ///< The library queues this amount of frames internally
     BTA_PRAGMA_ALIGN BTA_QueueMode frameQueueMode;          ///< The frame queue configuration parameter
@@ -185,15 +201,12 @@ typedef struct BTA_Config {
 
     BTA_PRAGMA_ALIGN uint8_t *bltstreamFilename;            ///< Only for BtaStreamLib: Specify the file (containing the stream) to read from (ASCII coded)
     BTA_PRAGMA_ALIGN uint8_t *infoEventFilename;            ///< All infoEvents are appended to this file
+
+    BTA_PRAGMA_ALIGN uint8_t udpDataAutoConfig;             ///< 1: BTAopen automatically configures the device to stream to the correct destination
+    BTA_PRAGMA_ALIGN uint8_t shmDataEnabled;                ///< 1: frames are retrieved via the shared memory interface
 } BTA_Config;
+#define CONFIG_STRUCT_ORG_LEN 42
 
-
-
-///     @brief  Structure for the user for use in frameArrivedEx2
-///             The user can inform the BltTofApi about how he handled the callback
-typedef struct BTA_FrameArrivedReturnOptions {
-    uint8_t userFreesFrame;             ///< If the user sets this to true, the BltTofApi won't free the frame
-} BTA_FrameArrivedReturnOptions;
 
 
 //----------------------------------------------------------------------------------------------------------------
@@ -226,7 +239,8 @@ DLLEXPORT BTA_Status BTA_CALLCONV BTAinitDiscoveryConfig(BTA_DiscoveryConfig *co
 ///     @brief  Starts the discovery of devices.
 ///             If possible, broadcast messages are transmitted otherwise all possible connections are tested
 ///     @param  discoveryConfig Parameters on how to perform the discovery.
-///                             The connection interface used defines which parameters have to be set in BTA_DiscoveryConfig.
+///                             Fill in the struct members that are relevant to discover your device
+///                             Do not free (or leave the scope of) the struct or its members before calling BTAstopDiscovery!
 ///     @param  deviceFound     The callback to be invoked when a device has been discovered
 ///     @param  infoEvent       The callback to be invoked when an error occurs
 ///     @param  handle          On return it contains the discovery handle which has to be used to stop the background process.
@@ -235,10 +249,32 @@ DLLEXPORT BTA_Status BTA_CALLCONV BTAstartDiscovery(BTA_DiscoveryConfig *discove
 
 
 
+///     @brief  Starts the discovery of devices.
+///             If possible, broadcast messages are transmitted otherwise all possible connections are tested
+///     @param  discoveryConfig Parameters on how to perform the discovery.
+///                             The connection interface used defines which parameters have to be set in BTA_DiscoveryConfig.
+///     @param  deviceFound     The callback to be invoked when a device has been discovered
+///     @param  infoEvent       The callback to be invoked when an error occurs
+///     @param  handle          On return it contains the discovery handle which has to be used to stop the background process.
+///     @return                 Please refer to bta_status.h
+DLLEXPORT BTA_Status BTA_CALLCONV BTAstartDiscoveryEx(BTA_DiscoveryConfig *discoveryConfig, BTA_Handle *handle);
+
+
+
 ///     @brief  Stops the discovery of devices
 ///     @param  handle  Pass the handle from startDiscovery in order to identify the ongoing discovery process
 ///     @return         Please refer to bta_status.h
 DLLEXPORT BTA_Status BTA_CALLCONV BTAstopDiscovery(BTA_Handle *handle);
+
+
+
+///     @brief  Stops the discovery of devices
+///     @param  handle  Pass the handle from startDiscovery in order to identify the ongoing discovery process
+///     @param  deviceList Optional. Contains discovered devices after BTAstopDiscovery. If null is passed it is ignored
+///     @param  deviceListLen Optional with deviceList. Specified the number of pointers deviceList is able to hold. If more devices are discovered,
+///                           they are not included in the list. Contains the number of actually discovered devices on return.
+///     @return         Please refer to bta_status.h
+DLLEXPORT BTA_Status BTA_CALLCONV BTAstopDiscoveryEx(BTA_Handle *handle, BTA_DeviceInfo **deviceList, uint16_t *deviceListLen);
 
 
 
@@ -301,6 +337,22 @@ DLLEXPORT BTA_Status BTA_CALLCONV BTAsetFrameMode(BTA_Handle handle, BTA_FrameMo
 DLLEXPORT BTA_Status BTA_CALLCONV BTAgetFrameMode(BTA_Handle handle, BTA_FrameMode *frameMode);
 
 
+///     @brief  Allows to set a number of selected channels for streaming
+///     @param  handle Handle of the device to be used
+///     @param  channelSelection Pointer to list of BTA_ChannelSelections.
+///     @param  channelSelectionCount count of BTA_ChannelSelections in channelSelection
+///     @return Please refer to bta_status.h
+DLLEXPORT BTA_Status BTA_CALLCONV BTAsetChannelSelection(BTA_Handle handle, BTA_ChannelSelection *channelSelection, int channelSelectionCount);
+
+
+///     @brief  Allows to get a list of the selected channels for streaming
+///     @param  handle Handle of the device to be used
+///     @param  channelSelection Pointer to list of BTA_ChannelSelections allocated by the caller. Contains selected channels on return.
+///     @param  channelSelectionCount Pointer to size of channelSelection (the number of supported BTA_ChannelSelections); on return it contains number of selected channels
+///     @return Please refer to bta_status.h
+DLLEXPORT BTA_Status BTA_CALLCONV BTAgetChannelSelection(BTA_Handle handle, BTA_ChannelSelection *channelSelection, int *channelSelectionCount);
+
+
 
 ///     @brief  Helper function to clone/duplicate/deep-copy a BTA_Frame structure.
 ///             If successful, BTAfreeFrame must be called on frameDst afterwards.
@@ -314,12 +366,24 @@ DLLEXPORT BTA_Status BTA_CALLCONV BTAcloneFrame(BTA_Frame *frameSrc, BTA_Frame *
 ///     @brief  Actively requests a frame.
 ///             For this function to work, frameQueueLength and frameQueueMode must be set to queue frames!
 ///             For most applications it is adviced to use the frameArrived/Ex/Ex2 callback instead
+///             BTAfreeFrame must not be called on the frame because it remains in the queue
+///     @param  handle Handle of the device to be used
+///     @param  frame Pointer to frame (null if failed) on return (needs to be freed with BTAfreeFrame)
+///     @param  millisecondsTimeout Timeout to wait if no frame is yet available in [ms]. If timeout == 0 the function waits endlessly for a frame from the device.
+///     @return Please refer to bta_status.h
+DLLEXPORT BTA_Status BTA_CALLCONV BTApeekFrame(BTA_Handle handle, BTA_Frame **frame, uint32_t millisecondsTimeout);
+
+
+
+///     @brief  Actively requests a frame.
+///             For this function to work, frameQueueLength and frameQueueMode must be set to queue frames!
+///             For most applications it is adviced to use the frameArrived/Ex/Ex2 callback instead
 ///             If successful, BTAfreeFrame must be called afterwards.
 ///     @param  handle Handle of the device to be used
 ///     @param  frame Pointer to frame (null if failed) on return (needs to be freed with BTAfreeFrame)
 ///     @param  millisecondsTimeout Timeout to wait if no frame is yet available in [ms]. If timeout == 0 the function waits endlessly for a frame from the device.
 ///     @return Please refer to bta_status.h
-DLLEXPORT BTA_Status BTA_CALLCONV BTAgetFrame(BTA_Handle handle, BTA_Frame **frame, uint32_t millisecondsTimeout);
+DLLEXPORT BTA_Status BTA_CALLCONV BTAgetFrame(BTA_Handle handle, BTA_Frame** frame, uint32_t millisecondsTimeout);
 
 
 
@@ -340,6 +404,21 @@ DLLEXPORT BTA_Status BTA_CALLCONV BTAgetFrameCount(BTA_Handle handle, uint32_t *
 ///             All frames captured so far are discarded
 ///     @return Please refer to bta_status.h
 DLLEXPORT BTA_Status BTA_CALLCONV BTAflushFrameQueue(BTA_Handle handle);
+
+
+
+///     @brief  Convenience function for extracting channel data from a provided frame.
+///             It simply returns the pointer and copies some information. The same data can be accessed directly going through the BTA_Frame structure.
+///             If there is no matching channel is present in the frame, an error is returned.
+///     @param  frame The frame from which to extract the data
+///     @param  channelId Identification for the channel to be extracted. If more than one channel with this id is present, only the first is regarded
+///     @param  data Pointer to the distances on return (null on error)
+///     @param  dataFormat Pointer to the BTA_DataFormat, thus how to parse 'distBuffer'
+///     @param  unit Pointer to BTA_Unit, thus how to interpret 'distBuffer'
+///     @param  xRes Pointer to the number of columns of 'distBuffer'
+///     @param  yRes Pointer to the number of rows of 'distBuffer'
+///     @return Please refer to bta_status.h
+DLLEXPORT BTA_Status BTA_CALLCONV BTAgetDataByChannelId(BTA_Frame *frame, BTA_ChannelId channelId, void **data, BTA_DataFormat *dataFormat, BTA_Unit *unit, uint16_t *xRes, uint16_t *yRes);
 
 
 
@@ -509,13 +588,6 @@ DLLEXPORT BTA_Status BTA_CALLCONV BTAwriteRegister(BTA_Handle handle, uint32_t a
 
 
 
-///     @brief  Initiates a reset of the device
-///     @param  handle Handle of the device to be used
-///     @return Please refer to bta_status.h
-DLLEXPORT BTA_Status BTA_CALLCONV BTAsendReset(BTA_Handle handle);
-
-
-
 ///     @brief  Convenience function for doing a firmware update. Uses BTAflashUpdate() internally
 ///     @param  handle Handle of the device to be used
 ///     @param  filename Name of the binary file
@@ -558,6 +630,12 @@ DLLEXPORT const char* BTA_CALLCONV BTAstatusToString2(BTA_Status status);
 ///     @param libParam The BTA_LibParam to be converted into a string
 ///     @return Returns a constant char* that is not allocated and doesn't need to be free'd
 DLLEXPORT const char* BTA_CALLCONV BTAlibParamToString(BTA_LibParam libParam);
+
+
+///     @brief  A convenience function to convert a BTA_FrameMode into a string
+///     @param frameMode The BTA_FrameMode to be converted into a string
+///     @return Returns a constant char* that is not allocated and doesn't need to be free'd
+DLLEXPORT const char* BTA_CALLCONV BTAframeModeToString(BTA_FrameMode frameMode);
 
 #ifdef __cplusplus
 }

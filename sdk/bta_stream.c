@@ -12,7 +12,7 @@
 
 #ifdef PLAT_WINDOWS
 #   include <Windows.h>
-#elif defined PLAT_LINUX || defined PLAT_APPLE
+#elif defined PLAT_LINUX
 #   include <netdb.h>
 #   include <errno.h>
 #endif
@@ -45,7 +45,7 @@ static BTA_Status freeFrameAndIndex(FrameAndIndex **frameAndIndex);
 static int getLastError() {
 #ifdef PLAT_WINDOWS
     return GetLastError();
-#elif defined PLAT_LINUX || defined PLAT_APPLE
+#elif defined PLAT_LINUX
     return errno;
 #endif
 }
@@ -58,7 +58,13 @@ BTA_Status BTASTREAMopen(BTA_Config *config, BTA_WrapperInst *winst) {
     }
 
     if (!config->bltstreamFilename) {
-        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusInvalidParameter, "BTAopen stream: Parameter bltstreamFilename missing");
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusConfigParamError, "BTAopen stream: Parameter bltstreamFilename missing");
+        return BTA_StatusInvalidParameter;
+    }
+
+    if (!config->frameArrived && !config->frameArrivedEx && !config->frameArrivedEx2 && config->frameQueueMode == BTA_QueueModeDoNotQueue) {
+        // No way to get frames without queueing or callback
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusConfigParamError, "BTAopen stream: Queueing and frameArrived callback are disabled");
         return BTA_StatusInvalidParameter;
     }
 
@@ -72,16 +78,9 @@ BTA_Status BTASTREAMopen(BTA_Config *config, BTA_WrapperInst *winst) {
     inst->frameIndexToSeek = -1;
     inst->frameIndex = -1;
 
-    if (!config->frameArrived && !config->frameArrivedEx && !config->frameArrivedEx2 && config->frameQueueMode == BTA_QueueModeDoNotQueue) {
-        // No way to get frames without queueing or callback
-        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusInvalidParameter, "BTAopen stream: Queueing and frameArrived callback are disabled");
-        BTASTREAMclose(winst);
-        return BTA_StatusInvalidParameter;
-    }
-
     BTA_Status status;
 
-    status = BVQinit(frameQueueInternalLength, BTA_QueueModeAvoidDrop, &inst->frameAndIndexQueueInst);
+    status = BVQinit(frameQueueInternalLength, BTA_QueueModeAvoidDrop, (FN_FreeItem)&freeFrameAndIndex, &inst->frameAndIndexQueueInst);
     if (status != BTA_StatusOk) {
         BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "BTAopen stream: Not able to init internal frame queue");
         BTASTREAMclose(winst);
@@ -98,7 +97,9 @@ BTA_Status BTASTREAMopen(BTA_Config *config, BTA_WrapperInst *winst) {
     void *file;
     status = BTAfLargeOpen((char *)inst->inputFilename, "r", &file);
     if (status != BTA_StatusOk) {
-        BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, status, "BTAopen stream: Not able to open file 1 %d", getLastError());
+        uint8_t cwd[1024];
+        BTAgetCwd(cwd, 1024);
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "BTAopen stream: Not able to open file %s (working dir: %s)! error: %d", (char *)inst->inputFilename, cwd, getLastError());
         BTASTREAMclose(winst);
         return status;
     }
@@ -107,6 +108,7 @@ BTA_Status BTASTREAMopen(BTA_Config *config, BTA_WrapperInst *winst) {
     char format[50], pon[50];
     while ((status = BTAfLargeReadLine(file, &line)) == BTA_StatusOk) {
         if (!strcmp(line, btaGrabSeparator)) {
+            free(line);
             break;
         }
         sprintf(format, "%s%%s", btaGrabPonKey);
@@ -116,7 +118,6 @@ BTA_Status BTASTREAMopen(BTA_Config *config, BTA_WrapperInst *winst) {
                 BTAfLargeClose(file);
                 BTASTREAMclose(winst);
             }
-            inst->pon[0] = 0;
             sprintf((char *)inst->pon, "%s", pon);
         }
         sprintf(format, "%s%%d", btaGrabVersionKey);
@@ -129,10 +130,11 @@ BTA_Status BTASTREAMopen(BTA_Config *config, BTA_WrapperInst *winst) {
         sscanf(line, format, &inst->firmwareVersionMajor, &inst->firmwareVersionMinor, &inst->firmwareVersionNonFunc);
         sprintf(format, "%s%%d", btaGrabTotalFrameCountKey);
         sscanf(line, format, &inst->totalFrameCount);
+        free(line);
     }
     if (status != BTA_StatusOk) {
         BTAfLargeClose(file);
-        BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusInvalidParameter, "BTAopen stream: Error in BTAfLargeReadLine %d", getLastError());
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusInvalidParameter, "BTAopen stream: Error in BTAfLargeReadLine %d", getLastError());
         BTASTREAMclose(winst);
         return BTA_StatusInvalidParameter;
     }
@@ -141,21 +143,21 @@ BTA_Status BTASTREAMopen(BTA_Config *config, BTA_WrapperInst *winst) {
     status = BTAfLargeTell(file, &inst->filePosMin);
     if (status != BTA_StatusOk) {
         BTAfLargeClose(file);
-        BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "BTAopen stream: Error in BTAfLargeTell 1 %d", getLastError());
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "BTAopen stream: Error in BTAfLargeTell 1 %d", getLastError());
         BTASTREAMclose(winst);
         return BTA_StatusRuntimeError;
     }
     status = BTAfLargeSeek(file, 0, BTA_SeekOriginEnd, &inst->filePosMax);
     if (status != BTA_StatusOk) {
         BTAfLargeClose(file);
-        BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "BTAopen stream: Error in BTAfLargeSeek 1 %d", getLastError());
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "BTAopen stream: Error in BTAfLargeSeek 1 %d", getLastError());
         BTASTREAMclose(winst);
         return BTA_StatusRuntimeError;
     }
     BTAfLargeClose(file);
 
     if (inst->fileFormatVersion != 1 && inst->fileFormatVersion != 2) {
-        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusInvalidVersion, "BTAopen stream: File format version unknown");
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusConfigParamError, "BTAopen stream: File format version unknown");
         BTASTREAMclose(winst);
         return BTA_StatusInvalidVersion;
     }
@@ -163,14 +165,14 @@ BTA_Status BTASTREAMopen(BTA_Config *config, BTA_WrapperInst *winst) {
     // Now open in binary mode
     status = BTAfLargeOpen((char *)inst->inputFilename, "rb", &inst->file);
     if (status != BTA_StatusOk) {
-        BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "BTAopen stream: Not able to open file 2 %d", getLastError());
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "BTAopen stream: Not able to open file '%s' in binary mode! error: %d", (char *)inst->inputFilename, getLastError());
         BTASTREAMclose(winst);
         return BTA_StatusRuntimeError;
     }
     status = BTAfLargeSeek(inst->file, inst->filePosMin, BTA_SeekOriginBeginning, (uint64_t *)&inst->filePos);
     if (status != BTA_StatusOk) {
         BTAfLargeClose(inst->file);
-        BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "BTAopen stream: Error in BTAfLargeSeek 2 %d", getLastError());
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "BTAopen stream: Error in BTAfLargeSeek 2 %d", getLastError());
         BTASTREAMclose(winst);
         return BTA_StatusRuntimeError;
     }
@@ -205,16 +207,12 @@ BTA_Status BTASTREAMclose(BTA_WrapperInst *winst) {
     free(inst->inputFilename);
     inst->inputFilename = 0;
 
-    status = BGRBclose(&inst->grabInst);
-    if (status != BTA_StatusOk) {
-        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "BTAclose stream: Failed to close grabber");
-    }
-
-    status = BVQclose(&(inst->frameAndIndexQueueInst), (BTA_Status(*)(void **))&freeFrameAndIndex);
+    status = BVQclose(&(inst->frameAndIndexQueueInst));
     if (status != BTA_StatusOk) {
         BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "BTAclose stream: Failed to close internal frame queue");
     }
 
+    free(inst->pon);
     free(inst);
     winst->inst = 0;
     return BTA_StatusOk;
@@ -249,7 +247,27 @@ BTA_Status BTASTREAMgetDeviceInfo(BTA_WrapperInst *winst, BTA_DeviceInfo **devic
     deviceInfoTemp->firmwareVersionMajor = inst->firmwareVersionMajor;
     deviceInfoTemp->firmwareVersionMinor = inst->firmwareVersionMinor;
     deviceInfoTemp->firmwareVersionNonFunc = inst->firmwareVersionNonFunc;
+    deviceInfoTemp->bltstreamFilename = (uint8_t*)malloc(strlen((char *)inst->inputFilename) + 1);
+    if (!deviceInfoTemp->bltstreamFilename) {
+        free(deviceInfoTemp);
+        deviceInfoTemp = 0;
+        return BTA_StatusOutOfMemory;
+    }
+    strcpy((char *)deviceInfoTemp->bltstreamFilename, (char*)inst->inputFilename);
     *deviceInfo = deviceInfoTemp;
+    return BTA_StatusOk;
+}
+
+
+BTA_Status BTASTREAMgetDeviceType(BTA_WrapperInst *winst, BTA_DeviceType *deviceType) {
+    if (!winst) {
+        return BTA_StatusInvalidParameter;
+    }
+    BTA_StreamLibInst *inst = (BTA_StreamLibInst *)winst->inst;
+    if (!inst) {
+        return BTA_StatusInvalidParameter;
+    }
+    *deviceType = inst->deviceType;
     return BTA_StatusOk;
 }
 
@@ -298,7 +316,7 @@ static BTA_Status getFrameFromFile(BTA_WrapperInst *winst, int32_t index, BTA_Fr
         // The new index in nearer to the beginning than to the current position
         status = BTAfLargeSeek(inst->file, inst->filePosMin, BTA_SeekOriginBeginning, &inst->filePos);
         if (status != BTA_StatusOk) {
-            BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, status, "Stream: Error in BTAfLargeSeek 1 %d", getLastError());
+            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "Stream: Error in BTAfLargeSeek 1 %d", getLastError());
             return status;
         }
         inst->frameIndexAtFilePos = 0;
@@ -308,13 +326,13 @@ static BTA_Status getFrameFromFile(BTA_WrapperInst *winst, int32_t index, BTA_Fr
         // seek backward one index
         status = BTAfLargeSeek(inst->file, -(int64_t)frameFooterLen, BTA_SeekOriginCurrent, &inst->filePos);
         if (status != BTA_StatusOk) {
-            BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, status, "Stream: Error in BTAfLargeSeek 2 %d", getLastError());
+            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "Stream: Error in BTAfLargeSeek 2 %d", getLastError());
             return status;
         }
         uint32_t frameLen;
         status = BTAfLargeRead(inst->file, &frameLen, frameFooterLen, 0);
         if (status != BTA_StatusOk) {
-            BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, status, "Stream: Error in BTAfLargeRead 1 %d", getLastError());
+            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "Stream: Error in BTAfLargeRead 1 %d", getLastError());
             return status;
         }
         if (inst->fileFormatVersion == 1) {
@@ -325,7 +343,7 @@ static BTA_Status getFrameFromFile(BTA_WrapperInst *winst, int32_t index, BTA_Fr
             status = BTAfLargeSeek(inst->file, -(int64_t)frameFooterLen - (int64_t)frameLen - (int64_t)frameHeaderLen, BTA_SeekOriginCurrent, &inst->filePos);
         }
         if (status != BTA_StatusOk) {
-            BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, status, "Stream: Error in BTAfLargeSeek 3 %d", getLastError());
+            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "Stream: Error in BTAfLargeSeek 3 %d", getLastError());
             return status;
         }
         inst->frameIndexAtFilePos--;
@@ -347,14 +365,14 @@ static BTA_Status getFrameFromFile(BTA_WrapperInst *winst, int32_t index, BTA_Fr
                 if (bufferCount + newPortionLen > bufferTempLen) {
                     free(bufferTemp);
                     bufferTemp = 0;
-                    BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusOutOfMemory, "Stream: Frame is huge %d", bufferTempLen);
+                    BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusOutOfMemory, "Stream: Frame is huge %d", bufferTempLen);
                     return BTA_StatusOutOfMemory;
                 }
                 status = BTAfLargeRead(inst->file, bufferTemp + bufferCount, newPortionLen, 0);
                 if (status != BTA_StatusOk) {
                     free(bufferTemp);
                     bufferTemp = 0;
-                    BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, status, "Stream: Error in BTAfLargeRead 2 %d", getLastError());
+                    BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "Stream: Error in BTAfLargeRead 2 %d", getLastError());
                     return status;
                 }
                 bufferCount += newPortionLen;
@@ -369,7 +387,7 @@ static BTA_Status getFrameFromFile(BTA_WrapperInst *winst, int32_t index, BTA_Fr
                 free(bufferTemp);
                 bufferTemp = 0;
                 if (status != BTA_StatusOk) {
-                    BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, status, "Stream: Unexpected error in BTAdeserializeFrame 1 %d", getLastError());
+                    BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "Stream: Unexpected error in BTAdeserializeFrame 1 %d", getLastError());
                     return status;
                 }
                 status = BTAfreeFrame(&frameTemp);
@@ -379,7 +397,7 @@ static BTA_Status getFrameFromFile(BTA_WrapperInst *winst, int32_t index, BTA_Fr
                 }
                 status = BTAfLargeSeek(inst->file, inst->filePos + frameLen + frameFooterLen, BTA_SeekOriginBeginning, &inst->filePos);
                 if (status != BTA_StatusOk) {
-                    BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, status, "Stream: Error in BTAfLargeSeek 4 %d", getLastError());
+                    BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "Stream: Error in BTAfLargeSeek 4 %d", getLastError());
                     return status;
                 }
                 break;
@@ -389,12 +407,12 @@ static BTA_Status getFrameFromFile(BTA_WrapperInst *winst, int32_t index, BTA_Fr
             uint32_t frameLen;
             status = BTAfLargeRead(inst->file, &frameLen, frameFooterLen, 0);
             if (status != BTA_StatusOk) {
-                BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, status, "Stream: Error in BTAfLargeRead 3 %d", getLastError());
+                BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "Stream: Error in BTAfLargeRead 3 %d", getLastError());
                 return status;
             }
             status = BTAfLargeSeek(inst->file, frameLen + frameFooterLen, BTA_SeekOriginCurrent, &inst->filePos);
             if (status != BTA_StatusOk) {
-                BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, status, "Stream: Error in BTAfLargeSeek 5 %d", getLastError());
+                BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "Stream: Error in BTAfLargeSeek 5 %d", getLastError());
                 return status;
             }
         }
@@ -416,14 +434,14 @@ static BTA_Status getFrameFromFile(BTA_WrapperInst *winst, int32_t index, BTA_Fr
             if (bufferCount + newPortionLen > bufferTempLen) {
                 free(bufferTemp);
                 bufferTemp = 0;
-                BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusOutOfMemory, "Stream: Frame is huge %d", bufferTempLen);
+                BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusOutOfMemory, "Stream: Frame is huge %d", bufferTempLen);
                 return BTA_StatusOutOfMemory;
             }
             status = BTAfLargeRead(inst->file, bufferTemp + bufferCount, newPortionLen, 0);
             if (status != BTA_StatusOk) {
                 free(bufferTemp);
                 bufferTemp = 0;
-                BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, status, "Stream: Error in BTAfLargeRead 4 %d", getLastError());
+                BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "Stream: Error in BTAfLargeRead 4 %d", getLastError());
                 return status;
             }
             bufferCount += newPortionLen;
@@ -442,7 +460,7 @@ static BTA_Status getFrameFromFile(BTA_WrapperInst *winst, int32_t index, BTA_Fr
             }
             status = BTAfLargeSeek(inst->file, inst->filePos + frameLen + frameFooterLen, BTA_SeekOriginBeginning, &inst->filePos);
             if (status != BTA_StatusOk) {
-                BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, status, "Stream: Error in BTAfLargeSeek 6 %d", getLastError());
+                BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "Stream: Error in BTAfLargeSeek 6 %d", getLastError());
                 return status;
             }
             break;
@@ -452,7 +470,7 @@ static BTA_Status getFrameFromFile(BTA_WrapperInst *winst, int32_t index, BTA_Fr
         uint32_t frameLen;
         status = BTAfLargeRead(inst->file, &frameLen, frameFooterLen, 0);
         if (status != BTA_StatusOk) {
-            BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, status, "Stream: Error in BTAfLargeRead 5 %d", getLastError());
+            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "Stream: Error in BTAfLargeRead 5 %d", getLastError());
             return status;
         }
         uint8_t *bufferTemp = (uint8_t *)malloc(frameLen);
@@ -466,7 +484,7 @@ static BTA_Status getFrameFromFile(BTA_WrapperInst *winst, int32_t index, BTA_Fr
         if (status != BTA_StatusOk) {
             free(bufferTemp);
             bufferTemp = 0;
-            BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, status, "Stream: Error in BTAfLargeRead 6 %d", getLastError());
+            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "Stream: Error in BTAfLargeRead 6 %d", getLastError());
             return status;
         }
         status = BTAdeserializeFrame(frame, bufferTemp, &frameLen);
@@ -478,7 +496,7 @@ static BTA_Status getFrameFromFile(BTA_WrapperInst *winst, int32_t index, BTA_Fr
         }
         status = BTAfLargeSeek(inst->file, frameFooterLen, BTA_SeekOriginCurrent, &inst->filePos);
         if (status != BTA_StatusOk) {
-            BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, status, "Stream: Error in BTAfLargeSeek 7 %d", getLastError());
+            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "Stream: Error in BTAfLargeSeek 7 %d", getLastError());
             return status;
         }
     }
@@ -511,7 +529,7 @@ static void *bufferRunFunction(void *handle) {
     if (status != BTA_StatusOk) {
         free(buffer);
         buffer = 0;
-        BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, status, "Stream: BufferRunFunction could not fseek 1 %d", getLastError());
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "Stream: BufferRunFunction could not fseek 1 %d", getLastError());
         return 0;
     }
 
@@ -524,7 +542,6 @@ static void *bufferRunFunction(void *handle) {
     while (!inst->abortBufferThread) {
         float autoPlaybackSpeed = inst->autoPlaybackSpeed;
         if (autoPlaybackSpeed > 0) {
-            BTAmsleep(1);
             int32_t frameDeserializedLen = 0;
             if (bufferPos >= bufferLen) {
                 status = BTA_StatusOutOfMemory;
@@ -538,32 +555,32 @@ static void *bufferRunFunction(void *handle) {
                 FrameAndIndex *frameAndIndex = (FrameAndIndex *)malloc(sizeof(FrameAndIndex));
                 if (!frameAndIndex) {
                     BTAfreeFrame(&frame);
-                    BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, status, "Stream: BufferRunFunction could not allocate 5 %d", getLastError());
+                    BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "Stream: BufferRunFunction could not allocate 5 %d", getLastError());
                     break;
                 }
                 frameAndIndex->index = inst->frameIndexAtFilePos;
                 frameAndIndex->frame = frame;
-                // Frame was deserialized, set filePos to next frame and enqueue it
-                bufferPos += frameDeserializedLen + frameHeaderLen + frameFooterLen;
+                // Frame was deserialized, set filePos to next frame
+                bufferPos += frameHeaderLen + frameDeserializedLen + frameFooterLen;
                 // adjust filePos and frameIndexAtFilePos to current frame, seek to this position when thread ends
-                inst->filePos += frameDeserializedLen + frameHeaderLen + frameFooterLen;
+                inst->filePos += frameHeaderLen + frameDeserializedLen + frameFooterLen;
                 inst->frameIndexAtFilePos++;
                 while (1) {
                     if (inst->abortBufferThread) {
                         freeFrameAndIndex(&frameAndIndex);
                         break;
                     }
-
-                    status = BVQenqueue(inst->frameAndIndexQueueInst, frameAndIndex, (BTA_Status(*)(void **))&freeFrameAndIndex);
+                    status = BVQenqueue(inst->frameAndIndexQueueInst, frameAndIndex);
+                    if (status == BTA_StatusOk) {
+                        break;
+                    }
                     if (status == BTA_StatusOutOfMemory) {
                         // Try again
                         BTAmsleep(20);
                         continue;
                     }
-                    if (status != BTA_StatusOk) {
-                        freeFrameAndIndex(&frameAndIndex);
-                        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "Stream: BufferRunFunction error, can't enqueue internally");
-                    }
+                    BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "Stream: BufferRunFunction error, can't enqueue internally");
+                    freeFrameAndIndex(&frameAndIndex);                    
                     break;
                 }
             }
@@ -576,13 +593,13 @@ static void *bufferRunFunction(void *handle) {
                 // Go back # of bytes that are still in the buffer (gonna read them again)
                 status = BTAfLargeSeek(inst->file, -(int64_t)(bufferLen - bufferPos), BTA_SeekOriginCurrent, &filePos);
                 if (status != BTA_StatusOk) {
-                    BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, status, "Stream: BufferRunFunction could not fseek 2 %d", getLastError());
+                    BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "Stream: BufferRunFunction could not fseek 2 %d", getLastError());
                     break;
                 }
                 uint32_t temp;
                 status = BTAfLargeRead(inst->file, buffer, bufferLenMax, &temp);
                 if (status != BTA_StatusOk && status != BTA_StatusOutOfMemory) {
-                    BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, status, "Stream: BufferRunFunction error, can't BTAfLargeRead 7 %d", getLastError());
+                    BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "Stream: BufferRunFunction error, can't BTAfLargeRead 7 %d", getLastError());
                     break;
                 }
                 bufferPos = 0;
@@ -592,11 +609,16 @@ static void *bufferRunFunction(void *handle) {
             }
             else {
                 BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "Stream: BufferRunFunction: Error deserializing frame");
+                //// Frame was NOT deserialized, set filePos to next frame and enqueue it
+                //uint32_t frameLen = *((uint32_t *)(buffer + bufferPos));
+                //bufferPos += frameHeaderLen + frameLen + frameFooterLen;
+                //// adjust filePos and frameIndexAtFilePos to current frame, seek to this position when thread ends
+                //inst->filePos += frameHeaderLen + frameLen + frameFooterLen;
+                //inst->frameIndexAtFilePos++;
                 break;
             }
         }
         else if (autoPlaybackSpeed < 0) {
-            BTAmsleep(1);
             if (bufferPos < (int32_t)frameFooterLen) {
                 status = BTA_StatusOutOfMemory;
             }
@@ -619,7 +641,7 @@ static void *bufferRunFunction(void *handle) {
                 FrameAndIndex *frameAndIndex = (FrameAndIndex *)malloc(sizeof(FrameAndIndex));
                 if (!frameAndIndex) {
                     BTAfreeFrame(&frame);
-                    BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, status, "Stream: BufferRunFunction could not allocate 5 %d", getLastError());
+                    BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "Stream: BufferRunFunction could not allocate 5 %d", getLastError());
                     break;
                 }
                 frameAndIndex->index = inst->frameIndexAtFilePos;
@@ -629,7 +651,7 @@ static void *bufferRunFunction(void *handle) {
                         BTAfreeFrame(&frame);
                         break;
                     }
-                    status = BVQenqueue(inst->frameAndIndexQueueInst, frameAndIndex, (BTA_Status(*)(void **))&freeFrameAndIndex);
+                    status = BVQenqueue(inst->frameAndIndexQueueInst, frameAndIndex);
                     if (status == BTA_StatusOutOfMemory) {
                         // Try again
                         BTAmsleep(20);
@@ -662,13 +684,13 @@ static void *bufferRunFunction(void *handle) {
                 uint32_t bytesToRead = (uint32_t)(filePos - bufferLen + bufferPos - filePosToReadFrom);
                 status = BTAfLargeSeek(inst->file, filePosToReadFrom, BTA_SeekOriginBeginning, &filePos);
                 if (status != BTA_StatusOk) {
-                    BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, status, "Stream: BufferRunFunction could not fseek 2 %d", getLastError());
+                    BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "Stream: BufferRunFunction could not fseek 2 %d", getLastError());
                     break;
                 }
                 uint32_t temp2;
                 status = BTAfLargeRead(inst->file, buffer, bytesToRead, &temp2);
                 if (status != BTA_StatusOk && status != BTA_StatusOutOfMemory) {
-                    BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, status, "Stream: BufferRunFunction error, can't BTAfLargeRead 8 %d", getLastError());
+                    BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "Stream: BufferRunFunction error, can't BTAfLargeRead 8 %d", getLastError());
                     break;
                 }
                 bufferPos = temp2;
@@ -714,7 +736,7 @@ static void *streamRunFunction(void *handle) {
         if (inst->autoPlaybackSpeed != 0) {
             if ((direction < 0 && inst->autoPlaybackSpeed > 0) || (direction > 0 && inst->autoPlaybackSpeed < 0)) {
                 // change of playback direction, clear buffer
-                BVQclear(inst->frameAndIndexQueueInst, (BTA_Status(*)(void **))&freeFrameAndIndex);
+                BVQclear(inst->frameAndIndexQueueInst);
                 // get a frame (this function sets filePos and frameIndexAtFilePos to the desired position)
                 BTA_Frame *frame;
                 status = getFrameFromFile(winst, inst->frameIndex, &frame);
@@ -752,8 +774,8 @@ static void *streamRunFunction(void *handle) {
             uint32_t timeTriggerPrev = BTAgetTickCount();
             uint32_t timestampPrev = 0;
             while (inst->autoPlaybackSpeed != 0 && !inst->closing) {
-                FrameAndIndex *frameAndindex;
-                status = BVQpeek(inst->frameAndIndexQueueInst, (void **)&frameAndindex, 200);
+                FrameAndIndex *frameAndIndex;
+                status = BVQpeek(inst->frameAndIndexQueueInst, (void **)&frameAndIndex, 200);
                 if (status != BTA_StatusOk) {
                     if (inst->endReached) {
                         inst->autoPlaybackSpeed = 0.0f;
@@ -768,7 +790,7 @@ static void *streamRunFunction(void *handle) {
                     BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "Stream: Error dequeueing frameAndIndex");
                     continue;
                 }
-                uint32_t timeStamp = frameAndindex->frame->timeStamp / 1000;
+                uint32_t timeStamp = frameAndIndex->frame->timeStamp / 1000;
                 if (!timestampPrev) {
                     // Suppose it is uninitialized
                     timestampPrev = timeStamp;
@@ -797,8 +819,10 @@ static void *streamRunFunction(void *handle) {
                     timeTrigger = timeTriggerPrev + (uint32_t)(timestampDiff / autoPlaybackSpeed);
                     if (time >= timeTrigger) {
                         BVQdequeue(inst->frameAndIndexQueueInst, 0, 0);
-                        status = BTAgrabCallbackEnqueue(winst, frameAndindex->frame);
-                        inst->frameIndex = frameAndindex->index;
+                        BTApostprocessGrabCallbackEnqueue(winst, frameAndIndex->frame);
+                        inst->frameIndex = frameAndIndex->index;
+                        // Frame is still in use, only free struct:
+                        free(frameAndIndex);
                         timeTriggerPrev = timeTrigger;
                         timestampPrev = timeStamp;
                         break;
@@ -819,15 +843,15 @@ static void *streamRunFunction(void *handle) {
                 BTAmsleep(22);
                 continue;
             }
-            BVQclear(inst->frameAndIndexQueueInst, (BTA_Status(*)(void **))&freeFrameAndIndex);
+            BVQclear(inst->frameAndIndexQueueInst);
             BTA_Frame *frame;
             status = getFrameFromFile(winst, inst->frameIndexToSeek, &frame);
             if (status != BTA_StatusOk) {
-                BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, status, "Stream: getFrameFromFile failed %d", inst->frameIndexToSeek);
+                BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "Stream: getFrameFromFile failed %d", inst->frameIndexToSeek);
                 inst->frameIndexToSeek = -1;
                 continue;
             }
-            BTAgrabCallbackEnqueue(winst, frame);
+            BTApostprocessGrabCallbackEnqueue(winst, frame);
             inst->frameIndex = inst->frameIndexToSeek;
             inst->frameIndexToSeek = -1;
         }
@@ -902,7 +926,7 @@ BTA_Status BTASTREAMsetLibParam(BTA_WrapperInst *winst, BTA_LibParam libParam, f
         return BTA_StatusOk;
     }
     default:
-        BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusNotSupported, "BTAsetLibParam: LibParam not supported %d", libParam);
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusNotSupported, "BTAsetLibParam: LibParam %s not supported", BTAlibParamToString(libParam));
         return BTA_StatusNotSupported;
     }
 }
@@ -933,13 +957,10 @@ BTA_Status BTASTREAMgetLibParam(BTA_WrapperInst *winst, BTA_LibParam libParam, f
     case BTA_LibParamStreamPosIncrement:
         return BTA_StatusIllegalOperation;
     default:
-        BTAinfoEventHelperI(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusNotSupported, "BTAgetLibParam: LibParam not supported %d", libParam);
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusNotSupported, "BTAgetLibParam: LibParam %s not supported", BTAlibParamToString(libParam));
         return BTA_StatusNotSupported;
     }
 }
-
-
-
 
 
 BTA_Status BTASTREAMsetFrameMode(BTA_WrapperInst *winst, BTA_FrameMode frameMode) {
@@ -988,16 +1009,10 @@ BTA_Status BTASTREAMreadRegister(BTA_WrapperInst *winst, uint32_t address, uint3
 BTA_Status BTASTREAMwriteRegister(BTA_WrapperInst *winst, uint32_t address, uint32_t *data, uint32_t *registerCount) {
     return BTA_StatusNotSupported;
 }
-BTA_Status BTASTREAMflashUpdate(BTA_WrapperInst *winst, BTA_FlashUpdateConfig *config, FN_BTA_ProgressReport progressReport) {
+BTA_Status BTASTREAMflashUpdate(BTA_WrapperInst *winst, BTA_FlashUpdateConfig *flashUpdateConfig, FN_BTA_ProgressReport progressReport) {
     return BTA_StatusNotSupported;
 }
 BTA_Status BTASTREAMflashRead(BTA_WrapperInst *winst, BTA_FlashUpdateConfig *flashUpdateConfig, FN_BTA_ProgressReport progressReport, uint8_t quiet) {
-    return BTA_StatusNotSupported;
-}
-BTA_Status BTASTREAMstartDiscovery(BTA_DiscoveryConfig *discoveryConfig, FN_BTA_DeviceFound deviceFound, FN_BTA_InfoEvent infoEvent, BTA_Handle *handle) {
-    return BTA_StatusNotSupported;
-}
-BTA_Status BTASTREAMstopDiscovery(BTA_Handle *handle) {
     return BTA_StatusNotSupported;
 }
 

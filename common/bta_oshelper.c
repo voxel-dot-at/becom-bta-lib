@@ -2,9 +2,6 @@
 #include <string.h>
 #include <assert.h>
 
-#include <pthread.h>
-#include <semaphore.h>
-
 #include "bta_oshelper.h"
 
 #include <stdio.h>
@@ -14,16 +11,18 @@
     #include <fcntl.h>
     #include <share.h>
     #include <sys\stat.h>
+    #include <direct.h>
+    #define GetCurrentDir _getcwd
 #elif defined PLAT_LINUX || defined PLAT_APPLE
-#   include <sys/ioctl.h>
-#   include <unistd.h>
-#   include <time.h>
-#   include <sys/wait.h>
-#   include <unistd.h>
+    #   include <sys/ioctl.h>
+    #   include <unistd.h>
+    #   include <time.h>
+    #   include <unistd.h>
+    #define GetCurrentDir (void)!getcwd
 #endif
 
 
-BTA_Status BTAfLargeOpen(char* filename, char const *mode, void **file) {
+BTA_Status BTAfLargeOpen(const char* filename, const char *mode, void **file) {
     if (!filename || !mode || !file) {
         return BTA_StatusInvalidParameter;
     }
@@ -50,7 +49,7 @@ BTA_Status BTAfLargeOpen(char* filename, char const *mode, void **file) {
             return BTA_StatusRuntimeError;
         }
         return BTA_StatusOk;
-    #elif defined PLAT_LINUX || defined PLAT_APPLE
+    #elif defined PLAT_LINUX
         return BTAfopen(filename, mode, file);
     #endif
 }
@@ -66,7 +65,7 @@ BTA_Status BTAfLargeClose(void *file) {
             return BTA_StatusRuntimeError;
         }
         return BTA_StatusOk;
-    #elif defined PLAT_LINUX || defined PLAT_APPLE
+    #elif defined PLAT_LINUX
         return BTAfclose(file);
     #endif
 }
@@ -79,13 +78,18 @@ BTA_Status BTAfLargeTell(void *file, uint64_t *position) {
     #ifdef PLAT_WINDOWS
         int64_t pos = _telli64((int)(intptr_t)file);
         if (pos < 0) {
+            *position = 0;
             return BTA_StatusRuntimeError;
         }
         *position = pos;
-        return BTA_StatusOk;
-    #elif defined PLAT_LINUX || defined PLAT_APPLE
-        return BTAftell(file, position);
+    #elif defined PLAT_LINUX
+        *position = ftell((FILE *)file);
+        if (*position < 0) {
+            *position = 0;
+            return BTA_StatusRuntimeError;
+        }
     #endif
+        return BTA_StatusOk;
 }
 
 
@@ -104,10 +108,16 @@ BTA_Status BTAfLargeSeek(void *file, int64_t offset, BTA_SeekOrigin origin, uint
         if (position) {
             *position = pos;
         }
-        return BTA_StatusOk;
-    #elif defined PLAT_LINUX || defined PLAT_APPLE
-        return BTAfseek(file, offset, origin, position);
+    #elif defined PLAT_LINUX
+        int err = fseek((FILE *)file, offset, origin);
+        if (err < 0) {
+            return BTA_StatusRuntimeError;
+        }
+        if (position) {
+            return BTAfLargeTell(file, position);
+        }
     #endif
+    return BTA_StatusOk;
 }
 
 
@@ -131,7 +141,7 @@ BTA_Status BTAfLargeRead(void *file, void *buffer, uint32_t bytesToReadCount, ui
             return BTA_StatusOutOfMemory;
         }
         return BTA_StatusOk;
-    #elif defined PLAT_LINUX || defined PLAT_APPLE
+    #elif defined PLAT_LINUX
         return BTAfread(file, buffer, bytesToReadCount, bytesReadCount);
     #endif
 }
@@ -156,7 +166,7 @@ BTA_Status BTAfLargeWrite(void *file, void *buffer, uint32_t bufferLen, uint32_t
             return BTA_StatusOutOfMemory;
         }
         return BTA_StatusOk;
-    #elif defined PLAT_LINUX || defined PLAT_APPLE
+    #elif defined PLAT_LINUX
         return BTAfwrite(file, buffer, bufferLen, bytesWrittenCount);
     #endif
 }
@@ -204,18 +214,18 @@ BTA_Status BTAfLargeReadLine(void *file, char **line) {
 }
 
 
-BTA_Status BTAfopen(char* filename, char const *mode, void **file) {
+BTA_Status BTAfopen(const char* filename, const char *mode, void **file) {
     if (!filename || !mode || !file) {
         return BTA_StatusInvalidParameter;
     }
     #ifdef PLAT_WINDOWS
-        errno_t err = fopen_s((FILE **)file, (const char *)filename, mode);
+        errno_t err = fopen_s((FILE **)file, filename, mode);
         if (err || !*file) {
             return BTA_StatusRuntimeError;
         }
         return BTA_StatusOk;
-    #elif defined PLAT_LINUX || defined PLAT_APPLE
-        *file = fopen((const char *)filename, mode);
+    #elif defined PLAT_LINUX
+        *file = fopen(filename, mode);
         if (!*file) {
             return BTA_StatusUnknown;
         }
@@ -248,7 +258,7 @@ BTA_Status BTAfflush(void *file) {
 }
 
 
-BTA_Status BTAftell(void *file, uint64_t *position) {
+BTA_Status BTAftell(void *file, uint32_t *position) {
     if (!file || !position) {
         return BTA_StatusInvalidParameter;
     }
@@ -261,14 +271,14 @@ BTA_Status BTAftell(void *file, uint64_t *position) {
 }
 
 
-BTA_Status BTAfseek(void *file, int64_t offset, BTA_SeekOrigin origin, uint64_t *position) {
+BTA_Status BTAfseek(void *file, int32_t offset, BTA_SeekOrigin origin, uint32_t *position) {
     if (!file) {
         return BTA_StatusInvalidParameter;
     }
     if (offset == 0 && origin == BTA_SeekOriginCurrent) {
         return BTA_StatusOk;
     }
-    int err = fseek((FILE *)file, (long)offset, origin);
+    int err = fseek((FILE *)file, offset, origin);
     if (err < 0) {
         return BTA_StatusRuntimeError;
     }
@@ -332,5 +342,43 @@ BTA_Status BTAfreadLine(void *file, char *line, uint32_t lineLen) {
     while (strlen(line) > 0 && (line[strlen(line) - 1] == '\n' || line[strlen(line) - 1] == '\r')) {
         line[strlen(line) - 1] = 0;
     }
+    return BTA_StatusOk;
+}
+
+
+BTA_Status BTAgetCwd(uint8_t *cwd, int cwdLen) {
+    GetCurrentDir((char *)cwd, cwdLen);
+    return BTA_StatusOk;
+}
+
+
+BTA_Status BTAfwriteCsv(const char* filename, const char **headersX, const char **headersY, int *data, int xRes, int yRes) {
+    void *file;
+    BTA_Status status = BTAfopen(filename, "w+", &file);
+    if (status != BTA_StatusOk) {
+        return status;
+    }
+
+    if (headersX) {
+        // todo
+    }
+    for (int y = 0; y < yRes; y++) {
+        if (headersY) {
+            // todo
+        }
+        for (int x = 0; x < xRes; x++) {
+            int err = fprintf((FILE *)file, "%d;", data[x + y * xRes]);
+            if (err <= 0) {
+                BTAfclose(file);
+                return BTA_StatusRuntimeError;
+            }
+        }
+        int err = fprintf((FILE *)file, "\n");
+        if (err <= 0) {
+            BTAfclose(file);
+            return BTA_StatusRuntimeError;
+        }
+    }
+    BTAfclose(file);
     return BTA_StatusOk;
 }
