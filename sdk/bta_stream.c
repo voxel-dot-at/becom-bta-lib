@@ -15,6 +15,9 @@
 #elif defined PLAT_LINUX
 #   include <netdb.h>
 #   include <errno.h>
+#elif defined PLAT_APPLE
+#   include <netdb.h>
+#   include <sys/errno.h>
 #endif
 
 #include <string.h>
@@ -45,8 +48,8 @@ static BTA_Status freeFrameAndIndex(FrameAndIndex **frameAndIndex);
 static int getLastError() {
 #ifdef PLAT_WINDOWS
     return GetLastError();
-#elif defined PLAT_LINUX
-    return errno;
+#elif defined PLAT_LINUX || defined PLAT_APPLE
+     return errno;
 #endif
 }
 

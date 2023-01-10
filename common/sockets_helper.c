@@ -6,7 +6,7 @@
 #   include <winsock2.h>
 #   include <Ws2tcpip.h>
 #   include <iphlpapi.h>
-#elif defined PLAT_LINUX
+#elif defined PLAT_LINUX || defined PLAT_APPLE
 #   include <errno.h>
 #   include <netdb.h>
 #   include <netinet/in.h>
@@ -17,7 +17,7 @@
 int getLastSocketError() {
 #   ifdef PLAT_WINDOWS
     return WSAGetLastError();
-#   elif defined PLAT_LINUX
+#   elif defined PLAT_LINUX || defined PLAT_APPLE
     return errno;
 #   endif
 }
@@ -100,7 +100,7 @@ static BTA_Status BTAlistLocalIpAddrs(uint32_t **ipAddrs, uint32_t **subnetMasks
     }
     free(pAddresses);
     return BTA_StatusOk;
-#   elif defined PLAT_LINUX
+#   elif defined PLAT_LINUX || defined PLAT_APPLE
     struct ifaddrs *addresses, *address;
     int err = getifaddrs(&addresses);
     if (err == -1) {

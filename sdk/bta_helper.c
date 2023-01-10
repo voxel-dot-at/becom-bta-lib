@@ -32,6 +32,10 @@
 #include <assert.h>
 #ifdef PLAT_LINUX
 #   include <errno.h>
+#elif defined PLAT_APPLE
+#   include <sys/errno.h>
+#   include <sys/mman.h>
+#   include <unistd.h>
 #endif
 
 #include <crc16.h>
@@ -3019,7 +3023,7 @@ int BTAgetBytesPerPixelSum(BTA_EthImgMode imgMode) {
 
 
 int initShm(uint32_t shmKeyNum, uint32_t shmSize, int32_t *shmFd, uint8_t **bufShmBase, sem_t **semFullWrite, sem_t **semFullRead, sem_t **semEmptyWrite, sem_t **semEmptyRead, fifo_t **fifoFull, fifo_t **fifoEmpty, uint8_t **bufDataBase, BTA_InfoEventInst *infoEventInst) {
-#   if defined PLAT_LINUX
+#   if defined PLAT_LINUX || defined PLAT_APPLE
     const int nameLen = 222;
     char name[nameLen];
     snprintf(name, nameLen, "/%d_shm", shmKeyNum);
@@ -3073,7 +3077,7 @@ int initShm(uint32_t shmKeyNum, uint32_t shmSize, int32_t *shmFd, uint8_t **bufS
 
 
 void closeShm(sem_t **semEmptyRead, sem_t **semEmptyWrite, sem_t **semFullRead, sem_t **semFullWrite, uint8_t **bufShmBase, uint32_t shmSize, int32_t *shmFd, uint32_t shmKeyNum, BTA_InfoEventInst *infoEventInst) {
-#   if defined PLAT_LINUX
+#   if defined PLAT_LINUX || defined PLAT_APPLE
     if (shmKeyNum) {
         const int nameLen = 222;
         char name[nameLen];

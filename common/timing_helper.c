@@ -48,7 +48,7 @@ void BTAmsleep(uint32_t milliseconds) {
 //    //SetWaitableTimer(timer, &ft, 0, NULL, NULL, 0);
 //    //WaitForSingleObject(timer, INFINITE);
 //    //CloseHandle(timer);
-//#   elif defined PLAT_LINUX
+//#   elif defined PLAT_LINUX || defined PLAT_APPLE
 //    usleep(microseconds);
 //#   endif
 //}
@@ -60,7 +60,7 @@ void BTAmsleep(uint32_t milliseconds) {
 uint32_t BTAgetTickCount() {
 #   ifdef PLAT_WINDOWS
     return GetTickCount();
-#   elif defined PLAT_LINUX
+#   elif defined PLAT_LINUX || defined PLAT_APPLE
     struct timespec ts;
     if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
         // what can I do?
@@ -77,7 +77,7 @@ uint32_t BTAgetTickCount() {
 uint64_t BTAgetTickCount64() {
 #   ifdef PLAT_WINDOWS
     return GetTickCount64();
-#   elif defined PLAT_LINUX
+#   elif defined PLAT_LINUX || defined PLAT_APPLE
     struct timespec ts;
     if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
         // what can I do?
@@ -97,7 +97,7 @@ uint64_t BTAgetTickCountNano() {
     QueryPerformanceFrequency(&frequency);
     QueryPerformanceCounter(&start);
     return (uint64_t)((double)(start.QuadPart) / frequency.QuadPart * 1000000000);
-#   elif defined PLAT_LINUX
+#   elif defined PLAT_LINUX || defined PLAT_APPLE
     struct timespec ts;
     if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
         // what can I do?
@@ -131,7 +131,7 @@ BTA_Status BTAgetTimeSpec(struct timespec *ts) {
     ts->tv_sec = (*(LONGLONG *)(&ft) - PTW32_TIMESPEC_TO_FILETIME_OFFSET) / 10000000;
     ts->tv_nsec = (int)((*(LONGLONG *)(&ft) - PTW32_TIMESPEC_TO_FILETIME_OFFSET - ((LONGLONG)ts->tv_sec * (LONGLONG)10000000)) * 100);
     return BTA_StatusOk;
-#   elif defined PLAT_LINUX
+#   elif defined PLAT_LINUX || defined PLAT_APPLE
     if (clock_gettime(CLOCK_REALTIME, ts) != 0) {
         return BTA_StatusRuntimeError;
     }

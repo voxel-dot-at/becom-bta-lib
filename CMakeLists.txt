@@ -8,8 +8,8 @@ include_directories ("${PROJECT_SOURCE_DIR}")
 
 
 set(bta_VERSION_MAJOR 3)
-set(bta_VERSION_MINOR 0)
-set(bta_VERSION_PATCH 5)
+set(bta_VERSION_MINOR 3)
+set(bta_VERSION_PATCH 6)
 set(bta_VERSION_STRING ${bta_VERSION_MAJOR}.${bta_VERSION_MINOR}.${bta_VERSION_PATCH})
 
 file(GLOB HEADERS "inc/*.h" )
