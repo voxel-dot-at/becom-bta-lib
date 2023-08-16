@@ -126,7 +126,7 @@ install(
 # configure config header file
 #######################################
 set(config_h_in "${CMAKE_CURRENT_SOURCE_DIR}/cmake/${PROJECT_NAME}_config.h.in")
-set(config_h "${generated_dir}/${PROJECT_NAME}/${PROJECT_NAME}_config.h")
+set(config_h "${generated_dir}/${PROJECT_NAME}_config.h")
 configure_file("${config_h_in}" "${config_h}")
 list(APPEND headers ${config_h})
 install(
@@ -137,7 +137,7 @@ install(
 #######################################
 # Generating .pc file for pkg-config
 #######################################
-SET(PKG_CONFIG_REQUIRES "") 
+SET(PKG_CONFIG_REQUIRES "")
 SET(PKG_CONFIG_LIBDIR
     "\${prefix}/lib/"
 )
@@ -269,7 +269,7 @@ include_directories(
         "${CMAKE_CURRENT_SOURCE_DIR}/common/fastBf"
         "${CMAKE_CURRENT_SOURCE_DIR}/common/lzma"
         "${CMAKE_CURRENT_SOURCE_DIR}/sdk"
-        "${CMAKE_CURRENT_SOURCE_DIR}/generated"
+        "${generated_dir}"
 	)
 
 #
