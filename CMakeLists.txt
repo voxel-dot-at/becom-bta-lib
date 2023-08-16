@@ -13,8 +13,10 @@ file(GLOB HEADERS "inc/*.h" )
 
 set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_C_STANDARD 11)
 
-include_directories ("${PROJECT_SOURCE_DIR}" )
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+add_definitions(-O2 -fPIC)
 
 # user selectable options:
 if(NOT MSVC)
@@ -29,7 +31,7 @@ option(BTA_WO_ETH "disable eth transport" OFF)
 
 # set install directory to local if not specified otherwise:
 if(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
-  
+
   set(CMAKE_INSTALL_PREFIX "${PROJECT_SOURCE_DIR}/dist/" )
     # CACHE PATH "..."
 endif()
