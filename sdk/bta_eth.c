@@ -91,7 +91,7 @@ static const uint8_t ipAddrLenToVer[BTA_ETH_IP_ADDR_LEN_TO_VER_LEN] = { BTA_ETH_
 
 static const uint32_t timeoutTiny = 50;
 static const uint32_t timeoutDefault = 4000;
-static const uint32_t timeoutDouble = 2 * timeoutDefault;
+static const uint32_t timeoutDouble = 2 * 4000;
 static const uint32_t timeoutBig = 30000;
 static const uint32_t timeoutHuge = 120000;
 
