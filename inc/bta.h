@@ -19,6 +19,8 @@
 #ifndef BTA_H_INCLUDED
 #define BTA_H_INCLUDED
 
+#include <bta_config.h>
+
 #define BTA_VER_MAJ 3
 #define BTA_VER_MIN 3
 #define BTA_VER_NON_FUNC 11

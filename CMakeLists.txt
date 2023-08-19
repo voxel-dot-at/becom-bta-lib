@@ -70,6 +70,9 @@ endmacro(use_c99)
 
 set( CMAKE_CONFIGURATION_TYPES "Debug;Release" )
 
+# #Build target dir for config, export and package files
+set(generated_dir "${CMAKE_CURRENT_BINARY_DIR}/generated")
+
 ################################################################################
 # Install options
 ################################################################################
@@ -85,7 +88,6 @@ else()
 endif()
 set(INSTALL_CMAKE_DIR ${DEF_INSTALL_CMAKE_DIR} CACHE PATH "Installation directory for CMake files")
 message(INFO "install dir " ${INSTALL_CMAKE_DIR})
-
 
 ################################################################################
 # generate cmake config file 
@@ -118,6 +120,18 @@ configure_package_config_file("cmake/btaConfig.cmake.in"
 install(
     FILES "${project_config}" "${version_config}"
     DESTINATION "${INSTALL_CMAKE_DIR}"
+)
+
+#######################################
+# configure config header file
+#######################################
+set(config_h_in "${CMAKE_CURRENT_SOURCE_DIR}/cmake/${PROJECT_NAME}_config.h.in")
+set(config_h "${generated_dir}/${PROJECT_NAME}/${PROJECT_NAME}_config.h")
+configure_file("${config_h_in}" "${config_h}")
+list(APPEND headers ${config_h})
+install(
+   FILES ${config_h}
+   DESTINATION include
 )
 
 #######################################
@@ -255,6 +269,7 @@ include_directories(
         "${CMAKE_CURRENT_SOURCE_DIR}/common/fastBf"
         "${CMAKE_CURRENT_SOURCE_DIR}/common/lzma"
         "${CMAKE_CURRENT_SOURCE_DIR}/sdk"
+        "${CMAKE_CURRENT_SOURCE_DIR}/generated"
 	)
 
 #

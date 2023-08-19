@@ -1,0 +1,12 @@
+
+
+#define BUILD_@CMAKE_BUILD_TYPE@
+/* @PROJECT_NAME@ version information */
+#define @PROJECT_NAME@_VERSION_MAJOR ${PROJECT_VERSION_MAJOR}
+#define @PROJECT_NAME@_VERSION_MINOR ${PROJECT_VERSION_MINOR}
+#define @PROJECT_NAME@_VERSION_PATCH ${PROJECT_VERSION_PATCH}
+
+// target platform for this compile:
+#cmakedefine PLAT_WINDOWS 1
+#cmakedefine PLAT_LINUX 1
+#cmakedefine PLAT_APPLE 1
