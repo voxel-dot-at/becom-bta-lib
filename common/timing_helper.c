@@ -8,23 +8,19 @@
 #   include <Windows.h>
 #   include <chrono>
 #   include <thread>
-//#include <io.h>
-//#include <fcntl.h>
-//#include <share.h>
-//#include <sys\stat.h>
-#elif defined PLAT_LINUX
-//#   include <sys/ioctl.h>
+#else
 #include <unistd.h>
 #endif
 
 
 void BTAmsleep(uint32_t milliseconds) {
-    if (milliseconds == 0) {
-        return;
-    }
 #   ifdef PLAT_WINDOWS
     Sleep(milliseconds);
-#   elif defined PLAT_LINUX
+#   else
+    if (milliseconds == 0) {
+        usleep(1);
+        return;
+    }
     while (milliseconds > 100000) {
         sleep(1);
         milliseconds -= 1000;
@@ -48,7 +44,7 @@ void BTAmsleep(uint32_t milliseconds) {
 //    //SetWaitableTimer(timer, &ft, 0, NULL, NULL, 0);
 //    //WaitForSingleObject(timer, INFINITE);
 //    //CloseHandle(timer);
-//#   elif defined PLAT_LINUX || defined PLAT_APPLE
+//#   else
 //    usleep(microseconds);
 //#   endif
 //}
@@ -57,27 +53,10 @@ void BTAmsleep(uint32_t milliseconds) {
 
 ///     @brief  Retrieves the number of milliseconds that have elapsed since the system was started, up to 49.7 days. (Windows)
 ///             Clock that cannot be set and represents monotonic time since some unspecified starting point. (Linux)
-uint32_t BTAgetTickCount() {
-#   ifdef PLAT_WINDOWS
-    return GetTickCount();
-#   elif defined PLAT_LINUX || defined PLAT_APPLE
-    struct timespec ts;
-    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
-        // what can I do?
-        return 0;
-    }
-    return (uint32_t)(ts.tv_sec * 1000 + ts.tv_nsec / 1000000);
-#   endif
-}
-
-
-
-///     @brief  Retrieves the number of milliseconds that have elapsed since the system was started, up to 49.7 days. (Windows)
-///             Clock that cannot be set and represents monotonic time since some unspecified starting point. (Linux)
 uint64_t BTAgetTickCount64() {
 #   ifdef PLAT_WINDOWS
     return GetTickCount64();
-#   elif defined PLAT_LINUX || defined PLAT_APPLE
+#   else
     struct timespec ts;
     if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
         // what can I do?
@@ -97,7 +76,7 @@ uint64_t BTAgetTickCountNano() {
     QueryPerformanceFrequency(&frequency);
     QueryPerformanceCounter(&start);
     return (uint64_t)((double)(start.QuadPart) / frequency.QuadPart * 1000000000);
-#   elif defined PLAT_LINUX || defined PLAT_APPLE
+#   else
     struct timespec ts;
     if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
         // what can I do?
@@ -131,7 +110,7 @@ BTA_Status BTAgetTimeSpec(struct timespec *ts) {
     ts->tv_sec = (*(LONGLONG *)(&ft) - PTW32_TIMESPEC_TO_FILETIME_OFFSET) / 10000000;
     ts->tv_nsec = (int)((*(LONGLONG *)(&ft) - PTW32_TIMESPEC_TO_FILETIME_OFFSET - ((LONGLONG)ts->tv_sec * (LONGLONG)10000000)) * 100);
     return BTA_StatusOk;
-#   elif defined PLAT_LINUX || defined PLAT_APPLE
+#   else
     if (clock_gettime(CLOCK_REALTIME, ts) != 0) {
         return BTA_StatusRuntimeError;
     }

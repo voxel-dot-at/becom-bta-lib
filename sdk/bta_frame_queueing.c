@@ -49,13 +49,6 @@ BTA_Status BTA_CALLCONV BFQenqueue(BFQ_FrameQueueHandle handle, BTA_Frame *frame
     return BVQenqueue(handle, frame);
 }
 
-BTA_Status BTA_CALLCONV BFQpeek(BFQ_FrameQueueHandle handle, BTA_Frame** frame, uint32_t msecsTimeout) {
-    // Memory access dilemma
-    return BTA_StatusNotSupported;
-    //BTA_Frame* frameTemp;
-    //return BVQpeek(handle, (void**)frame, msecsTimeout);
-}
-
 BTA_Status BTA_CALLCONV BFQdequeue(BFQ_FrameQueueHandle handle, BTA_Frame **frame, uint32_t msecsTimeout) {
     return BVQdequeue(handle, (void **)frame, msecsTimeout);
 }

@@ -30,12 +30,8 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <assert.h>
-#ifdef PLAT_LINUX
+#if defined PLAT_LINUX || defined PLAT_APPLE
 #   include <errno.h>
-#elif defined PLAT_APPLE
-#   include <sys/errno.h>
-#   include <sys/mman.h>
-#   include <unistd.h>
 #endif
 
 #include <crc16.h>
@@ -50,16 +46,18 @@
 
 // local prototypes
 
+static void logToFile(BTA_InfoEventInst *infoEventInst, BTA_Status status, const char *msg);
+static BTA_Status parseGeomModel(uint8_t* data, uint32_t dataLen, BTA_IntrinsicData*** intrinsicData, uint16_t* intrinsicDataLen, BTA_ExtrinsicData*** extrinsicData, uint16_t* extrinsicDataLen);
 static BTA_ChannelId BTAETHgetChannelId(BTA_EthImgMode imgMode, uint8_t channelIndex);
 static BTA_DataFormat BTAETHgetDataFormat(BTA_EthImgMode imgMode, uint8_t channelIndex, uint8_t colorMode, uint8_t rawPhaseContent);
 static BTA_Unit BTAETHgetUnit(BTA_EthImgMode imgMode, uint8_t channelIndex);
-static void BTAinsertTestPattern(BTA_Frame *frame, uint16_t testPattern);
-static void insertChannelData(BTA_WrapperInst *winst, BTA_Channel *channel, uint8_t *data, uint32_t dataLen, uint8_t decodingEnabled);
-static void setMissingAsInvalid(BTA_ChannelId channelId, BTA_DataFormat dataFormat, uint8_t *channelDataStart, int channelDataLength, BTA_FrameToParse *frameToParse);
-static void logToFile(BTA_InfoEventInst *infoEventInst, BTA_Status status, const char *msg);
+static void insertChannelData(BTA_Channel *channel, uint8_t *data, uint32_t dataLen);
+static BTA_Status setMissingAsInvalid(BTA_ChannelId channelId, BTA_DataFormat dataFormat, uint8_t *channelDataStart, int channelDataLength, BTA_FrameToParse *frameToParse);
 
-static void insertChannelDataFromShm(BTA_WrapperInst *winst, BTA_Channel *channel, uint8_t *data, uint32_t dataLen, uint8_t decodingEnabled);
+static void insertChannelDataFromShm(BTA_WrapperInst *winst, BTA_Channel *channel, uint8_t *data, uint32_t dataLen);
 
+
+static uint64_t timeStart = 0;
 
 
 BTA_Status BTAcreateFrameToParse(BTA_FrameToParse **frameToParse) {
@@ -83,42 +81,62 @@ BTA_Status BTAinitFrameToParse(BTA_FrameToParse **frameToParse, uint64_t timesta
     }
     ftp->timestamp = timestamp;
     ftp->frameCounter = frameCounter;
+    ftp->frameSize = frameLen;
     if (frameLen > ftp->frameLen) {
-        //TODO??? free(ftp->frame);
+        ftp->frameLen = frameLen;
+        free(ftp->frame);
         ftp->frame = (uint8_t *)malloc(frameLen);
         if (!ftp->frame) {
-            free(ftp);
-            *frameToParse = 0;
+            free(ftp->packetSizes);
+            ftp->packetSizes = 0;
+            ftp->packetSizesLen = 0;
+            free(ftp->packetStartAddrs);
+            ftp->packetStartAddrs = 0;
+            ftp->packetStartAddrsLen = 0;
+            free(ftp->frame);
+            ftp->frame = 0;
+            ftp->frameLen = 0;
             return BTA_StatusOutOfMemory;
         }
     }
-    ftp->frameLen = frameLen;
 
-    if (packetCountTotal > ftp->packetCountTotal) {
-        free(ftp->packetStartAddr);
-        ftp->packetStartAddr = (uint32_t *)calloc(packetCountTotal, sizeof(uint32_t));
-        if (!ftp->packetStartAddr) {
+    if (packetCountTotal > ftp->packetStartAddrsLen) {
+        ftp->packetStartAddrsLen = packetCountTotal;
+        free(ftp->packetStartAddrs);
+        ftp->packetStartAddrs = (uint32_t *)calloc(packetCountTotal, sizeof(uint32_t));
+        if (!ftp->packetStartAddrs) {
+            free(ftp->packetSizes);
+            ftp->packetSizes = 0;
+            ftp->packetSizesLen = 0;
+            free(ftp->packetStartAddrs);
+            ftp->packetStartAddrs = 0;
+            ftp->packetStartAddrsLen = 0;
             free(ftp->frame);
             ftp->frame = 0;
-            free(ftp);
-            *frameToParse = 0;
+            ftp->frameLen = 0;
             return BTA_StatusOutOfMemory;
         }
-        free(ftp->packetSize);
-        ftp->packetSize = (uint16_t *)calloc(packetCountTotal, sizeof(uint16_t));
-        if (!ftp->packetSize) {
-            free(ftp->packetStartAddr);
-            ftp->packetStartAddr = 0;
+    }
+    if (packetCountTotal > ftp->packetSizesLen) {
+        ftp->packetSizesLen = packetCountTotal;
+        free(ftp->packetSizes);
+        ftp->packetSizes = (uint16_t *)calloc(packetCountTotal, sizeof(uint16_t));
+        if (!ftp->packetSizes) {
+            free(ftp->packetSizes);
+            ftp->packetSizes = 0;
+            ftp->packetSizesLen = 0;
+            free(ftp->packetStartAddrs);
+            ftp->packetStartAddrs = 0;
+            ftp->packetStartAddrsLen = 0;
             free(ftp->frame);
             ftp->frame = 0;
-            free(ftp);
-            *frameToParse = 0;
+            ftp->frameLen = 0;
             return BTA_StatusOutOfMemory;
         }
     }
     else {
-        memset(ftp->packetStartAddr, 0, packetCountTotal * sizeof(uint32_t));
-        memset(ftp->packetSize, 0, packetCountTotal * sizeof(uint16_t));
+        memset(ftp->packetStartAddrs, 0, ftp->packetStartAddrsLen * sizeof(uint32_t));
+        memset(ftp->packetSizes, 0, ftp->packetSizesLen * sizeof(uint16_t));
     }
     ftp->packetCountGot = 0;
     ftp->packetCountNda = 0;
@@ -126,7 +144,6 @@ BTA_Status BTAinitFrameToParse(BTA_FrameToParse **frameToParse, uint64_t timesta
     ftp->timeLastPacket = ftp->timestamp;
     ftp->retryTime = ftp->timestamp;
     ftp->retryCount = 0;
-    *frameToParse = ftp;
     return BTA_StatusOk;
 }
 
@@ -141,27 +158,31 @@ BTA_Status BTAfreeFrameToParse(BTA_FrameToParse **frameToParse) {
     }
     free(ftp->frame);
     ftp->frame = 0;
-    free(ftp->packetStartAddr);
-    ftp->packetStartAddr = 0;
-    free(ftp->packetSize);
-    ftp->packetSize = 0;
+    free(ftp->packetStartAddrs);
+    ftp->packetStartAddrs = 0;
+    free(ftp->packetSizes);
+    ftp->packetSizes = 0;
     free(ftp);
     *frameToParse = 0;
     return BTA_StatusOk;
 }
 
 
+void BHLPzeroLogTimestamp() {
+    timeStart = BTAgetTickCount64();
+}
+
+
 void BTAinfoEventHelper(BTA_InfoEventInst *infoEventInst, uint8_t importance, BTA_Status status, const char *msg, ...) {
     if (!infoEventInst || importance > infoEventInst->verbosity) return;
-    static uint64_t timeStart = 0;
-    if (!timeStart) timeStart = BTAgetTickCount64();
     va_list args;
     va_start(args, msg);
-    char infoEventMsg2[1500];
+    char infoEventMsg2[820];
     if (status != BTA_StatusConfigParamError) {
-        char infoEventMsg1[1000];
+        char infoEventMsg1[800];
         vsnprintf(infoEventMsg1, sizeof(infoEventMsg1), msg, args);
-        sprintf(infoEventMsg2, "%9.3f: %s", (BTAgetTickCount64() - timeStart) / 1000.0, infoEventMsg1);
+        if (!timeStart) timeStart = BTAgetTickCount64();
+        sprintf(infoEventMsg2, "%9.2fs %s", (BTAgetTickCount64() - timeStart) / 1000.0, infoEventMsg1);
     }
     else {
         vsnprintf(infoEventMsg2, sizeof(infoEventMsg2), msg, args);
@@ -204,17 +225,22 @@ static void logToFile(BTA_InfoEventInst *infoEventInst, BTA_Status status, const
 
 
 void BTApostprocess(BTA_WrapperInst *winst, BTA_Frame *frame) {
+#   ifndef BTA_WO_LIBJPEG
+    if (winst->lpJpgDecodeEnabled) {
+        BTAjpegFrameToRgb24(frame);
+    }
+#   endif
     if (winst->lpBilateralFilterWindow) {
         BTAcalcBilateralApply(winst, frame, winst->lpBilateralFilterWindow);
     }
-    BTAcalcXYZApply(winst, frame);
-    BTAundistortApply(winst, frame);
-}
-
-
-void BTAgrab(BTA_WrapperInst *winst, BTA_Frame *frame) {
-    if (winst->grabInst) {
-        BGRBgrab(winst->grabInst, frame);
+    if (winst->lpCalcXyzEnabled) {
+        BTAcalcXYZApply(winst->calcXYZInst, winst, frame, winst->lpCalcXyzOffset);
+    }
+    if (winst->lpColorFromTofEnabled) {
+        BTAcalcMonochromeFromAmplitude(frame);
+    }
+    if (winst->lpUndistortRgbEnabled) {
+        BTAundistortApply(winst->undistortInst, winst, frame);
     }
 }
 
@@ -260,13 +286,13 @@ BTA_Status BTAparsePostprocessGrabCallbackEnqueue(BTA_WrapperInst *winst, BTA_Fr
 
 void BTApostprocessGrabCallbackEnqueue(BTA_WrapperInst *winst, BTA_Frame *frame) {
     BTApostprocess(winst, frame);
-    BTAgrab(winst, frame);
+    BGRBgrab(winst->grabInst, frame);
     BTAcallbackEnqueue(winst, frame);
 }
 
 
-void BTAgetFlashCommand(BTA_FlashTarget flashTarget, BTA_FlashId flashId, BTA_EthCommand *cmd, BTA_EthSubCommand *subCmd) {
-    switch (flashTarget) {
+void BTAgetFlashCommand(BTA_FlashUpdateConfig *flashUpdateConfig, BTA_EthCommand *cmd, BTA_EthSubCommand *subCmd) {
+    switch (flashUpdateConfig->target) {
     case BTA_FlashTargetBootloader:
         *cmd = BTA_EthCommandFlashBootloader;
         *subCmd = BTA_EthSubCommandNone;
@@ -277,7 +303,7 @@ void BTAgetFlashCommand(BTA_FlashTarget flashTarget, BTA_FlashId flashId, BTA_Et
         return;
     case BTA_FlashTargetGeneric:
         *cmd = BTA_EthCommandFlashGeneric;
-        switch (flashId) {
+        switch (flashUpdateConfig->flashId) {
         case BTA_FlashIdSpi:
             *subCmd = BTA_EthSubCommandSpiFlash;
             return;
@@ -329,7 +355,7 @@ void BTAgetFlashCommand(BTA_FlashTarget flashTarget, BTA_FlashId flashId, BTA_Et
         return;
     case BTA_FlashTargetGeometricModelParameters:
         *cmd = BTA_EthCommandFlashGeometricModelParameters;
-        *subCmd = BTA_EthSubCommandNone;
+        *subCmd = (BTA_EthSubCommand)flashUpdateConfig->address; // address is misused so we don't need to change 
         return;
     case BTA_FlashTargetOverlayCalibration:
         *cmd = BTA_EthCommandFlashOverlayCalibration;
@@ -535,8 +561,8 @@ BTA_Status BTAreadMetrilusFromFlash(BTA_WrapperInst *winst, BTA_IntrinsicData *i
         flashUpdateConfig.data = 0;
         return BTA_StatusInvalidParameter;
     }
-    intData->yRes = ((uint32_t *)flashUpdateConfig.data)[1];
-    intData->xRes = ((uint32_t *)flashUpdateConfig.data)[2];
+    intData->yRes = (uint16_t)((uint32_t *)flashUpdateConfig.data)[1];
+    intData->xRes = (uint16_t)((uint32_t *)flashUpdateConfig.data)[2];
     intData->fx = ((float *)flashUpdateConfig.data)[3];
     intData->fy = ((float *)flashUpdateConfig.data)[4];
     intData->cx = ((float *)flashUpdateConfig.data)[5];
@@ -570,45 +596,184 @@ BTA_Status BTAreadGeomModelFromFlash(BTA_WrapperInst *winst, BTA_IntrinsicData *
     if (!winst) {
         return BTA_StatusInvalidParameter;
     }
-    BTA_FlashUpdateConfig flashUpdateConfig;
-    BTAinitFlashUpdateConfig(&flashUpdateConfig);
-    flashUpdateConfig.target = BTA_FlashTargetGeometricModelParameters;
-    BTA_Status status;
-    if (quiet) status = winst->flashRead(winst, &flashUpdateConfig, 0, 1);
-    else status = BTAflashRead(winst, &flashUpdateConfig, 0);
-    if (status == BTA_StatusIllegalOperation) {
-        if (!quiet) BTAinfoEventHelper(winst->infoEventInst, VERBOSE_INFO, BTA_StatusInformation, "No intrinsic lens parameters found (geometric model)");
+    if (!intrinsicData == !!intrinsicDataLen) {  // checks if both or none are given
+        return BTA_StatusInvalidParameter;
+    }
+    if (!extrinsicData == !!extrinsicDataLen) {  // checks if both or none are given
+        return BTA_StatusInvalidParameter;
+    }
+    const int resultLenMax = 24;
+    BTA_IntrinsicData *ids[resultLenMax];
+    BTA_ExtrinsicData *eds[resultLenMax];
+    for (int i = 0; i < resultLenMax; i++) {
+        ids[i] = 0;
+        eds[i] = 0;
+    }
+    uint16_t idsLen = 0, edsLen = 0;
+    for (int lensIndex = 0; lensIndex < resultLenMax; lensIndex++) {
+        BTA_FlashUpdateConfig flashUpdateConfig;
+        BTAinitFlashUpdateConfig(&flashUpdateConfig);
+        flashUpdateConfig.target = BTA_FlashTargetGeometricModelParameters;
+        flashUpdateConfig.address = lensIndex;
+        BTA_Status status;
+        if (quiet) status = winst->flashRead(winst, &flashUpdateConfig, 0, 1);
+        else status = BTAflashRead(winst, &flashUpdateConfig, 0);
+        if (status == BTA_StatusIllegalOperation || status == BTA_StatusUnknown) { // TODO: do not accept BTA_StatusUnknown
+            // There is no calibration data for this index
+            continue;
+            //if (lensIndex == 0) {
+            //    // This camera may not accept index 0 and need an explicit lens index
+            //    continue;
+            //}
+            //if (lensIndex == 1) {
+            //    // Index zero and one both failed
+            //    if (!quiet) BTAinfoEventHelper(winst->infoEventInst, VERBOSE_INFO, BTA_StatusInformation, "No lens calibration found (geometric model)");
+            //    free(flashUpdateConfig.data);
+            //    flashUpdateConfig.data = 0;
+            //    return status;
+            //}
+            //if (lensIndex > 1) {
+            //    // We apparently read all available data
+            //    //break; Lets t
+            //}
+        }
+        else if (status != BTA_StatusOk) {
+            if (!quiet) BTAinfoEventHelper(winst->infoEventInst, VERBOSE_INFO, status, "Failed to read lens calibration (geometric model)");
+            free(flashUpdateConfig.data);
+            flashUpdateConfig.data = 0;
+            for (int i = 0; i < idsLen; i++) {
+                free(ids[i]);
+                ids[i] = 0;
+            }
+            for (int i = 0; i < edsLen; i++) {
+                free(eds[i]);
+                eds[i] = 0;
+            }
+            return status;
+        }
+        BTA_IntrinsicData** intDataTemp = 0;
+        BTA_ExtrinsicData** extDataTemp = 0;
+        uint16_t intDataLenTemp = 0, extDataLenTemp = 0;
+        status = parseGeomModel(flashUpdateConfig.data, flashUpdateConfig.dataLen, &intDataTemp, &intDataLenTemp, &extDataTemp, &extDataLenTemp);
         free(flashUpdateConfig.data);
         flashUpdateConfig.data = 0;
-        return status;
+        if (status != BTA_StatusOk) {
+            // We got data from the camera but somehow it's not parseable
+            if (!quiet) BTAinfoEventHelper(winst->infoEventInst, VERBOSE_INFO, status, "Failed to parse lens calibration (geometric model)");
+            for (int i = 0; i < idsLen; i++) {
+                free(ids[i]);
+                ids[i] = 0;
+            }
+            for (int i = 0; i < edsLen; i++) {
+                free(eds[i]);
+                eds[i] = 0;
+            }
+            return status;
+        }
+        assert(intDataLenTemp > 0 || extDataLenTemp > 0);
+        if (intDataLenTemp > 0) {
+            for (int i = 0; i < intDataLenTemp && idsLen < resultLenMax; i++) {
+                ids[idsLen++] = intDataTemp[i];
+            }
+        }
+        free(intDataTemp);
+        if (extDataLenTemp > 0) {
+            for (int i = 0; i < extDataLenTemp && edsLen < resultLenMax; i++) {
+                eds[edsLen++] = extDataTemp[i];
+            }
+        }
+        free(extDataTemp);
+        if (lensIndex == 0) {
+            // We got data without index, so don't try indexing at all
+            break;
+        }
     }
-    else if (status != BTA_StatusOk) {
-        if (!quiet) BTAinfoEventHelper(winst->infoEventInst, VERBOSE_INFO, status, "Failed to read intrinsic data (geometric model)");
-        free(flashUpdateConfig.data);
-        flashUpdateConfig.data = 0;
-        return status;
+    if (idsLen && intrinsicData && intrinsicDataLen) {
+        *intrinsicDataLen = idsLen;
+        *intrinsicData = (BTA_IntrinsicData **)malloc(idsLen * sizeof(BTA_IntrinsicData *));
+        if (!*intrinsicData) {
+            for (int i = 0; i < idsLen; i++) {
+                free(ids[i]);
+                ids[i] = 0;
+            }
+            for (int i = 0; i < edsLen; i++) {
+                free(eds[i]);
+                eds[i] = 0;
+            }
+            return BTA_StatusOutOfMemory;
+        }
+        for (int i = 0; i < idsLen; i++) {
+            (*intrinsicData)[i] = ids[i];
+        }
     }
+    if (edsLen && extrinsicData && extrinsicDataLen) {
+        *extrinsicDataLen = edsLen;
+        *extrinsicData = (BTA_ExtrinsicData **)malloc(*extrinsicDataLen * sizeof(BTA_ExtrinsicData *));
+        if (!*extrinsicData) {
+            for (int i = 0; i < idsLen; i++) {
+                free(ids[i]);
+                ids[i] = 0;
+            }
+            for (int i = 0; i < edsLen; i++) {
+                free(eds[i]);
+                eds[i] = 0;
+            }
+            if (intrinsicData) {
+                free(*intrinsicData);
+                *intrinsicData = 0;
+            }
+            return BTA_StatusOutOfMemory;
+        }
+        for (int i = 0; i < edsLen; i++) {
+            (*extrinsicData)[i] = eds[i];
+        }
+    }
+    if ((edsLen && extrinsicData && extrinsicDataLen) || (idsLen && intrinsicData && intrinsicDataLen)) {
+        return BTA_StatusOk;
+    }
+    return BTA_StatusIllegalOperation;
+}
 
-    if (flashUpdateConfig.dataLen < 6) {
+
+static BTA_Status parseGeomModel(uint8_t *data, uint32_t dataLen, BTA_IntrinsicData*** intrinsicData, uint16_t* intrinsicDataLen, BTA_ExtrinsicData*** extrinsicData, uint16_t* extrinsicDataLen) {
+    if (!intrinsicData || !intrinsicDataLen || !extrinsicData || !extrinsicDataLen) {
+        return BTA_StatusInvalidParameter;
+    }
+    *intrinsicData = 0;
+    *extrinsicData = 0;
+    *intrinsicDataLen = *extrinsicDataLen = 0;
+
+    if (dataLen < 64) {
         return BTA_StatusInvalidData;
     }
 
-    // TODO !!! make function parseGeomModel() !!!
-
-    uint16_t *ptu16 = (uint16_t *)flashUpdateConfig.data;
-    float *ptf32 = (float *)flashUpdateConfig.data;
+    uint16_t* ptu16 = (uint16_t*)data;
+    float* ptf32 = (float*)data;
     int i = 0;
     uint16_t preamble0 = ptu16[i++];
     uint16_t preamble1 = ptu16[i++];
     if (preamble0 != 0x4742 || preamble1 != 0x4c54) {
         return BTA_StatusInvalidData;
     }
+
+    uint16_t crc16 = crc16_ccitt(data, 62);
+    if (ptu16[31] != crc16) {
+        return BTA_StatusCrcError;
+    }
+
+    uint32_t crc32 = (uint32_t)CRC32ccitt(data, dataLen - 4);
+    uint16_t crc32Low = ptu16[(dataLen - 4) / 2];
+    uint16_t crc32High = ptu16[(dataLen - 2) / 2];
+    if ((uint32_t)(crc32Low | (crc32High << 16)) != crc32) {
+        return BTA_StatusCrcError;
+    }
+
     uint16_t version = ptu16[i++];
     if (version == 1) {
-        if (flashUpdateConfig.dataLen != 356) {
+        if (dataLen != 356) {
             return BTA_StatusInvalidData;
         }
-        BTA_IntrinsicData *intDataTof = 0;
+        BTA_IntrinsicData* intDataTof = 0;
         uint16_t lensIdTof = ptu16[i++];
         uint16_t lensIdRgb = ptu16[i++];
         uint16_t xResTof = ptu16[i++];
@@ -619,8 +784,11 @@ BTA_Status BTAreadGeomModelFromFlash(BTA_WrapperInst *winst, BTA_IntrinsicData *
         // header end
         if (descr & (1 << 0)) {
             // Bit 0: Intrinsic parameters for 3D valid(fx, fy, cx, cy and distortion coefficients)
-            intDataTof = (BTA_IntrinsicData *)malloc(sizeof(BTA_IntrinsicData));
-            intDataTof->lensIndex = 0;
+            intDataTof = (BTA_IntrinsicData*)malloc(sizeof(BTA_IntrinsicData));
+            if (!intDataTof) {
+                return BTA_StatusOutOfMemory;
+            }
+            intDataTof->lensIndex = 1;      // ToF should have index 1 by best guess
             intDataTof->lensId = lensIdTof;
             intDataTof->xRes = xResTof;
             intDataTof->yRes = yResTof;
@@ -639,11 +807,16 @@ BTA_Status BTAreadGeomModelFromFlash(BTA_WrapperInst *winst, BTA_IntrinsicData *
             intDataTof->p1 = ptf32[i++];
             intDataTof->p2 = ptf32[i++];
         }
-        BTA_IntrinsicData *intDataRgb = 0;
+        BTA_IntrinsicData* intDataRgb = 0;
         if (descr & (1 << 1)) {
             // Bit 1: Intrinsic parameters for 2D valid(fx, fy, cx, cy and distortion coefficients)
-            intDataRgb = (BTA_IntrinsicData *)malloc(sizeof(BTA_IntrinsicData));
-            intDataRgb->lensIndex = 0;
+            intDataRgb = (BTA_IntrinsicData*)malloc(sizeof(BTA_IntrinsicData));
+            if (!intDataRgb) {
+                free(intDataTof);
+                intDataTof = 0;
+                return BTA_StatusOutOfMemory;
+            }
+            intDataRgb->lensIndex = 2;      // RGB should have index 2 by best guess
             intDataRgb->lensId = lensIdRgb;
             intDataRgb->xRes = xResRgb;
             intDataRgb->yRes = yResRgb;
@@ -674,11 +847,19 @@ BTA_Status BTAreadGeomModelFromFlash(BTA_WrapperInst *winst, BTA_IntrinsicData *
         else {
             // Bit 3: 2D intrinsic calibration is Pinhole model
         }
-        BTA_ExtrinsicData *extDataTof = 0;
+        BTA_ExtrinsicData* extDataTof = 0;
         if (descr & (1 << 4)) {
             // Bit 4: Extrinsic rotation-translation matrix for 3D valid
-            extDataTof = (BTA_ExtrinsicData *)malloc(sizeof(BTA_ExtrinsicData));
+            extDataTof = (BTA_ExtrinsicData*)malloc(sizeof(BTA_ExtrinsicData));
+            if (!extDataTof) {
+                free(intDataTof);
+                free(intDataRgb);
+                intDataTof = intDataRgb = 0;
+                return BTA_StatusOutOfMemory;
+            }
             i = 40;
+            extDataTof->lensIndex = 1;      // ToF should have index 1 by best guess
+            extDataTof->lensId = lensIdTof;
             extDataTof->rot[0] = ptf32[i++];
             extDataTof->rot[1] = ptf32[i++];
             extDataTof->rot[2] = ptf32[i++];
@@ -691,14 +872,22 @@ BTA_Status BTAreadGeomModelFromFlash(BTA_WrapperInst *winst, BTA_IntrinsicData *
             extDataTof->rot[7] = ptf32[i++];
             extDataTof->rot[8] = ptf32[i++];
             extDataTof->trl[2] = ptf32[i++];
-            extDataTof->lensIndex = 0;
-            extDataTof->lensId = lensIdTof;
         }
-        BTA_ExtrinsicData *extDataRgb = 0;
+        BTA_ExtrinsicData* extDataRgb = 0;
         if (descr & (1 << 5)) {
             // Bit 5: Extrinsic rotation-translation matrix for 2D valid
-            extDataRgb = (BTA_ExtrinsicData *)malloc(sizeof(BTA_ExtrinsicData));
+            extDataRgb = (BTA_ExtrinsicData*)malloc(sizeof(BTA_ExtrinsicData));
+            if (!extDataRgb) {
+                free(intDataTof);
+                free(intDataRgb);
+                free(extDataTof);
+                intDataTof = intDataRgb = 0;
+                extDataTof = 0;
+                return BTA_StatusOutOfMemory;
+            }
             i = 52;
+            extDataRgb->lensIndex = 2;      // RGB should have index 2 by best guess
+            extDataRgb->lensId = lensIdRgb;
             extDataRgb->rot[0] = ptf32[i++];
             extDataRgb->rot[1] = ptf32[i++];
             extDataRgb->rot[2] = ptf32[i++];
@@ -711,26 +900,230 @@ BTA_Status BTAreadGeomModelFromFlash(BTA_WrapperInst *winst, BTA_IntrinsicData *
             extDataRgb->rot[7] = ptf32[i++];
             extDataRgb->rot[8] = ptf32[i++];
             extDataRgb->trl[2] = ptf32[i++];
-            extDataRgb->lensIndex = 0;
+        }
+        if (descr & (1 << 6)) {
+            // Bit 6: Extrinsic inverse rotation-translation matrix for 3D valid
+            if (!extDataTof) {
+                extDataTof = (BTA_ExtrinsicData*)malloc(sizeof(BTA_ExtrinsicData));
+                if (!extDataTof) {
+                    free(intDataTof);
+                    free(intDataRgb);
+                    intDataTof = intDataRgb = 0;
+                    return BTA_StatusOutOfMemory;
+                }
+            }
+            i = 64;
+            extDataTof->lensIndex = 1;      // ToF should have index 1 by best guess
+            extDataTof->lensId = lensIdTof;
+            extDataTof->rotTrlInv[0] = ptf32[i++];
+            extDataTof->rotTrlInv[1] = ptf32[i++];
+            extDataTof->rotTrlInv[2] = ptf32[i++];
+            extDataTof->rotTrlInv[3] = ptf32[i++];
+            extDataTof->rotTrlInv[4] = ptf32[i++];
+            extDataTof->rotTrlInv[5] = ptf32[i++];
+            extDataTof->rotTrlInv[6] = ptf32[i++];
+            extDataTof->rotTrlInv[7] = ptf32[i++];
+            extDataTof->rotTrlInv[8] = ptf32[i++];
+            extDataTof->rotTrlInv[9] = ptf32[i++];
+            extDataTof->rotTrlInv[10] = ptf32[i++];
+            extDataTof->rotTrlInv[11] = ptf32[i++];
+        }
+        if (descr & (1 << 5)) {
+            // Bit 7: Extrinsic inverse rotation-translation matrix for 2D valid
+            if (!extDataRgb) {
+                extDataRgb = (BTA_ExtrinsicData*)malloc(sizeof(BTA_ExtrinsicData));
+                if (!extDataRgb) {
+                    free(intDataTof);
+                    free(intDataRgb);
+                    free(extDataTof);
+                    intDataTof = intDataRgb = 0;
+                    extDataTof = 0;
+                    return BTA_StatusOutOfMemory;
+                }
+            }
+            i = 76;
+            extDataRgb->lensIndex = 2;      // RGB should have index 2 by best guess
             extDataRgb->lensId = lensIdRgb;
+            extDataRgb->rotTrlInv[0] = ptf32[i++];
+            extDataRgb->rotTrlInv[1] = ptf32[i++];
+            extDataRgb->rotTrlInv[2] = ptf32[i++];
+            extDataRgb->rotTrlInv[3] = ptf32[i++];
+            extDataRgb->rotTrlInv[4] = ptf32[i++];
+            extDataRgb->rotTrlInv[5] = ptf32[i++];
+            extDataRgb->rotTrlInv[6] = ptf32[i++];
+            extDataRgb->rotTrlInv[7] = ptf32[i++];
+            extDataRgb->rotTrlInv[8] = ptf32[i++];
+            extDataRgb->rotTrlInv[9] = ptf32[i++];
+            extDataRgb->rotTrlInv[10] = ptf32[i++];
+            extDataRgb->rotTrlInv[11] = ptf32[i++];
         }
-        // Bit 6: Extrinsic inverse rotation-translation matrix for 3D valid
-        // Bit 7: Extrinsic inverse rotation-translation matrix for 2D valid
-        if (intrinsicData && intrinsicDataLen) {
-            *intrinsicDataLen = 2; // (intDataTof ? 1 : 0) + (intDataRgb ? 1 : 0);
-            if (*intrinsicDataLen) {
-                *intrinsicData = (BTA_IntrinsicData **)malloc(*intrinsicDataLen * sizeof(BTA_IntrinsicData *));
-                (*intrinsicData)[0] = intDataTof;
-                (*intrinsicData)[1] = intDataRgb;
+        *intrinsicDataLen = (intDataTof ? 1 : 0) + (intDataRgb ? 1 : 0);
+        if (*intrinsicDataLen) {
+            *intrinsicData = (BTA_IntrinsicData**)malloc(*intrinsicDataLen * sizeof(BTA_IntrinsicData *));
+            if (!*intrinsicData) {
+                free(intDataTof);
+                free(intDataRgb);
+                free(extDataTof);
+                free(extDataRgb);
+                intDataTof = intDataRgb = 0;
+                extDataTof = extDataRgb = 0;
+                return BTA_StatusOutOfMemory;
+            }
+            (*intrinsicData)[0] = intDataTof;
+            (*intrinsicData)[1] = intDataRgb;
+        }
+        else {
+            free(intDataTof);
+            free(intDataRgb);
+            intDataTof = intDataRgb = 0;
+        }
+        *extrinsicDataLen = (extDataTof ? 1 : 0) + (extDataRgb ? 1 : 0);
+        if (*extrinsicDataLen) {
+            *extrinsicData = (BTA_ExtrinsicData**)malloc(*extrinsicDataLen * sizeof(BTA_ExtrinsicData*));
+            if (!*extrinsicData) {
+                free(intDataTof);
+                free(intDataRgb);
+                free(extDataTof);
+                free(extDataRgb);
+                intDataTof = intDataRgb = 0;
+                extDataTof = extDataRgb = 0;
+                free(*intrinsicData);
+                *intrinsicData = 0;
+                return BTA_StatusOutOfMemory;
+            }
+            (*extrinsicData)[0] = extDataTof;
+            (*extrinsicData)[1] = extDataRgb;
+        }
+        else {
+            free(extDataTof);
+            free(extDataRgb);
+            extDataTof = extDataRgb = 0;
+        }
+        return BTA_StatusOk;
+    }
+    else if (version == 2) {
+        if (dataLen < 236) {
+            return BTA_StatusInvalidData;
+        }
+        uint16_t lensIndex = ptu16[i++];
+        uint16_t lensId = ptu16[i++];
+        uint16_t xRes = ptu16[i++];
+        uint16_t yRes = ptu16[i++];
+        uint16_t model = ptu16[i++];
+        uint16_t fileContent = ptu16[i++];
+        //uint16_t vectorFormat = ptu16[i++];
+        BTA_IntrinsicData *intData = 0;
+        // header end
+        if (fileContent & (1 << 0)) {
+            // Bit 0: Intrinsic parameters valid(fx, fy, cx, cy and distortion coefficients)
+            intData = (BTA_IntrinsicData *)malloc(sizeof(BTA_IntrinsicData));
+            if (!intData) {
+                return BTA_StatusOutOfMemory;
+            }
+            intData->lensIndex = lensIndex;
+            intData->lensId = lensId;
+            intData->xRes = xRes;
+            intData->yRes = yRes;
+            i = 16;
+            intData->fx = ptf32[i++];
+            intData->fy = ptf32[i++];
+            intData->cx = ptf32[i++];
+            intData->cy = ptf32[i++];
+            intData->k1 = ptf32[i++];
+            intData->k2 = ptf32[i++];
+            intData->k3 = ptf32[i++];
+            intData->k4 = ptf32[i++];
+            intData->k5 = ptf32[i++];
+            intData->k6 = ptf32[i++];
+            intData->p1 = ptf32[i++];
+            intData->p2 = ptf32[i++];
+            if (model == 0) {
+                // make sure what we read is pinhole
+            }
+            else if (model == 1) {
+                // make sure what we read is fisheye
             }
         }
-        if (extrinsicData && extrinsicDataLen) {
-            *extrinsicDataLen = 2; // (extDataTof ? 1 : 0) + (extDataRgb ? 1 : 0);
-            if (*extrinsicDataLen) {
-                *extrinsicData = (BTA_ExtrinsicData **)malloc(*extrinsicDataLen * sizeof(BTA_ExtrinsicData *));
-                (*extrinsicData)[0] = extDataTof;
-                (*extrinsicData)[1] = extDataRgb;
+        if (fileContent & (1 << 1)) {
+            // Bit 2: Intrinsic base vectors valid
+            // TODO: parse lenscalib pixel vectors
+        }
+        BTA_ExtrinsicData *extData = 0;
+        if (fileContent & (1 << 2)) {
+            // Bit 2: Extrinsic rotation-translation matrix valid
+            extData = (BTA_ExtrinsicData *)malloc(sizeof(BTA_ExtrinsicData));
+            if (!extData) {
+                free(intData);
+                intData = 0;
+                return BTA_StatusOutOfMemory;
             }
+            extData->lensIndex = lensIndex;
+            extData->lensId = lensId;
+            i = 34;
+            extData->rot[0] = ptf32[i++];
+            extData->rot[1] = ptf32[i++];
+            extData->rot[2] = ptf32[i++];
+            extData->trl[0] = ptf32[i++];
+            extData->rot[3] = ptf32[i++];
+            extData->rot[4] = ptf32[i++];
+            extData->rot[5] = ptf32[i++];
+            extData->trl[1] = ptf32[i++];
+            extData->rot[6] = ptf32[i++];
+            extData->rot[7] = ptf32[i++];
+            extData->rot[8] = ptf32[i++];
+            extData->trl[2] = ptf32[i++];
+        }
+        if (fileContent & (1 << 3)) {
+            // Bit 3: Extrinsic inverse rotation-translation matrix valid
+            if (!extData) {
+                extData = (BTA_ExtrinsicData *)malloc(sizeof(BTA_ExtrinsicData));
+                if (!extData) {
+                    free(intData);
+                    intData = 0;
+                    return BTA_StatusOutOfMemory;
+                }
+            }
+            extData->lensIndex = lensIndex;
+            extData->lensId = lensId;
+            i = 46;
+            extData->rotTrlInv[0] = ptf32[i++];
+            extData->rotTrlInv[1] = ptf32[i++];
+            extData->rotTrlInv[2] = ptf32[i++];
+            extData->rotTrlInv[3] = ptf32[i++];
+            extData->rotTrlInv[4] = ptf32[i++];
+            extData->rotTrlInv[5] = ptf32[i++];
+            extData->rotTrlInv[6] = ptf32[i++];
+            extData->rotTrlInv[7] = ptf32[i++];
+            extData->rotTrlInv[8] = ptf32[i++];
+            extData->rotTrlInv[9] = ptf32[i++];
+            extData->rotTrlInv[10] = ptf32[i++];
+            extData->rotTrlInv[11] = ptf32[i++];
+        }
+        if (intrinsicData && intrinsicDataLen && intData) {
+            *intrinsicDataLen = 1;
+            *intrinsicData = (BTA_IntrinsicData **)malloc(sizeof(BTA_IntrinsicData *));
+            if (!*intrinsicData) {
+                free(intData);
+                free(extData);
+                intData = 0;
+                extData = 0;
+                return BTA_StatusOutOfMemory;
+            }
+            **intrinsicData = intData;
+        }
+        if (extrinsicData && extrinsicDataLen && extData) {
+            *extrinsicDataLen = 1;
+            *extrinsicData = (BTA_ExtrinsicData **)malloc(sizeof(BTA_ExtrinsicData *));
+            if (!*extrinsicData) {
+                free(intData);
+                free(extData);
+                intData = 0;
+                extData = 0;
+                free(*intrinsicData);
+                *intrinsicData = 0;
+                return BTA_StatusOutOfMemory;
+            }
+            **extrinsicData = extData;
         }
         return BTA_StatusOk;
     }
@@ -746,8 +1139,8 @@ BTA_Status BTAfreeIntrinsicData(BTA_IntrinsicData ***intData, uint16_t intDataLe
             free((*intData)[i]);
             (*intData)[i] = 0;
         }
-        *intData = 0;
         free(*intData);
+        *intData = 0;
     }
     return BTA_StatusOk;
 }
@@ -823,7 +1216,6 @@ BTA_Status flashUpdate(BTA_WrapperInst *winst, const uint8_t *filename, FN_BTA_P
 BTA_Status BTAtoByteStream(BTA_EthCommand cmd, BTA_EthSubCommand subCmd, uint32_t addr, void *data, uint32_t length, uint8_t crcEnabled, uint8_t **result, uint32_t *resultLen,
                            uint8_t callbackIpAddrVer, uint8_t *callbackIpAddr, uint8_t callbackIpAddrLen, uint16_t callbackPort,
                            uint32_t packetNumber, uint32_t fileSize, uint32_t fileCrc32) {
-    uint32_t i;
     if (!result || !resultLen) {
         return BTA_StatusInvalidParameter;
     }
@@ -927,14 +1319,14 @@ BTA_Status BTAtoByteStream(BTA_EthCommand cmd, BTA_EthSubCommand subCmd, uint32_
     // all this should only write anything other than 0 when using udp
     if (callbackIpAddr) {
         (*result)[resultIndex++] = callbackIpAddrVer;
-        for (i = 0; i < callbackIpAddrLen; i++) {
+        for (uint8_t i = 0; i < callbackIpAddrLen; i++) {
             (*result)[resultIndex++] = callbackIpAddr[i];
         }
     }
     else {
         // BUG!! Above is stated that only zeros should be written!
         (*result)[resultIndex++] = 4;
-        for (i = 0; i < 4; i++) {
+        for (int i = 0; i < 4; i++) {
             (*result)[resultIndex++] = 0;
         }
     }
@@ -967,9 +1359,9 @@ BTA_Status BTAtoByteStream(BTA_EthCommand cmd, BTA_EthSubCommand subCmd, uint32_
     }
 
     if (cmd == BTA_EthCommandWrite) {
-        for (i = 0; i < payloadLen / 2; i++) {
-            (*result)[BTA_ETH_HEADER_SIZE + 2 * i] = ((uint32_t *)data)[i] >> 8;
-            (*result)[BTA_ETH_HEADER_SIZE + 2 * i + 1] = ((uint32_t *)data)[i];
+        for (uint32_t i = 0; i < payloadLen / 2; i++) {
+            (*result)[BTA_ETH_HEADER_SIZE + 2 * i] = (uint8_t)(((uint32_t *)data)[i] >> 8);
+            (*result)[BTA_ETH_HEADER_SIZE + 2 * i + 1] = (uint8_t)(((uint32_t *)data)[i]);
         }
     }
     else {
@@ -979,21 +1371,21 @@ BTA_Status BTAtoByteStream(BTA_EthCommand cmd, BTA_EthSubCommand subCmd, uint32_
     if (!(flags & 1) && (payloadLen > 0)) {
         payloadCrc32 = (uint32_t)CRC32ccitt(*result + BTA_ETH_HEADER_SIZE, payloadLen);
     }
-    (*result)[resultIndex++] = payloadCrc32 >> 24;
-    (*result)[resultIndex++] = payloadCrc32 >> 16;
-    (*result)[resultIndex++] = payloadCrc32 >> 8;
-    (*result)[resultIndex++] = payloadCrc32;
+    (*result)[resultIndex++] = (uint8_t)(payloadCrc32 >> 24);
+    (*result)[resultIndex++] = (uint8_t)(payloadCrc32 >> 16);
+    (*result)[resultIndex++] = (uint8_t)(payloadCrc32 >> 8);
+    (*result)[resultIndex++] = (uint8_t)(payloadCrc32);
 
     uint32_t headerCrc16 = crc16_ccitt(*result + 2, BTA_ETH_HEADER_SIZE - 4);
-    (*result)[resultIndex++] = headerCrc16 >> 8;
-    (*result)[resultIndex++] = headerCrc16;
+    (*result)[resultIndex++] = (uint8_t)(headerCrc16 >> 8);
+    (*result)[resultIndex++] = (uint8_t)(headerCrc16);
 
     return BTA_StatusOk;
 }
 
 
 BTA_Status BTAparseControlHeader(uint8_t *request, uint8_t *data, uint32_t *payloadLength, uint32_t *flags, uint32_t *dataCrc32, uint8_t *parseError, BTA_InfoEventInst *infoEventInst) {
-    if (!request || !data || !payloadLength || !flags ||!parseError || !dataCrc32) {
+    if (!request || !data || !payloadLength || !flags || !parseError || !dataCrc32) {
         BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusInvalidParameter, "BTAparseControlHeader: Parameters missing");
         return BTA_StatusInvalidParameter;
     }
@@ -1013,7 +1405,7 @@ BTA_Status BTAparseControlHeader(uint8_t *request, uint8_t *data, uint32_t *payl
         *parseError = 1;
         return BTA_StatusRuntimeError;
     }
-    if (data[4] != request[4]) {       //sub cmd
+    if (request[3] != BTA_EthCommandDiscovery && data[4] != request[4]) {       //sub cmd (let's ignore a wrong sub-command when discovering because Pulse 
         BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "Eth: parseControlHeader: SubCmd is %d. Expected %d", data[4], request[4]);
         *parseError = 1;
         return BTA_StatusRuntimeError;
@@ -1069,27 +1461,29 @@ BTA_Status BTAparseControlHeader(uint8_t *request, uint8_t *data, uint32_t *payl
 }
 
 
-static void setMissingAsInvalid(BTA_ChannelId channelId, BTA_DataFormat dataFormat, uint8_t *channelDataStart, int channelDataLength, BTA_FrameToParse *frameToParse) {
-    if (!frameToParse) return;
-    assert(frameToParse->packetSize[0]); // this implementation relies on first packet presence
+static BTA_Status setMissingAsInvalid(BTA_ChannelId channelId, BTA_DataFormat dataFormat, uint8_t *channelDataStart, int channelDataLength, BTA_FrameToParse *frameToParse) {
+    if (!frameToParse) {
+        return BTA_StatusInvalidParameter;
+    }
+    assert(frameToParse->packetSizes[0]); // this implementation relies on first packet presence
 
     uint8_t *channelDataEnd = channelDataStart + channelDataLength - 1;
     for (int pInd1 = 0; pInd1 < frameToParse->packetCountTotal - 1; pInd1++) {
-        if (frameToParse->packetSize[pInd1 + 1] && frameToParse->packetSize[pInd1 + 1] != UINT16_MAX) continue;
+        if (frameToParse->packetSizes[pInd1 + 1] && frameToParse->packetSizes[pInd1 + 1] != UINT16_MAX) continue;
         // pInd1 is now index of a present packet before a non-present packet
-        uint8_t *blockStart = frameToParse->frame + frameToParse->packetStartAddr[pInd1] + frameToParse->packetSize[pInd1];
+        uint8_t *blockStart = frameToParse->frame + frameToParse->packetStartAddrs[pInd1] + frameToParse->packetSizes[pInd1];
         int pInd2;
         for (pInd2 = pInd1 + 1; pInd2 < frameToParse->packetCountTotal; pInd2++) {
-            if (frameToParse->packetSize[pInd2] && frameToParse->packetSize[pInd2] != UINT16_MAX) break;
+            if (frameToParse->packetSizes[pInd2] && frameToParse->packetSizes[pInd2] != UINT16_MAX) break;
         }
         int blockLength;
         if (pInd2 >= frameToParse->packetCountTotal) {
             // We are missing packets until the end
-            blockLength = frameToParse->frameLen - (frameToParse->packetStartAddr[pInd1] + frameToParse->packetSize[pInd1]);
+            blockLength = frameToParse->frameSize - (frameToParse->packetStartAddrs[pInd1] + frameToParse->packetSizes[pInd1]);
         }
         else {
             // pInd2 is now index of first present packet after pInd1
-            blockLength = frameToParse->packetStartAddr[pInd2] - (frameToParse->packetStartAddr[pInd1] + frameToParse->packetSize[pInd1]);
+            blockLength = frameToParse->packetStartAddrs[pInd2] - (frameToParse->packetStartAddrs[pInd1] + frameToParse->packetSizes[pInd1]);
         }
         uint8_t *blockEnd = blockStart + blockLength - 1;
         int length = 0;
@@ -1170,9 +1564,10 @@ static void setMissingAsInvalid(BTA_ChannelId channelId, BTA_DataFormat dataForm
 
             case BTA_DataFormatRgb565:
             case BTA_DataFormatRgb24:
-            case BTA_DataFormatJpeg:
                 memset(start, 0, length);
                 break;
+            case BTA_DataFormatJpeg:
+                return BTA_StatusIllegalOperation;
 
             case BTA_DataFormatYuv422: {  // uyvy
                 int firstPixelIndex = (int)(start - channelDataStart) / 4;
@@ -1210,13 +1605,30 @@ static void setMissingAsInvalid(BTA_ChannelId channelId, BTA_DataFormat dataForm
                 break;
             }
 
+            case BTA_DataFormatYuv444UYV: {
+                int firstPixelIndex = (int)(start - channelDataStart) / 3;
+                uint8_t *ptr = channelDataStart + firstPixelIndex * 3;
+                if (length % 3) {
+                    length += 3 - length % 3;
+                }
+                for (int i = 0; i < length; i += 3) {
+                    assert(ptr < channelDataStart + channelDataLength);
+                    *ptr++ = 128;
+                    assert(ptr < channelDataStart + channelDataLength);
+                    *ptr++ = 0;
+                    assert(ptr < channelDataStart + channelDataLength);
+                    *ptr++ = 128;
+                }
+                break;
+            }
+
             default:
                 memset(start, 0, length);
             }
         }
         pInd1 = pInd2 - 1; // continue loop from a present packet index
     }
-
+    return BTA_StatusOk;
 
     //if (dataFormat == BTA_DataFormatYuv422) {
     //    char msg[1000000] = { 0 };
@@ -1292,13 +1704,13 @@ BTA_Status BTAparseFrame(BTA_WrapperInst *winst, BTA_FrameToParse *frameToParse,
     frameToParse->timestamp = 0;
 
     uint8_t *data = frameToParse->frame;
-    uint32_t dataLen = frameToParse->frameLen;
+    uint32_t dataLen = frameToParse->frameSize;
     *framePtr = 0;
     if (dataLen < 64) {
         BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusOutOfMemory, "Parsing frame: data too short: %d", dataLen);
         return BTA_StatusOutOfMemory;
     }
-    if (frameToParse->packetCountGot > 0 && (!frameToParse->packetSize[0] || frameToParse->packetSize[0] == UINT16_MAX)) {
+    if (frameToParse->packetCountGot > 0 && (!frameToParse->packetSizes[0] || frameToParse->packetSizes[0] == UINT16_MAX)) {
         BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WARNING, BTA_StatusInvalidData, "Parsing frame %d: First packet is missing, abort", frameToParse->frameCounter);
         return BTA_StatusInvalidData;
     }
@@ -1346,9 +1758,10 @@ BTA_Status BTAparseFrame(BTA_WrapperInst *winst, BTA_FrameToParse *frameToParse,
         i += 4;
         frame->frameCounter = (data[i] << 8) | data[i + 1];
         i += 2;
+        frame->sequenceCounter = 0;
 
         // count frame counter gaps
-        if (frame->frameCounter > (uint32_t)(winst->frameCounterLast + winst->lpDataStreamFrameCounterGap) && winst->timeStampLast != 0) {
+        if (frame->frameCounter > winst->frameCounterLast + (uint32_t)winst->lpDataStreamFrameCounterGap && winst->timeStampLast != 0) {
             winst->lpDataStreamFrameCounterGapsCount++;
         }
         winst->frameCounterLast = frame->frameCounter;
@@ -1410,7 +1823,6 @@ BTA_Status BTAparseFrame(BTA_WrapperInst *winst, BTA_FrameToParse *frameToParse,
         }
         else {
             frame->genericTemp = 0;
-            frame->sequenceCounter = 0;
         }
         uint32_t lengthColorChannel = 0;
         if (headerVersion >= 32) {
@@ -1438,12 +1850,6 @@ BTA_Status BTAparseFrame(BTA_WrapperInst *winst, BTA_FrameToParse *frameToParse,
         for (uint8_t chInd = 0; chInd < frame->channelsLen; chInd++) {
             uint8_t rawPhaseContent = (rawPhaseContent32 >> (4 * chInd)) & 0xf;
             BTA_Channel *channel = (BTA_Channel *)malloc(sizeof(BTA_Channel));
-            channel->metadata = 0;      // pointer nullen hot do Michi gsog
-            channel->metadataLen = 0;
-            channel->lensIndex = 0;
-            channel->flags = 0;
-            channel->gain = 0;
-            frame->channels[chInd] = channel;
             if (!channel) {
                 // free channels created so far
                 frame->channelsLen = chInd;
@@ -1451,12 +1857,20 @@ BTA_Status BTAparseFrame(BTA_WrapperInst *winst, BTA_FrameToParse *frameToParse,
                 BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusOutOfMemory, "Parsing frame v3: Could not allocate c");
                 return BTA_StatusOutOfMemory;
             }
+            frame->channels[chInd] = channel;
+            channel->metadata = 0;
+            channel->metadataLen = 0;
+            channel->gain = 0;
             channel->id = BTAETHgetChannelId(imgMode, chInd);
             if (channel->id == BTA_ChannelIdColor) {
+                channel->flags = 0;
+                channel->lensIndex = 2;
                 channel->xRes = xResColorChannel;
                 channel->yRes = yResColorChannel;
             }
             else {
+                channel->flags = 2;  // While parsing we make sure that the resulting coordinate system is BTA conform. Non-cartesian channels also shall use flag bit1
+                channel->lensIndex = 1;
                 channel->xRes = xRes;
                 channel->yRes = yRes;
             }
@@ -1466,30 +1880,27 @@ BTA_Status BTAparseFrame(BTA_WrapperInst *winst, BTA_FrameToParse *frameToParse,
             channel->dataFormat = BTAETHgetDataFormat(imgMode, chInd, colorChannelMode, rawPhaseContent);
             channel->unit = BTAETHgetUnit(imgMode, chInd);
 
-            // Calculate dataLen and channelDataInputLen
-            uint32_t channelDataInputLen;
-            uint8_t jpgDecodingEnabled = winst->jpgInst && winst->jpgInst->enabled;
-            if (channel->dataFormat == BTA_DataFormatJpeg) {
-                if (!jpgDecodingEnabled) {
-                    channel->dataLen = lengthColorChannel;
-                    channelDataInputLen = lengthColorChannel;
-                }
-                else {
-                    // Going to convert it to RGB24, so reserve that space
-                    channel->dataLen = channel->xRes * channel->yRes * 3;
-                    channelDataInputLen = lengthColorChannel;
-                }
+            // Calculate dataLen
+            if (channel->id == BTA_ChannelIdColor) {
+                channel->dataLen = lengthColorChannel;
                 if (lengthColorChannelAdditional) {
                     // next color channel will get this length
                     lengthColorChannel = lengthColorChannelAdditional;
                 }
             }
-            else if (imgMode == BTA_EthImgModeRawPhases || imgMode == BTA_EthImgModeRawQI) {
+            else if (channel->id == BTA_ChannelIdRawPhase || channel->id == BTA_ChannelIdRawI || channel->id == BTA_ChannelIdRawQ) { //(imgMode == BTA_EthImgModeRawPhases || imgMode == BTA_EthImgModeRawQI)
                 if (preMetaData == 1) {
                     channel->yRes--;
                     // read first line of metadata
                     uint32_t metadataLen = channel->xRes * sizeof(uint16_t);
                     void *metadata = malloc(metadataLen);
+                    if (!metadata) {
+                        // free channels created so far
+                        frame->channelsLen = chInd + 1;
+                        BTAfreeFrame(&frame);
+                        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusOutOfMemory, "Parsing frame v3: Could not allocate d");
+                        return BTA_StatusOutOfMemory;
+                    }
                     memcpy(metadata, data + i, metadataLen);
                     i += metadataLen;
                     BTAinsertMetadataDataIntoChannel(channel, BTA_MetadataIdMlxMeta1, metadata, metadataLen);
@@ -1504,11 +1915,9 @@ BTA_Status BTAparseFrame(BTA_WrapperInst *winst, BTA_FrameToParse *frameToParse,
                     channel->yRes--;
                 }
                 channel->dataLen = channel->xRes * channel->yRes * sizeof(uint16_t);
-                channelDataInputLen = channel->dataLen;
             }
             else {
                 channel->dataLen = channel->xRes * channel->yRes * (channel->dataFormat & 0xf);
-                channelDataInputLen = channel->dataLen;
             }
 
             channel->data = (uint8_t *)malloc(channel->dataLen);
@@ -1522,103 +1931,77 @@ BTA_Status BTAparseFrame(BTA_WrapperInst *winst, BTA_FrameToParse *frameToParse,
                 return BTA_StatusOutOfMemory;
             }
 
-            if (!winst->lpTestPatternEnabled) {
-                // before the memcopy check if there is enough input data
-                if (dataLen < i + channelDataInputLen) {
-                    free(channel);
-                    channel = 0;
-                    // free channels created so far
-                    frame->channelsLen = chInd;
-                    BTAfreeFrame(&frame);
-                    BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusOutOfMemory, "Parsing frame v3: data too short %d", dataLen);
-                    return BTA_StatusOutOfMemory;
-                }
+            // before the memcopy check if there is enough input data
+            if (dataLen < i + channel->dataLen) {
+                free(channel);
+                channel = 0;
+                // free channels created so far
+                frame->channelsLen = chInd;
+                BTAfreeFrame(&frame);
+                BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusOutOfMemory, "Parsing frame v3: data too short %d", dataLen);
+                return BTA_StatusOutOfMemory;
+            }
 
-                //---------------------------------------------------------------------
-                // copy data with special cases (also convert from SentisTofM100 coordinate system to BltTofApi coordinat system)
-                if (channel->id == BTA_ChannelIdX) {
-                    channel->id = BTA_ChannelIdZ;
-                    memcpy(channel->data, data + i, channel->dataLen);
+            //---------------------------------------------------------------------
+            // copy data with special cases (also convert from SentisTofM100 coordinate system to BltTofApi coordinat system)
+            if (channel->id == BTA_ChannelIdX) {
+                channel->id = BTA_ChannelIdZ;
+                memcpy(channel->data, data + i, channel->dataLen);
+            }
+            else if (channel->id == BTA_ChannelIdY) {
+                channel->id = BTA_ChannelIdX;
+                int16_t *channelDataTempSrc = (int16_t *)(data + i);
+                int16_t *channelDataTempDst = (int16_t *)channel->data;
+                for (int32_t j = 0; j < channel->xRes * channel->yRes; j++) {
+                    *channelDataTempDst++ = -*channelDataTempSrc++;
                 }
-                else if (channel->id == BTA_ChannelIdY) {
-                    channel->id = BTA_ChannelIdX;
-                    int16_t *channelDataTempSrc = (int16_t *)(data + i);
-                    int16_t *channelDataTempDst = (int16_t *)channel->data;
-                    for (int32_t j = 0; j < channel->xRes * channel->yRes; j++) {
-                        *channelDataTempDst++ = -*channelDataTempSrc++;
-                    }
+            }
+            else if (channel->id == BTA_ChannelIdZ) {
+                channel->id = BTA_ChannelIdY;
+                int16_t *channelDataTempSrc = (int16_t *)(data + i);
+                int16_t *channelDataTempDst = (int16_t *)channel->data;
+                for (int32_t j = 0; j < channel->xRes * channel->yRes; j++) {
+                    *channelDataTempDst++ = -*channelDataTempSrc++;
                 }
-                else if (channel->id == BTA_ChannelIdZ) {
-                    channel->id = BTA_ChannelIdY;
-                    int16_t *channelDataTempSrc = (int16_t *)(data + i);
-                    int16_t *channelDataTempDst = (int16_t *)channel->data;
-                    for (int32_t j = 0; j < channel->xRes * channel->yRes; j++) {
-                        *channelDataTempDst++ = -*channelDataTempSrc++;
-                    }
+            }
+            else if (channel->dataFormat == BTA_DataFormatSInt16Mlx12S) {
+                int16_t *channelDataTempSrc = (int16_t *)(data + i);
+                int16_t *channelDataTempDst = (int16_t *)channel->data;
+                for (int32_t j = 0; j < channel->xRes * channel->yRes; j++) {
+                    //*channelDataTempDst++ = (*channelDataTempSrc++ << 4) >> 4;
+                    *channelDataTempDst++ = (*channelDataTempSrc & 0x0800) ? (*channelDataTempSrc | 0xf000) : *channelDataTempSrc;
+                    channelDataTempSrc++;
                 }
-                else if (channel->dataFormat == BTA_DataFormatJpeg) {
-                    BTA_Status status = BTA_StatusNotSupported;
-                    if (jpgDecodingEnabled) {
-                        status = BTAdecodeJpgToRgb24(winst, data + i, channelDataInputLen, channel->data, channel->dataLen);
-                    }
-                    if (status == BTA_StatusOk) {
-                        channel->dataFormat = BTA_DataFormatRgb24;
-                    }
-                    else {
-                        free(channel->data);
-                        channel->data = (uint8_t *)malloc(channelDataInputLen);
-                        if (!channel->data) {
-                            free(channel);
-                            channel = 0;
-                            // free channels created so far
-                            frame->channelsLen = chInd;
-                            BTAfreeFrame(&frame);
-                            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusOutOfMemory, "Parsing frame v3: Could not allocate e");
-                            return BTA_StatusOutOfMemory;
-                        }
-                        memcpy(channel->data, data + i, channelDataInputLen);
-                    }
+            }
+            else if (channel->dataFormat == BTA_DataFormatUInt16Mlx12U) {
+                memcpy(channel->data, data + i, channel->dataLen);
+            }
+            else if (channel->dataFormat == BTA_DataFormatSInt16Mlx1C11S) {
+                int16_t *channelDataTempSrc = (int16_t *)(data + i);
+                int16_t *channelDataTempDst = (int16_t *)channel->data;
+                for (int32_t j = 0; j < channel->xRes * channel->yRes; j++) {
+                    //*channelDataTempDst++ = (*channelDataTempSrc++ << 5) >> 5;
+                    *channelDataTempDst++ = (*channelDataTempSrc & 0x0400) ? (*channelDataTempSrc | 0xfc00) : *channelDataTempSrc;
+                    channelDataTempSrc++;
                 }
-                else if (channel->dataFormat == BTA_DataFormatSInt16Mlx12S) {
-                    int16_t *channelDataTempSrc = (int16_t *)(data + i);
-                    int16_t *channelDataTempDst = (int16_t *)channel->data;
-                    for (int32_t j = 0; j < channel->xRes * channel->yRes; j++) {
-                        //*channelDataTempDst++ = (*channelDataTempSrc++ << 4) >> 4;
-                        *channelDataTempDst++ = (*channelDataTempSrc & 0x0800) ? (*channelDataTempSrc | 0xf000) : *channelDataTempSrc;
-                        channelDataTempSrc++;
-                    }
+            }
+            else if (channel->dataFormat == BTA_DataFormatUInt16Mlx1C11U) {
+                uint16_t *channelDataTempSrc = (uint16_t *)(data + i);
+                uint16_t *channelDataTempDst = (uint16_t *)channel->data;
+                for (int32_t j = 0; j < channel->xRes * channel->yRes; j++) {
+                    *channelDataTempDst++ = *channelDataTempSrc++ & 0x07ff;
                 }
-                else if (channel->dataFormat == BTA_DataFormatUInt16Mlx12U) {
-                    memcpy(channel->data, data + i, channel->dataLen);
-                }
-                else if (channel->dataFormat == BTA_DataFormatSInt16Mlx1C11S) {
-                    int16_t *channelDataTempSrc = (int16_t *)(data + i);
-                    int16_t *channelDataTempDst = (int16_t *)channel->data;
-                    for (int32_t j = 0; j < channel->xRes * channel->yRes; j++) {
-                        //*channelDataTempDst++ = (*channelDataTempSrc++ << 5) >> 5;
-                        *channelDataTempDst++ = (*channelDataTempSrc & 0x0400) ? (*channelDataTempSrc | 0xfc00) : *channelDataTempSrc;
-                        channelDataTempSrc++;
-                    }
-                }
-                else if (channel->dataFormat == BTA_DataFormatUInt16Mlx1C11U) {
-                    uint16_t *channelDataTempSrc = (uint16_t *)(data + i);
-                    uint16_t *channelDataTempDst = (uint16_t *)channel->data;
-                    for (int32_t j = 0; j < channel->xRes * channel->yRes; j++) {
-                        *channelDataTempDst++ = *channelDataTempSrc++ & 0x07ff;
-                    }
-                }
-                else {
-                    memcpy(channel->data, data + i, channel->dataLen);
-                }
-
+            }
+            else {
+                memcpy(channel->data, data + i, channel->dataLen);
             }
 
             // advance input data index
-            i += channelDataInputLen;
+            i += channel->dataLen;
 
             channel->metadata = 0;
             channel->metadataLen = 0;
-            if (imgMode == BTA_EthImgModeRawPhases || imgMode == BTA_EthImgModeRawQI) {
+            if (channel->id == BTA_ChannelIdRawPhase || channel->id == BTA_ChannelIdRawI || channel->id == BTA_ChannelIdRawQ) { //(imgMode == BTA_EthImgModeRawPhases || imgMode == BTA_EthImgModeRawQI)
                 // read last lines of metadata
                 if (postMetaData & 2) {
                     uint32_t metadataLen = 8 * channel->xRes * sizeof(uint16_t);
@@ -1646,10 +2029,6 @@ BTA_Status BTAparseFrame(BTA_WrapperInst *winst, BTA_FrameToParse *frameToParse,
         frame->metadataLen = 0;
         frame->metadata = 0;
 
-        if (winst->lpTestPatternEnabled) {
-            BTAinsertTestPattern(frame, winst->lpTestPatternEnabled);
-        }
-
         // just reorder X, Y, Z channelpointer, so they are alphabetical
         if (imgMode == BTA_EthImgModeXYZ || imgMode == BTA_EthImgModeXYZAmp || imgMode == BTA_EthImgModeXYZColor ||
             imgMode == BTA_EthImgModeXYZConfColor || imgMode == BTA_EthImgModeXYZAmpColorOverlay) {
@@ -1674,7 +2053,7 @@ BTA_Status BTAparseFrame(BTA_WrapperInst *winst, BTA_FrameToParse *frameToParse,
 
         BVQenqueue(winst->lpDataStreamFramesParsedPerSecFrametimes, (void *)(size_t)(frame->timeStamp - winst->timeStampLast));
         winst->timeStampLast = frame->timeStamp;
-        winst->lpDataStreamFramesParsedPerSecUpdated = BTAgetTickCount();
+        winst->lpDataStreamFramesParsedPerSecUpdated = BTAgetTickCount64();
         winst->lpDataStreamFramesParsedCount++;
 
         return BTA_StatusOk;
@@ -1790,9 +2169,8 @@ BTA_Status BTAparseFrame(BTA_WrapperInst *winst, BTA_FrameToParse *frameToParse,
         }
 
         // Parse descriptors
-        int chInd = 0;
+        uint8_t chInd = 0;
         int mdInd = 0;
-        uint8_t jpgDecodingEnabled = winst->jpgInst && winst->jpgInst->enabled;
         while (1) {
             BTA_Data4DescBase *data4DescBase = (BTA_Data4DescBase *)dataHeader;
             dataHeader += data4DescBase->descriptorLen;
@@ -1800,6 +2178,7 @@ BTA_Status BTAparseFrame(BTA_WrapperInst *winst, BTA_FrameToParse *frameToParse,
             case btaData4DescriptorTypeFrameInfoV1: {
                 BTA_Data4DescFrameInfoV1 *data4DescFrameInfoV1 = (BTA_Data4DescFrameInfoV1 *)data4DescBase;
                 frame->frameCounter = data4DescFrameInfoV1->frameCounter;
+                frame->sequenceCounter = 0;
                 frame->timeStamp = data4DescFrameInfoV1->timestamp;
                 frame->mainTemp = ((int16_t)data4DescFrameInfoV1->mainTemp) / 100.0f;
                 frame->ledTemp = ((int16_t)data4DescFrameInfoV1->ledTemp) / 100.0f;
@@ -1809,7 +2188,7 @@ BTA_Status BTAparseFrame(BTA_WrapperInst *winst, BTA_FrameToParse *frameToParse,
                 frame->firmwareVersionNonFunc = data4DescFrameInfoV1->firmwareVersion & 0x3f;
 
                 // count frame counter gaps
-                if (frame->frameCounter != (uint32_t)(winst->frameCounterLast + 1) && winst->timeStampLast != 0) {
+                if (frame->frameCounter != winst->frameCounterLast + 1 && winst->timeStampLast != 0) {
                     winst->lpDataStreamFrameCounterGapsCount++;
                 }
                 winst->frameCounterLast = frame->frameCounter;
@@ -1827,6 +2206,7 @@ BTA_Status BTAparseFrame(BTA_WrapperInst *winst, BTA_FrameToParse *frameToParse,
                 }
                 frame->channels[chInd] = channel;
                 channel->id = (BTA_ChannelId)data4DescTofV1->channelId;
+                assert(channel->id != BTA_ChannelIdUnknown);
                 channel->xRes = data4DescTofV1->width;
                 channel->yRes = data4DescTofV1->height;
                 channel->dataFormat = (BTA_DataFormat)data4DescTofV1->dataFormat;
@@ -1846,13 +2226,14 @@ BTA_Status BTAparseFrame(BTA_WrapperInst *winst, BTA_FrameToParse *frameToParse,
                     BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusOutOfMemory, "Parsing frame v4: data too short: %d", dataLen);
                     return BTA_StatusOutOfMemory;
                 }
-                if (!winst->lpTestPatternEnabled) {
-                    setMissingAsInvalid((BTA_ChannelId)data4DescTofV1->channelId, (BTA_DataFormat)data4DescTofV1->dataFormat, dataStream, data4DescTofV1->dataLen, frameToParse);
-                    insertChannelData(winst, channel, dataStream, data4DescTofV1->dataLen, 0);
+                BTA_Status status = setMissingAsInvalid((BTA_ChannelId)data4DescTofV1->channelId, (BTA_DataFormat)data4DescTofV1->dataFormat, dataStream, data4DescTofV1->dataLen, frameToParse);
+                if (status == BTA_StatusOk) {
+                    insertChannelData(channel, dataStream, data4DescTofV1->dataLen);
                 }
                 else {
-                    channel->data = 0;
-                    channel->dataLen = 0;
+                    channel->xRes = 0;
+                    channel->yRes = 0;
+                    insertChannelData(channel, 0, 0);
                 }
                 dataStream += data4DescTofV1->dataLen;
                 chInd++;
@@ -1889,13 +2270,14 @@ BTA_Status BTAparseFrame(BTA_WrapperInst *winst, BTA_FrameToParse *frameToParse,
                     BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusOutOfMemory, "Parsing frame v4: data too short: %d", dataLen);
                     return BTA_StatusOutOfMemory;
                 }
-                if (!winst->lpTestPatternEnabled) {
-                    setMissingAsInvalid(BTA_ChannelIdColor, (BTA_DataFormat)data4DescColorV1->colorFormat, dataStream, data4DescColorV1->dataLen, frameToParse);
-                    insertChannelData(winst, channel, dataStream, data4DescColorV1->dataLen, jpgDecodingEnabled);
+                BTA_Status status = setMissingAsInvalid(BTA_ChannelIdColor, (BTA_DataFormat)data4DescColorV1->colorFormat, dataStream, data4DescColorV1->dataLen, frameToParse);
+                if (status == BTA_StatusOk) {
+                    insertChannelData(channel, dataStream, data4DescColorV1->dataLen);
                 }
                 else {
-                    channel->data = 0;
-                    channel->dataLen = 0;
+                    channel->xRes = 0;
+                    channel->yRes = 0;
+                    insertChannelData(channel, 0, 0);
                 }
                 dataStream += data4DescColorV1->dataLen;
                 chInd++;
@@ -1947,13 +2329,8 @@ BTA_Status BTAparseFrame(BTA_WrapperInst *winst, BTA_FrameToParse *frameToParse,
                 return BTA_StatusIllegalOperation;
             }
             if (data4DescBase->descriptorType == btaData4DescriptorTypeEof) {
-                frame->sequenceCounter = 0;
                 break;
             }
-        }
-
-        if (winst->lpTestPatternEnabled) {
-            BTAinsertTestPattern(frame, winst->lpTestPatternEnabled);
         }
 
         if ((int)(dataStream - data) != (int)dataLen) {
@@ -1966,7 +2343,7 @@ BTA_Status BTAparseFrame(BTA_WrapperInst *winst, BTA_FrameToParse *frameToParse,
 
         BVQenqueue(winst->lpDataStreamFramesParsedPerSecFrametimes, (void *)(size_t)(frame->timeStamp - winst->timeStampLast));
         winst->timeStampLast = frame->timeStamp;
-        winst->lpDataStreamFramesParsedPerSecUpdated = BTAgetTickCount();
+        winst->lpDataStreamFramesParsedPerSecUpdated = BTAgetTickCount64();
         winst->lpDataStreamFramesParsedCount++;
 
         return BTA_StatusOk;
@@ -1982,11 +2359,12 @@ BTA_Status BTAparseFrame(BTA_WrapperInst *winst, BTA_FrameToParse *frameToParse,
 
 
 //---------------------------------------------------------------------
-// copy data with special cases (also convert from SentisTofM100 coordinate system to BltTofApi coordinat system)
-// channel->data must already be allocated (considering jpeg and possible decompression)
-static void insertChannelData(BTA_WrapperInst *winst, BTA_Channel *channel, uint8_t *data, uint32_t dataLen, uint8_t decodingEnabled) {
+// copy data with special cases (also convert from SentisTofM100 coordinate system to BltTofApi coordinate system)
+// channel->data must already be allocated
+static void insertChannelData(BTA_Channel *channel, uint8_t *data, uint32_t dataLen) {
     channel->dataLen = dataLen;
     if (!(channel->flags & 0x2) && channel->id == BTA_ChannelIdX) {
+        // Transform coordinate system from camera to bta spec
         channel->id = BTA_ChannelIdZ;
         channel->data = (uint8_t *)malloc(channel->dataLen);
         if (!channel->data) {
@@ -1994,8 +2372,10 @@ static void insertChannelData(BTA_WrapperInst *winst, BTA_Channel *channel, uint
             return;
         }
         memcpy(channel->data, data, channel->dataLen);
+        channel->flags &= ~2;
     }
     else if (!(channel->flags & 0x2) && channel->id == BTA_ChannelIdY) {
+        // Transform coordinate system from camera to bta spec
         channel->id = BTA_ChannelIdX;
         channel->data = (uint8_t *)malloc(channel->dataLen);
         if (!channel->data) {
@@ -2007,9 +2387,11 @@ static void insertChannelData(BTA_WrapperInst *winst, BTA_Channel *channel, uint
         int px = dataLen / (channel->dataFormat & 0xf);
         for (int32_t j = 0; j < px; j++) {
             *channelDataTempDst++ = -*channelDataTempSrc++;
-         }
+        }
+        channel->flags &= ~2;
     }
     else if (!(channel->flags & 0x2) && channel->id == BTA_ChannelIdZ) {
+        // Transform coordinate system from camera to bta spec
         channel->id = BTA_ChannelIdY;
         channel->data = (uint8_t *)malloc(channel->dataLen);
         if (!channel->data) {
@@ -2022,19 +2404,7 @@ static void insertChannelData(BTA_WrapperInst *winst, BTA_Channel *channel, uint
         for (int32_t j = 0; j < px; j++) {
             *channelDataTempDst++ = -*channelDataTempSrc++;
         }
-    }
-    else if (decodingEnabled && channel->dataFormat == BTA_DataFormatJpeg) {
-        channel->dataFormat = BTA_DataFormatRgb24;
-        channel->dataLen = channel->xRes * channel->yRes * 3;
-        channel->data = (uint8_t *)malloc(channel->dataLen);
-        if (!channel->data) {
-            channel->dataLen = 0;
-            return;
-        }
-        BTA_Status status = BTAdecodeJpgToRgb24(winst, data, dataLen, channel->data, channel->dataLen);
-        if (status != BTA_StatusOk) {
-            memset(channel->data, 0, channel->dataLen);
-        }
+        channel->flags &= ~2;
     }
     else if (channel->dataFormat == BTA_DataFormatSInt16Mlx12S) {
         channel->data = (uint8_t *)malloc(channel->dataLen);
@@ -2088,180 +2458,6 @@ static void insertChannelData(BTA_WrapperInst *winst, BTA_Channel *channel, uint
 }
 
 
-static void BTAinsertTestPattern(BTA_Frame *frame, uint16_t testPattern) {
-    uint32_t counter = frame->frameCounter % 100;
-    int chInd;
-    if (testPattern == 3) {
-        for (chInd = 0; chInd < frame->channelsLen; chInd++) {
-            BTA_Channel *channel = frame->channels[chInd];
-            channel->xRes *= 2;
-            channel->yRes *= 2;
-            channel->dataLen *= 4;
-            free(channel->data);
-            channel->data = (uint8_t *)malloc(channel->dataLen);
-        }
-        testPattern = 2;
-    }
-    else if (testPattern == 4) {
-        for (chInd = 0; chInd < frame->channelsLen; chInd++) {
-            BTA_Channel *channel = frame->channels[chInd];
-            channel->xRes *= 3;
-            channel->yRes *= 3;
-            channel->dataLen *= 9;
-            free(channel->data);
-            channel->data = (uint8_t *)malloc(channel->dataLen);
-        }
-        testPattern = 2;
-    }
-    else if (testPattern == 5) {
-        for (chInd = 0; chInd < frame->channelsLen; chInd++) {
-            BTA_Channel *channel = frame->channels[chInd];
-            channel->xRes *= 4;
-            channel->yRes *= 4;
-            channel->dataLen *= 16;
-            free(channel->data);
-            channel->data = (uint8_t *)malloc(channel->dataLen);
-        }
-        testPattern = 2;
-    }
-    else if (testPattern == 6) {
-        for (chInd = 0; chInd < frame->channelsLen; chInd++) {
-            BTA_Channel *channel = frame->channels[chInd];
-            if (channel->dataFormat & 0xf) {
-                channel->xRes = 320;
-                channel->yRes = 240;
-                channel->dataLen = channel->xRes * channel->yRes * (channel->dataFormat & 0xf);
-                free(channel->data);
-                channel->data = (uint8_t *)malloc(channel->dataLen);
-            }
-        }
-        testPattern = 2;
-    }
-    else if (testPattern == 7) {
-        for (chInd = 0; chInd < frame->channelsLen; chInd++) {
-            BTA_Channel *channel = frame->channels[chInd];
-            if (channel->dataFormat & 0xf) {
-                channel->xRes = 640;
-                channel->yRes = 480;
-                channel->dataLen = channel->xRes * channel->yRes * (channel->dataFormat & 0xf);
-                free(channel->data);
-                channel->data = (uint8_t *)malloc(channel->dataLen);
-            }
-        }
-        testPattern = 2;
-    }
-    if (testPattern != 2) {
-        testPattern = 1;
-    }
-
-    for (chInd = 0; chInd < frame->channelsLen; chInd++) {
-        BTA_Channel *channel = frame->channels[chInd];
-        int j;
-        switch (channel->dataFormat) {
-        case BTA_DataFormatUInt8: {
-            uint8_t *channelDataTempDst = (uint8_t *)channel->data;
-            if (testPattern == 1) {
-                for (j = 0; j < channel->xRes * channel->yRes; j++) {
-                    *channelDataTempDst++ = j;
-                }
-            }
-            else if (testPattern == 2) {
-                for (j = 0; j < channel->xRes * channel->yRes; j++) {
-                    *channelDataTempDst++ = counter;
-                }
-            }
-            break;
-        }
-        case BTA_DataFormatSInt16:
-        case BTA_DataFormatUInt16:
-        case BTA_DataFormatRgb565:
-        case BTA_DataFormatSInt16Mlx12S:
-        case BTA_DataFormatUInt16Mlx12U:
-        case BTA_DataFormatSInt16Mlx1C11S:
-        case BTA_DataFormatUInt16Mlx1C11U:
-        case BTA_DataFormatYuv422: {
-            uint16_t *channelDataTempDst = (uint16_t *)channel->data;
-            if (testPattern == 1) {
-                for (j = 0; j < channel->xRes * channel->yRes; j++) {
-                    *channelDataTempDst++ = j;
-                }
-            }
-            else if (testPattern == 2) {
-                for (j = 0; j < channel->xRes * channel->yRes; j++) {
-                    *channelDataTempDst++ = counter;
-                }
-            }
-            break;
-        }
-        case BTA_DataFormatSInt32:
-        case BTA_DataFormatUInt32: {
-            uint32_t *channelDataTempDst = (uint32_t *)channel->data;
-            if (testPattern == 1) {
-                for (j = 0; j < channel->xRes * channel->yRes; j++) {
-                    *channelDataTempDst++ = j;
-                }
-            }
-            else if (testPattern == 2) {
-                for (j = 0; j < channel->xRes * channel->yRes; j++) {
-                    *channelDataTempDst++ = counter;
-                }
-            }
-            break;
-        }
-        case BTA_DataFormatFloat32: {
-            float *channelDataTempDst = (float *)channel->data;
-            if (testPattern == 1) {
-                for (j = 0; j < channel->xRes * channel->yRes; j++) {
-                    *channelDataTempDst++ = (float)j;
-                }
-            }
-            else if (testPattern == 2) {
-                for (j = 0; j < channel->xRes * channel->yRes; j++) {
-                    *channelDataTempDst++ = (float)counter;
-                }
-            }
-            break;
-        }
-        case BTA_DataFormatFloat64: {
-            double *channelDataTempDst = (double *)channel->data;
-            if (testPattern == 1) {
-                for (j = 0; j < channel->xRes * channel->yRes; j++) {
-                    *channelDataTempDst++ = (double)j;
-                }
-            }
-            else if (testPattern == 2) {
-                for (j = 0; j < channel->xRes * channel->yRes; j++) {
-                    *channelDataTempDst++ = (double)counter;
-                }
-            }
-            break;
-        }
-        case BTA_DataFormatJpeg:
-        case BTA_DataFormatRgb24:
-        case BTA_DataFormatYuv444:
-        case BTA_DataFormatYuv444UYV: {
-            channel->dataFormat = BTA_DataFormatRgb24;
-            uint8_t *channelDataTempDst = (uint8_t *)channel->data;
-            int x, y;
-            //uint8_t rnd = frame->timeStamp / 30000;
-            for (y = 0; y < channel->yRes; y++) {
-                for (x = 0; x < channel->xRes; x++) {
-                    *channelDataTempDst++ = 255 * x / channel->xRes;
-                    *channelDataTempDst++ = 255 * y / channel->yRes;
-                    *channelDataTempDst++ = 128 * x / channel->xRes + 128 * y / channel->yRes;
-                }
-            }
-            break;
-        }
-        case BTA_DataFormatUnknown:
-            assert(0);
-            //BTAinfoEventHelper(infoEventInst, IMPORTANCE_ERROR, BTA_StatusNotSupported, "parseFrame: DataFormat not supported %d", dataFormat);
-            break;
-        }
-    }
-}
-
-
 static BTA_ChannelId BTAETHgetChannelId(BTA_EthImgMode imgMode, uint8_t channelIndex) {
     switch (imgMode) {
     case BTA_EthImgModeRawdistAmp:
@@ -2271,6 +2467,7 @@ static BTA_ChannelId BTAETHgetChannelId(BTA_EthImgMode imgMode, uint8_t channelI
         case 1:
             return BTA_ChannelIdAmplitude;
         default:
+            assert(0);
             return BTA_ChannelIdUnknown;
         }
     case BTA_EthImgModeDistAmp:
@@ -2280,6 +2477,7 @@ static BTA_ChannelId BTAETHgetChannelId(BTA_EthImgMode imgMode, uint8_t channelI
         case 1:
             return BTA_ChannelIdAmplitude;
         default:
+            assert(0);
             return BTA_ChannelIdUnknown;
         }
     case BTA_EthImgModeDistAmpConf:
@@ -2291,6 +2489,7 @@ static BTA_ChannelId BTAETHgetChannelId(BTA_EthImgMode imgMode, uint8_t channelI
         case 2:
             return BTA_ChannelIdConfidence;
         default:
+            assert(0);
             return BTA_ChannelIdUnknown;
         }
     case BTA_EthImgModeDistAmpBalance:
@@ -2302,6 +2501,7 @@ static BTA_ChannelId BTAETHgetChannelId(BTA_EthImgMode imgMode, uint8_t channelI
         case 2:
             return BTA_ChannelIdBalance;
         default:
+            assert(0);
             return BTA_ChannelIdUnknown;
         }
     case BTA_EthImgModeXYZ:
@@ -2313,6 +2513,7 @@ static BTA_ChannelId BTAETHgetChannelId(BTA_EthImgMode imgMode, uint8_t channelI
         case 2:
             return BTA_ChannelIdZ;
         default:
+            assert(0);
             return BTA_ChannelIdUnknown;
         }
     case BTA_EthImgModeXYZAmp:
@@ -2326,6 +2527,7 @@ static BTA_ChannelId BTAETHgetChannelId(BTA_EthImgMode imgMode, uint8_t channelI
         case 3:
             return BTA_ChannelIdAmplitude;
         default:
+            assert(0);
             return BTA_ChannelIdUnknown;
         }
     case BTA_EthImgModeXYZColor:
@@ -2357,6 +2559,7 @@ static BTA_ChannelId BTAETHgetChannelId(BTA_EthImgMode imgMode, uint8_t channelI
         case 3:
             return BTA_ChannelIdPhase270;
         default:
+            assert(0);
             return BTA_ChannelIdUnknown;
         }
     case BTA_EthImgModePhase270_180_90_0:
@@ -2370,6 +2573,7 @@ static BTA_ChannelId BTAETHgetChannelId(BTA_EthImgMode imgMode, uint8_t channelI
         case 3:
             return BTA_ChannelIdPhase0;
         default:
+            assert(0);
             return BTA_ChannelIdUnknown;
         }
     case BTA_EthImgModeDistXYZ:
@@ -2383,6 +2587,7 @@ static BTA_ChannelId BTAETHgetChannelId(BTA_EthImgMode imgMode, uint8_t channelI
         case 3:
             return BTA_ChannelIdZ;
         default:
+            assert(0);
             return BTA_ChannelIdUnknown;
         }
     case BTA_EthImgModeXAmp:
@@ -2392,6 +2597,7 @@ static BTA_ChannelId BTAETHgetChannelId(BTA_EthImgMode imgMode, uint8_t channelI
         case 1:
             return BTA_ChannelIdAmplitude;
         default:
+            assert(0);
             return BTA_ChannelIdUnknown;
         }
     case BTA_EthImgModeTest:
@@ -2402,6 +2608,7 @@ static BTA_ChannelId BTAETHgetChannelId(BTA_EthImgMode imgMode, uint8_t channelI
         case 3:
             return BTA_ChannelIdTest;
         default:
+            assert(0);
             return BTA_ChannelIdUnknown;
         }
     case BTA_EthImgModeDist:
@@ -2409,6 +2616,7 @@ static BTA_ChannelId BTAETHgetChannelId(BTA_EthImgMode imgMode, uint8_t channelI
         case 0:
             return BTA_ChannelIdDistance;
         default:
+            assert(0);
             return BTA_ChannelIdUnknown;
         }
     case BTA_EthImgModeDistAmpColor:
@@ -2427,6 +2635,7 @@ static BTA_ChannelId BTAETHgetChannelId(BTA_EthImgMode imgMode, uint8_t channelI
         case 1:
             return BTA_ChannelIdPhase180;
         default:
+            assert(0);
             return BTA_ChannelIdUnknown;
         }
     case BTA_EthImgModePhase90_270:
@@ -2436,6 +2645,7 @@ static BTA_ChannelId BTAETHgetChannelId(BTA_EthImgMode imgMode, uint8_t channelI
         case 1:
             return BTA_ChannelIdPhase270;
         default:
+            assert(0);
             return BTA_ChannelIdUnknown;
         }
     case BTA_EthImgModePhase0:
@@ -2443,6 +2653,7 @@ static BTA_ChannelId BTAETHgetChannelId(BTA_EthImgMode imgMode, uint8_t channelI
         case 0:
             return BTA_ChannelIdPhase0;
         default:
+            assert(0);
             return BTA_ChannelIdUnknown;
         }
     case BTA_EthImgModePhase90:
@@ -2450,6 +2661,7 @@ static BTA_ChannelId BTAETHgetChannelId(BTA_EthImgMode imgMode, uint8_t channelI
         case 0:
             return BTA_ChannelIdPhase90;
         default:
+            assert(0);
             return BTA_ChannelIdUnknown;
         }
     case BTA_EthImgModePhase180:
@@ -2457,6 +2669,7 @@ static BTA_ChannelId BTAETHgetChannelId(BTA_EthImgMode imgMode, uint8_t channelI
         case 0:
             return BTA_ChannelIdPhase180;
         default:
+            assert(0);
             return BTA_ChannelIdUnknown;
         }
     case BTA_EthImgModePhase270:
@@ -2464,13 +2677,15 @@ static BTA_ChannelId BTAETHgetChannelId(BTA_EthImgMode imgMode, uint8_t channelI
         case 0:
             return BTA_ChannelIdPhase270;
         default:
+            assert(0);
             return BTA_ChannelIdUnknown;
         }
     case BTA_EthImgModeIntensities:
         switch (channelIndex) {
         case 0:
-            return BTA_ChannelIdGrayScale;
+            return BTA_ChannelIdColor;
         default:
+            assert(0);
             return BTA_ChannelIdUnknown;
         }
     case BTA_EthImgModeDistAmpConfColor:
@@ -2490,6 +2705,7 @@ static BTA_ChannelId BTAETHgetChannelId(BTA_EthImgMode imgMode, uint8_t channelI
         if (channelIndex >= 0 && channelIndex <= 7) {
             return BTA_ChannelIdRawPhase;
         }
+        assert(0);
         return BTA_ChannelIdUnknown;
     case BTA_EthImgModeRawQI:
         switch (channelIndex) {
@@ -2498,6 +2714,7 @@ static BTA_ChannelId BTAETHgetChannelId(BTA_EthImgMode imgMode, uint8_t channelI
         case 1:
             return BTA_ChannelIdRawQ;
         default:
+            assert(0);
             return BTA_ChannelIdUnknown;
         }
     case BTA_EthImgModeDistConfExt:
@@ -2507,6 +2724,7 @@ static BTA_ChannelId BTAETHgetChannelId(BTA_EthImgMode imgMode, uint8_t channelI
         case 1:
             return BTA_ChannelIdConfidence;
         default:
+            assert(0);
             return BTA_ChannelIdUnknown;
         }
     case BTA_EthImgModeAmp:
@@ -2514,6 +2732,7 @@ static BTA_ChannelId BTAETHgetChannelId(BTA_EthImgMode imgMode, uint8_t channelI
         case 0:
             return BTA_ChannelIdAmplitude;
         default:
+            assert(0);
             return BTA_ChannelIdUnknown;
         }
     case BTA_EthImgModeXYZConfColor:
@@ -2544,6 +2763,7 @@ static BTA_ChannelId BTAETHgetChannelId(BTA_EthImgMode imgMode, uint8_t channelI
         }
 
     default:
+        assert(0);
         return BTA_ChannelIdUnknown;
     }
 }
@@ -3015,6 +3235,80 @@ int BTAgetBytesPerPixelSum(BTA_EthImgMode imgMode) {
 }
 
 
+BTA_Status BTAparseLenscalib(uint8_t* data, uint32_t dataLen, BTA_LensVectors** lensVectors, BTA_InfoEventInst *infoEventInst) {
+    if (!data || !lensVectors) {
+        return BTA_StatusInvalidParameter;
+    }
+    if (dataLen < 50) {
+        return BTA_StatusInvalidData;
+    }
+    BTA_LenscalibHeader* lenscalibHeader = (BTA_LenscalibHeader*)data;
+    if (lenscalibHeader->preamble0 != 0xf011 || lenscalibHeader->preamble1 != 0xb1ad) {
+        return BTA_StatusInvalidData;
+    }
+
+    BTA_LensVectors* vectors;
+    switch (lenscalibHeader->version) {
+    case 1:
+    case 2:
+    {
+        uint16_t xRes = lenscalibHeader->xRes;
+        uint16_t yRes = lenscalibHeader->yRes;
+        vectors = (BTA_LensVectors*)calloc(1, sizeof(BTA_LensVectors));
+        if (!vectors) {
+            return BTA_StatusOutOfMemory;
+        }
+        vectors->lensIndex = 1; // Not supported by lenscalib, but all products using this file format only have one ToF-sensor anyway
+        vectors->lensId = lenscalibHeader->lensId;
+        vectors->xRes = xRes;
+        vectors->yRes = yRes;
+        vectors->vectorsX = (float*)calloc(sizeof(float), yRes * xRes);
+        vectors->vectorsY = (float*)calloc(sizeof(float), yRes * xRes);
+        vectors->vectorsZ = (float*)calloc(sizeof(float), yRes * xRes);
+        if (!vectors->vectorsX || !vectors->vectorsY || !vectors->vectorsZ) {
+            free(vectors->vectorsX);
+            free(vectors->vectorsY);
+            free(vectors->vectorsZ);
+            free(vectors);
+            return BTA_StatusOutOfMemory;
+        }
+        if (lenscalibHeader->bytesPerPixel == 2) {
+            uint16_t coordSysId = lenscalibHeader->coordSysId;
+            float expansionfactor = (float)lenscalibHeader->expasionFactor;
+            int16_t* dataXYZ = (int16_t*)(data + sizeof(BTA_LenscalibHeader));
+            float* dataX = vectors->vectorsX;
+            float* dataY = vectors->vectorsY;
+            float* dataZ = vectors->vectorsZ;
+            if (coordSysId) {
+                for (int i = 0; i < xRes * yRes; i++) {
+                    *dataX++ = *dataXYZ++ / expansionfactor;
+                    *dataY++ = *dataXYZ++ / expansionfactor;
+                    *dataZ++ = *dataXYZ++ / expansionfactor;
+                }
+            }
+            else {
+                for (int i = 0; i < xRes * yRes; i++) {
+                    *dataZ++ = *dataXYZ++ / expansionfactor;
+                    *dataX++ = -*dataXYZ++ / expansionfactor;
+                    *dataY++ = -*dataXYZ++ / expansionfactor;
+                }
+            }
+            *lensVectors = vectors;
+            return BTA_StatusOk;
+        }
+        else {
+            BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusNotSupported, "addLenscalib: bytesPerPixel %d not supported!", lenscalibHeader->bytesPerPixel);
+            return BTA_StatusNotSupported;
+        }
+    }
+
+    default:
+        BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, BTA_StatusNotSupported, "addLenscalib: version %d not supported!", lenscalibHeader->version);
+        return BTA_StatusNotSupported;
+    }
+}
+
+
 
 
 
@@ -3023,7 +3317,7 @@ int BTAgetBytesPerPixelSum(BTA_EthImgMode imgMode) {
 
 
 int initShm(uint32_t shmKeyNum, uint32_t shmSize, int32_t *shmFd, uint8_t **bufShmBase, sem_t **semFullWrite, sem_t **semFullRead, sem_t **semEmptyWrite, sem_t **semEmptyRead, fifo_t **fifoFull, fifo_t **fifoEmpty, uint8_t **bufDataBase, BTA_InfoEventInst *infoEventInst) {
-#   if defined PLAT_LINUX || defined PLAT_APPLE
+#   if defined PLAT_LINUX
     const int nameLen = 222;
     char name[nameLen];
     snprintf(name, nameLen, "/%d_shm", shmKeyNum);
@@ -3070,14 +3364,14 @@ int initShm(uint32_t shmKeyNum, uint32_t shmSize, int32_t *shmFd, uint8_t **bufS
     *fifoEmpty = (fifo_t *)(*bufShmBase + getSize(*fifoFull));
     *bufDataBase = *bufShmBase + getSize(*fifoFull) + getSize(*fifoEmpty);
     return 1;
-#   elif defined PLAT_WINDOWS
+#   else
     return 0;
 #   endif
 }
 
 
 void closeShm(sem_t **semEmptyRead, sem_t **semEmptyWrite, sem_t **semFullRead, sem_t **semFullWrite, uint8_t **bufShmBase, uint32_t shmSize, int32_t *shmFd, uint32_t shmKeyNum, BTA_InfoEventInst *infoEventInst) {
-#   if defined PLAT_LINUX || defined PLAT_APPLE
+#   if defined PLAT_LINUX
     if (shmKeyNum) {
         const int nameLen = 222;
         char name[nameLen];
@@ -3254,9 +3548,8 @@ BTA_Status BTAparseFrameFromShm(BTA_Handle handle, uint8_t *data, BTA_Frame **fr
         }
 
         // Parse descriptors
-        int chInd = 0;
+        uint8_t chInd = 0;
         int mdInd = 0;
-        uint8_t jpgDecodingEnabled = winst->jpgInst && winst->jpgInst->enabled;
         while (1) {
             BTA_Data4DescBase *data4DescBase = (BTA_Data4DescBase *)dataHeader;
             dataHeader += data4DescBase->descriptorLen;
@@ -3264,6 +3557,7 @@ BTA_Status BTAparseFrameFromShm(BTA_Handle handle, uint8_t *data, BTA_Frame **fr
             case btaData4DescriptorTypeFrameInfoV1: {
                 BTA_Data4DescFrameInfoV1 *data4DescFrameInfoV1 = (BTA_Data4DescFrameInfoV1 *)data4DescBase;
                 frame->frameCounter = data4DescFrameInfoV1->frameCounter;
+                frame->sequenceCounter = 0;
                 frame->timeStamp = data4DescFrameInfoV1->timestamp;
                 frame->mainTemp = data4DescFrameInfoV1->mainTemp / 100.0f;
                 frame->ledTemp = data4DescFrameInfoV1->ledTemp / 100.0f;
@@ -3273,7 +3567,7 @@ BTA_Status BTAparseFrameFromShm(BTA_Handle handle, uint8_t *data, BTA_Frame **fr
                 frame->firmwareVersionNonFunc = data4DescFrameInfoV1->firmwareVersion & 0x3f;
 
                 // count frame counter gaps
-                if (frame->frameCounter != (uint32_t)(winst->frameCounterLast + winst->lpDataStreamFrameCounterGap) && winst->timeStampLast != 0) {
+                if (frame->frameCounter != winst->frameCounterLast + (uint32_t)winst->lpDataStreamFrameCounterGap && winst->timeStampLast != 0) {
                     winst->lpDataStreamFrameCounterGapsCount++;
                 }
                 winst->frameCounterLast = frame->frameCounter;
@@ -3304,13 +3598,7 @@ BTA_Status BTAparseFrameFromShm(BTA_Handle handle, uint8_t *data, BTA_Frame **fr
                 channel->flags = data4DescTofV1->flags;
                 channel->sequenceCounter = data4DescTofV1->sequenceCounter;
                 channel->gain = 0;
-                if (!winst->lpTestPatternEnabled) {
-                    insertChannelDataFromShm(winst, channel, dataStream, data4DescTofV1->dataLen, 0);
-                }
-                else {
-                    channel->data = 0;
-                    channel->dataLen = 0;
-                }
+                insertChannelDataFromShm(winst, channel, dataStream, data4DescTofV1->dataLen);
                 dataStream += data4DescTofV1->dataLen;
                 chInd++;
                 break;
@@ -3340,13 +3628,7 @@ BTA_Status BTAparseFrameFromShm(BTA_Handle handle, uint8_t *data, BTA_Frame **fr
                 channel->flags = data4DescColorV1->flags;
                 channel->sequenceCounter = 0;
                 channel->gain = data4DescColorV1->gain;
-                if (!winst->lpTestPatternEnabled) {
-                    insertChannelDataFromShm(winst, channel, dataStream, data4DescColorV1->dataLen, jpgDecodingEnabled);
-                }
-                else {
-                    channel->data = 0;
-                    channel->dataLen = 0;
-                }
+                insertChannelDataFromShm(winst, channel, dataStream, data4DescColorV1->dataLen);
                 dataStream += data4DescColorV1->dataLen;
                 chInd++;
                 break;
@@ -3384,13 +3666,8 @@ BTA_Status BTAparseFrameFromShm(BTA_Handle handle, uint8_t *data, BTA_Frame **fr
                 return BTA_StatusIllegalOperation;
             }
             if (data4DescBase->descriptorType == btaData4DescriptorTypeEof) {
-                frame->sequenceCounter = 0;
                 break;
             }
-        }
-
-        if (winst->lpTestPatternEnabled) {
-            BTAinsertTestPattern(frame, winst->lpTestPatternEnabled);
         }
 
         *framePtr = frame;
@@ -3400,7 +3677,7 @@ BTA_Status BTAparseFrameFromShm(BTA_Handle handle, uint8_t *data, BTA_Frame **fr
 
         BVQenqueue(winst->lpDataStreamFramesParsedPerSecFrametimes, (void *)(size_t)(frame->timeStamp - winst->timeStampLast));
         winst->timeStampLast = frame->timeStamp;
-        winst->lpDataStreamFramesParsedPerSecUpdated = BTAgetTickCount();
+        winst->lpDataStreamFramesParsedPerSecUpdated = BTAgetTickCount64();
         winst->lpDataStreamFramesParsedCount++;
 
         return BTA_StatusOk;
@@ -3448,17 +3725,14 @@ BTA_Status BTAgrabCallbackEnqueueFromShm(BTA_WrapperInst *winst, BTA_Frame *fram
 }
 
 
-static void insertChannelDataFromShm(BTA_WrapperInst *winst, BTA_Channel *channel, uint8_t *data, uint32_t dataLen, uint8_t decodingEnabled) {
+static void insertChannelDataFromShm(BTA_WrapperInst *winst, BTA_Channel *channel, uint8_t *data, uint32_t dataLen) {
     channel->dataLen = dataLen;
 
     if (channel->id != BTA_ChannelIdColor && !(channel->flags & 0x2)) {
-        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusWarning, "insertChannelDataFromShm: coordinate system should be transformed! (avoided bc zero-copy)");
-    }
-    else if (decodingEnabled && channel->dataFormat == BTA_DataFormatJpeg) {
-        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusWarning, "insertChannelDataFromShm: jpg should be decoded! (avoided bc zero-copy)");
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusWarning, "insertChannelDataFromShm: coordinate system should be transformed! (avoided because we want zero memcopies)");
     }
     else if (channel->dataFormat == BTA_DataFormatSInt16Mlx12S || channel->dataFormat == BTA_DataFormatSInt16Mlx1C11S || channel->dataFormat == BTA_DataFormatUInt16Mlx1C11U) {
-        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusWarning, "insertChannelDataFromShm: bit operations should be performed! (avoided bc zero-copy)");
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusWarning, "insertChannelDataFromShm: bit operations should be performed! (avoided because we want zero memcopies)");
     }
     channel->data = data;
     return;

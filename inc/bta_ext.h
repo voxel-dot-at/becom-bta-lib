@@ -21,7 +21,11 @@
 
 #define BTA_EXT_H_VER_MAJ 3
 #define BTA_EXT_H_VER_MIN 3
-#define BTA_EXT_H_VER_NON_FUNC 6
+#define BTA_EXT_H_VER_NON_FUNC 11
+
+#if !defined PLAT_WINDOWS && !defined PLAT_LINUX && !defined PLAT_APPLE
+#   error "Please define PLAT_WINDOWS, PLAT_LINUX or PLAT_APPLE in your makefile/project"
+#endif
 
 #include "bta.h"
 
@@ -45,17 +49,15 @@ typedef enum BTA_QueueMode {
 ///             Never are they affecting the devices configuration (registers).
 typedef enum BTA_LibParam {
     BTA_LibParamKeepAliveMsgInterval = 0,               ///< The interval in seconds. If no communication during this time, a keep alive is sent. (Supported only by Ethernet cameras).
-    BTA_LibParamCrcControlEnabled,                      ///< Set > 0 in order to activate CRC sums for the control connection. (Supported only by Ethernet cameras).
+    BTA_LibParamCrcControlEnabled = 1,                  ///< Set > 0 in order to activate CRC sums for the control connection. (Supported only by Ethernet cameras).
 
-    BTA_LibParamBltstreamTotalFrameCount,               ///< Readonly. Contains the total amount of frames loaded from bltstream file.
-    BTA_LibParamBltstreamAutoPlaybackSpeed,             ///< Set > 0 in order to activate playback at recording rate times this factor. Set to 0 to pause playback.
-    BTA_LibParamBltstreamPos,                           ///< Get and set the index in the bltstream file. The first frame has index 0. If set, BTA_LibParamStreamAutoPlaybackSpeed is set to 0.
-    BTA_LibParamBltstreamPosIncrement,                  ///< Writeonly. Set the increment to which position to jump to in the bltstream file. If set, BTA_LibParamStreamAutoPlaybackSpeed is set to 0.
+    BTA_LibParamBltstreamTotalFrameCount = 2,           ///< Readonly. Contains the total amount of frames loaded from bltstream file.
+    BTA_LibParamBltstreamAutoPlaybackSpeed = 3,         ///< Set > 0 in order to activate playback at recording rate times this factor. Set to 0 to pause playback.
+    BTA_LibParamBltstreamPos = 4,                       ///< Get and set the index in the bltstream file. The first frame has index 0. If set, BTA_LibParamStreamAutoPlaybackSpeed is set to 0.
+    BTA_LibParamBltstreamPosIncrement = 5,              ///< Writeonly. Set the increment to which position to jump to in the bltstream file. If set, BTA_LibParamStreamAutoPlaybackSpeed is set to 0.
 
-    BTA_LibParamTestPatternEnabled,                     ///< override camera data with test data:
-                                                        ///< > 0: Testpattern depending on the connected interface
 
-    BTA_LibParamPauseCaptureThread,                     ///< Set > 0 in order to pause internal capture thread. It saves CPU and/or bandwith, depending on the configuration and interface.
+    BTA_LibParamPauseCaptureThread = 7,                     ///< Set > 0 in order to pause internal capture thread. It saves CPU and/or bandwith, depending on the configuration and interface.
     BTA_LibParamDisableDataScaling,                     ///< This is only relevant for implementations where depth is calculated in the lib rather than the camera.
     BTA_LibParamUndistortRgb,                           ///< > 0: Channels of the kind BTA_ChannelIdColor are undistorted if intrinsic data for that configuration is present
 
@@ -67,7 +69,7 @@ typedef enum BTA_LibParam {
     BTA_LibParamDataStreamPacketsReceivedCount,         ///< Readonly: count of received packets (read to clear!)
     BTA_LibParamDataStreamPacketsMissedCount,           ///< Readonly: count of packets missed (not received) (read to clear!)
     BTA_LibParamDataStreamPacketsToParse,               ///< Readonly: count of packets queued for parsing (max since last read, read to clear!)
-    BTA_LibParamDataStreamParseFrameDuration,           ///< Readonly: microseconds needed to parse a frame (max since last read, read to clear!) [ms]
+    BTA_LibParamDataStreamParseFrameDuration,           ///< Readonly: time in microseconds needed to parse a frame (max since last read, read to clear!) [ms]
     BTA_LibParamDataStreamFrameCounterGapsCount,        ///< Readonly: this value increases by 1 every time two consecutive frameCounters are further apart than specified in BTA_LibParamDataStreamFrameCounterGap
     BTA_LibParamDataStreamFramesParsedCount,            ///< Readonly: count of frames parsed (read to clear!)
     BTA_LibParamDataStreamFramesParsedPerSec,           ///< Readonly: Frames parsed per second
@@ -75,14 +77,14 @@ typedef enum BTA_LibParam {
     BTA_LibParamDataStreamRetrReqMode,                  ///< Retransmission requests for repeating the sending of data stream data
                                                         ///< 0: Retransmission off. Frames are delivered incompletely as soon as the timeout strikes or a newer frame is complete
                                                         ///< 1: Retransmission with low latency first. Frames are delivered as completely as possible but within the timeout and before a newer frame is complete
-                                                        ///< 2: Retransmission with completeness first. DEBUG Not yet implemented DEBUG
-    BTA_LibParamDataStreamPacketWaitTimeout,            ///< The time to wait for any packet of a certain frame to arrive before taking further action [ms]
+                                                        ///< 2: Retransmission with completeness first. Not yet implemented
+    BTA_LibParamDataStreamPacketWaitTimeout,            ///< The time to wait for any packet of a certain frame to arrive before taking further action regarding retransmission [ms]
     BTA_LibParamDataStreamRetrReqIntervalMin,           ///< How long the Api should wait before repeating a retransmission request (gaps excluded) [ms]
     BTA_LibParamDataStreamRetrReqMaxAttempts,           ///< If no packet was received within BTA_LibParamDataStreamPacketWaitTimeout, attempt a retransmission request for all missing packets this many times before giving up
-    BTA_LibParamDataStreamRetrReqsCount,                ///< The number of packets requested for retransmissions (read to clear!)
-    BTA_LibParamDataStreamRetransPacketsCount,          ///< The number of packets received that have the retransmission flag set (read to clear!)
-    BTA_LibParamDataStreamNdasReceived,                 ///< The number of NDAs received (read to clear!)
-    BTA_LibParamDataStreamRedundantPacketCount,         ///< The number of packets received multiple times (read to clear!)
+    BTA_LibParamDataStreamRetrReqsCount,                ///< Readonly: the number of packets requested for retransmissions (read to clear!)
+    BTA_LibParamDataStreamRetransPacketsCount,          ///< Readonly: The number of packets received that are retransmissions (read to clear!)
+    BTA_LibParamDataStreamNdasReceived,                 ///< Readonly: The number of NDAs (no data available) received (read to clear!)
+    BTA_LibParamDataStreamRedundantPacketCount,         ///< Readonly: The number of packets received multiple times (read to clear!)
 
     BTA_LibParamDataSockOptRcvtimeo,                    ///< Lets you read and set the timeout of the socket [ms]
     BTA_LibParamDataSockOptRcvbuf,                      ///< Lets you modify the size of the receiving buffer of the socket [bytes]
@@ -91,11 +93,13 @@ typedef enum BTA_LibParam {
     BTA_LibParamDataStreamFrameCounterGap = 50,         ///< This value is used to count gaps in BTA_LibParamDataStreamFrameCounterGapsCount
 
 
-    BTA_LibParamCalcXYZ = 100,                          ///< > 0: If a distance Channel is available and the lenscalib can be read from the device, channels X, Y and Z are added accordingly
+    BTA_LibParamCalcXYZ = 100,                          ///< If enabled, a distance channel is available and the lenscalib can be read from the device, cartesian coordinate channels X, Y and Z are calculated and added to the frame
     BTA_LibParamOffsetForCalcXYZ = 101,                 ///< This offset is applied to the distance channel before calculating the cartesian coordinates
-    BTA_LibParamBilateralFilterWindow = 102,            ///< The bilateral filter with this window size is applied (before calcXYZ)
+    BTA_LibParamBilateralFilterWindow = 102,            ///< The bilateral filter with this window size is applied to any distance channel
+    BTA_LibParamGenerateColorFromTof = 103,             ///< >0: Based on data from ToF sensor a channel with BTA_ChanneldIdColor is added (and possibly undistorted)
+    BTA_LibParamBltstreamCompressionMode = 104,         ///< Set a value of BTA_CompressionMode in order to activate compression when grabbing
 
-    BTA_LIBParamDataStreamAllowIncompleteFrames = 200,  ///< Set this parameter to 1 if you wish to receive incomplete frames (pixels are invalidated according to manual)
+    BTA_LIBParamDataStreamAllowIncompleteFrames = 200,  ///< Set this parameter to 1 if you wish to receive incomplete frames (pixels missing due to transmission errors are invalidated according to camera manual)
 
     BTA_LibParamDebugFlags01 = 5000,                    ///< For debug purposes
     BTA_LibParamDebugValue01,                           ///< For debug purposes
@@ -132,6 +136,11 @@ typedef struct BTA_GrabbingConfig {
 } BTA_GrabbingConfig;
 
 
+typedef enum BTA_CompressionMode {
+    BTA_CompressionModeNone,
+    BTA_CompressionModeLzmaV22,
+} BTA_CompressionMode;
+
 
 ///     @brief  Data structure for holding intrinsic parameters.
 typedef struct BTA_IntrinsicData {
@@ -154,15 +163,25 @@ typedef struct BTA_IntrinsicData {
 } BTA_IntrinsicData;
 
 
-
 ///     @brief Data structure for holding extrinsic parameters.
 typedef struct BTA_ExtrinsicData {
-    float rot[9];                                       ///< Rotation matrix (3x3).
-    float trl[3];                                       ///< Translation vector.
     uint16_t lensIndex;                                 ///< Lens index (used to identify corresponding sensor).
     uint16_t lensId;                                    ///< Lens ID as used in hardware config register(s).
+    float rot[9];                                       ///< Rotation matrix (3x3).
+    float trl[3];                                       ///< Translation vector.
+    float rotTrlInv[12];                                ///< Inverse rotation translation matrix (3x4).
 } BTA_ExtrinsicData;
 
+
+typedef struct BTA_LensVectors {
+    uint16_t lensIndex;                                 ///< Lens index (used to identify corresponding sensor).
+    uint16_t lensId;                                    ///< Lens ID as used in hardware config register(s).
+    uint16_t xRes;                                      ///< Resolution of the (image) sensor.
+    uint16_t yRes;                                      ///< Resolution of the (image) sensor.
+    float* vectorsX;                                    ///< Array of xRes*yRes float values: x-component of vectors
+    float* vectorsY;                                    ///< Array of xRes*yRes float values: y-component of vectors
+    float* vectorsZ;                                    ///< Array of xRes*yRes float values: z-component of vectors
+} BTA_LensVectors;
 
 
 ///     @brief  This struct is used for the representation of the BTA_Config struct.
@@ -216,6 +235,17 @@ DLLEXPORT BTA_Status BTA_CALLCONV BTAgetSerializedLength(BTA_Frame *frame, uint3
 ///                                Pointer to the actual length of the serialized frame on return.
 ///     @return Please refer to bta_status.h
 DLLEXPORT BTA_Status BTA_CALLCONV BTAserializeFrame(BTA_Frame *frame, uint8_t *frameSerialized, uint32_t *frameSerializedLen);
+
+
+///     @brief  Helper function to compress a serialized BTA_Frame
+///     @param  frameSerialized The pointer to the serialized frame
+///     @param  frameSerializedLen The length of the buffer frameSerialized.
+///     @param  compressionMode This parameter dictates the compression algorithm
+///     @param  frameSerializedCompressed Pointer to the result buffer. The user needs to do the allocation
+///     @param  frameSerializedCompressedLen Pointer to length of the buffer frameSerializedCompressed allocated by the caller.
+///                                          Pointer to the actual length of the frameSerializedCompressed frame on return.
+///     @return Please refer to bta_status.h
+DLLEXPORT BTA_Status BTA_CALLCONV BTAcompressSerializedFrame(uint8_t *frameSerialized, uint32_t frameSerializedLen, BTA_CompressionMode compressionMode, uint8_t *frameSerializedCompressed, uint32_t *frameSerializedCompressedLen);
 
 
 ///     @brief  Helper function to convert a serialized stream into a BTA_Frame structure; useful for replaying recorded frames from files
@@ -343,8 +373,21 @@ DLLEXPORT BTA_Status BTA_CALLCONV BTAflashRead(BTA_Handle handle, BTA_FlashUpdat
 ///     @param  intData A preallocated array of BTA_IntrinsicData. On return it contains data gathered from the camera, when available.
 ///     @param  intDataLen A pointer to the length of the array intData. On return it contains the actual length.
 ///     @param  extData A preallocated array of BTA_ExtrinsicData. On return it contains data gathered from the camera, when available.
-///     @param  extDataLen A pointer to the length of the array extData. On return it contains the actual length.
-DLLEXPORT BTA_Status BTA_CALLCONV BTAgetLensParameters(BTA_Handle handle, BTA_IntrinsicData *intData, uint32_t *intDataLen, BTA_ExtrinsicData *extData, uint32_t *extDataLen);
+///     @param  extDataLen A pointer to the length of the preallocated array extData. On return it contains the actual length.
+DLLEXPORT BTA_Status BTA_CALLCONV BTAgetLensParameters(BTA_Handle handle, BTA_IntrinsicData *intrinsicData, uint32_t *intrinsicDataLen, BTA_ExtrinsicData *extrinsicData, uint32_t *extrinsicDataLen);
+
+
+///     @brief  Allows access to intrinsic parameters in vector format stored on the camera.
+///             These vectors, also called base vectors are optical axes for each pixel and can be used to compute cartesian coordinates from distances
+///     @param  handle Handle of the device to be used.
+///     @param  lensVectorsList A preallocated array of BTA_LensVectors pointers. On return it contains data gathered from the camera, when available.
+///     @param  lensVectorsListLen A pointer to the length of the preallocated array lensVectorsList. On return it contains the actual length.
+DLLEXPORT BTA_Status BTA_CALLCONV BTAgetLensVectors(BTA_Handle handle, BTA_LensVectors **lensVectorsList, uint16_t *lensVectorsListLen);
+
+
+///     @brief  Frees the allocated memory of and for a BTA_LensVector struct and its contents
+///     @param  lensVectors The pointer to the struct to be free'd (as received from BTAgetLensVectors)
+DLLEXPORT void BTA_CALLCONV BTAfreeLensVectors(BTA_LensVectors *lensVectors);
 
 
 
@@ -395,7 +438,7 @@ DLLEXPORT BTA_Status BTA_CALLCONV BTAsetControlCrcEnabled(BTA_Handle handle, uin
 // ------------------------------------------------------------------------------------------------------------------------------------------------------------
 // ------------------------------------------------------------------------------------------------------------------------------------------------------------
 // ------------------------------------------------------------------------------------------------------------------------------------------------------------
-// Blt ToF API Frame Queue - A courtesy of Bluetechnix Systems GmbH -------------------------------------------------------------------------------------
+// Blt ToF API Frame Queue - A courtesy of Bluetechnix Systems GmbH
 
 
 
@@ -432,15 +475,6 @@ DLLEXPORT BTA_Status BTA_CALLCONV BFQgetCount(BFQ_FrameQueueHandle handle, uint3
 DLLEXPORT BTA_Status BTA_CALLCONV BFQenqueue(BFQ_FrameQueueHandle handle, BTA_Frame *frame);
 
 
-///     @brief Peek a frame. You get the exact same frame that was enqueued, not a clone. But it stays in the queue, so do not call BTAfreeFrame on it
-///     @param handle Handle of the queue
-///     @param frame Pointer to the frame on return
-///     @param timeout The maximum time in [ms] to wait for a frame to become available if the queue is currently empty. (0: infinite!)
-///     @return BTA_StatusOk on success
-///             BTA_StatusTimeOut if there is no frame in the queue
-DLLEXPORT BTA_Status BTA_CALLCONV BFQpeek(BFQ_FrameQueueHandle handle, BTA_Frame** frame, uint32_t timeout);
-
-
 ///     @brief Dequeues a frame. You get the exact same frame that was enqueued, not a clone. So now is the time to call BTAfreeFrame (when frame is no longer needed)
 ///     @param handle Handle of the queue
 ///     @param frame Pointer to the frame dequeued on return
@@ -466,7 +500,7 @@ DLLEXPORT BTA_Status BTA_CALLCONV BFQclear(BFQ_FrameQueueHandle handle);
 // ------------------------------------------------------------------------------------------------------------------------------------------------------------
 // ------------------------------------------------------------------------------------------------------------------------------------------------------------
 // ------------------------------------------------------------------------------------------------------------------------------------------------------------
-// Averaging of frames and channels, for your convenience------------------------------------------------------------------------------------------------------
+// Processing of frames and channels, for your convenience
 
 
 ///     @brief Calculates the average of multiple frames
@@ -491,6 +525,17 @@ DLLEXPORT BTA_Status BTA_CALLCONV BTAaverageFrames(BTA_Frame** frames, int frame
 DLLEXPORT BTA_Status BTA_CALLCONV BTAaverageChannels(BTA_Channel **channels, int channelsLen, float minValidPixelPercentage, BTA_Channel **result);
 
 
+///     @brief Calculates cartesian coordinates from a distance channel and calibration data
+///     @param frame The frame containing at least one Distance channel. On return 3 channels X, Y and Z are inserted.
+///     @param lensVectorsList List of Intrinsic calibration data in vector format as returned by BTAgetLensVectors or BTAparseLensCalib
+///     @param lensVectorsListLen Number of elements in lensVectorsList
+///     @param extrinsicDataList Optional parameter containing List of extrinsic data. This is used to transform the point-cloud into the respective coordinate system.
+///     @param extrinsicDataListLen Number of elements in extrinsicDataList
+///     @return BTA_StatusOk on success
+DLLEXPORT BTA_Status BTA_CALLCONV BTAcalcXYZ(BTA_Frame *frame, BTA_LensVectors **lensVectorsList, uint16_t lensVectorsListLen, BTA_ExtrinsicData **extrinsicDataList, uint16_t extrinsicDataListLen);
+
+
+DLLEXPORT BTA_Status BTA_CALLCONV BTAcalcMonochromeFromAmplitude(BTA_Frame *frame);
 
 
 
@@ -500,7 +545,9 @@ DLLEXPORT BTA_Status BTA_CALLCONV BTAaverageChannels(BTA_Channel **channels, int
 // ------------------------------------------------------------------------------------------------------------------------------------------------------------
 // ------------------------------------------------------------------------------------------------------------------------------------------------------------
 // ------------------------------------------------------------------------------------------------------------------------------------------------------------
-// Undocumented utility functions - use at your own risk ------------------------------------------------------------------------------------------------------
+// Undocumented utility functions - use at your own risk
+
+DLLEXPORT void BTA_CALLCONV BTAzeroLogTimestamp();
 
 DLLEXPORT uint8_t BTA_CALLCONV BTAisEthDevice(uint16_t deviceType);
 DLLEXPORT uint8_t BTA_CALLCONV BTAisUsbDevice(uint16_t deviceType);
@@ -508,14 +555,14 @@ DLLEXPORT uint8_t BTA_CALLCONV BTAisP100Device(uint16_t deviceType);
 DLLEXPORT uint8_t BTA_CALLCONV BTAisUartDevice(uint16_t deviceType);
 
 DLLEXPORT BTA_Status BTA_CALLCONV BTAinsertChannelIntoFrame(BTA_Frame *frame, BTA_Channel *channel);
-DLLEXPORT BTA_Status BTA_CALLCONV BTAinsertChannelIntoFrame2(BTA_Frame *frame, BTA_ChannelId id, uint16_t xRes, uint16_t yRes, BTA_DataFormat dataFormat, BTA_Unit unit, uint32_t integrationTime, uint32_t modulationFrequency, uint8_t *data, uint32_t dataLen);
+DLLEXPORT BTA_Status BTA_CALLCONV BTAinsertChannelIntoFrame2(BTA_Frame *frame, BTA_ChannelId id, uint16_t xRes, uint16_t yRes, BTA_DataFormat dataFormat, BTA_Unit unit, uint32_t integrationTime, uint32_t modulationFrequency, uint8_t *data, uint32_t dataLen,
+                                                             BTA_Metadata **metadata, uint32_t metadataLen, uint8_t lensIndex, uint32_t flags, uint8_t sequenceCounter, float gain);
 DLLEXPORT BTA_Status BTA_CALLCONV BTAremoveChannelFromFrame(BTA_Frame *frame, BTA_Channel *channel);
 DLLEXPORT BTA_Status BTA_CALLCONV BTAcloneChannel(BTA_Channel *channelSrc, BTA_Channel **channelDst);
 DLLEXPORT BTA_Status BTA_CALLCONV BTAcloneChannelEmpty(BTA_Channel *channelSrc, BTA_Channel **channelDst);
 DLLEXPORT BTA_Status BTA_CALLCONV BTAinsertMetadataIntoChannel(BTA_Channel *channel, BTA_Metadata *metadata);
 DLLEXPORT BTA_Status BTA_CALLCONV BTAinsertMetadataDataIntoChannel(BTA_Channel *channel, BTA_MetadataId id, void *data, uint32_t dataLen);
 DLLEXPORT BTA_Status BTA_CALLCONV BTAcloneMetadata(BTA_Metadata *metadataSrc, BTA_Metadata **metadataDst);
-DLLEXPORT BTA_Status BTA_CALLCONV BTAcolorToBw(BTA_Channel *channelIn, BTA_Channel **channelOut);
 DLLEXPORT BTA_Status BTA_CALLCONV BTAdivideChannelByNumber(BTA_Channel *dividend, uint32_t divisor, BTA_Channel **quotient);
 DLLEXPORT BTA_Status BTA_CALLCONV BTAaddChannelInPlace(BTA_Channel *augendSum, BTA_Channel *addend);
 DLLEXPORT BTA_Status BTA_CALLCONV BTAsubtChannelInPlace(BTA_Channel *minuendDiff, BTA_Channel *subtrahend);
@@ -531,6 +578,7 @@ DLLEXPORT BTA_Status BTA_CALLCONV BTAfreeMetadata(BTA_Metadata **metadata);
 ///     @return BTA_StatusOk on success
 DLLEXPORT BTA_Status BTA_CALLCONV BTAgetValidModulationFrequencies(BTA_Handle handle, const uint32_t **modulationFrequencies, int32_t *modulationFrequenciesCount);
 DLLEXPORT BTA_Status BTA_CALLCONV BTAgetNextBestModulationFrequency(BTA_Handle handle, uint32_t modFreq, uint32_t *validModFreq, int32_t *index);
+DLLEXPORT BTA_Status BTA_CALLCONV BTAgetOptimalAmplitude(uint16_t deviceType, float *amplitude);
 
 
 ///     @brief Sets or cleares the videoMode flag in register Mode0
@@ -544,12 +592,10 @@ DLLEXPORT BTA_Status BTAsetSoftwareTrigger(BTA_Handle handle);
 DLLEXPORT BTA_FrameMode BTA_CALLCONV BTAimageDataFormatToFrameMode(int deviceType, int imageMode);
 DLLEXPORT int BTA_CALLCONV BTAframeModeToImageMode(int deviceType, BTA_FrameMode frameMode);
 
-DLLEXPORT void BTA_CALLCONV BTAsleep(uint32_t milliseconds);
+DLLEXPORT BTA_Status BTA_CALLCONV BTAgetNetworkBroadcastAddrs(uint8_t ***localIpAddrs, uint8_t ***networkBroadcastAddrs, uint32_t *networkBroadcastAddrsLen);
+DLLEXPORT void BTA_CALLCONV BTAfreeNetworkBroadcastAddrs(uint8_t ***localIpAddrs, uint8_t ***networkBroadcastAddrs, uint32_t networkBroadcastAddrsLen);
 
-DLLEXPORT BTA_Status BTAgetNetworkBroadcastAddrs(uint8_t ***localIpAddrs, uint8_t ***networkBroadcastAddrs, uint32_t *networkBroadcastAddrsLen);
-DLLEXPORT void BTAfreeNetworkBroadcastAddrs(uint8_t ***localIpAddrs, uint8_t ***networkBroadcastAddrs, uint32_t networkBroadcastAddrsLen);
-
-DLLEXPORT void BTAgeneratePlanarView(int16_t *chX, int16_t *chY, int16_t *chZ, uint16_t *chAmp, int resX, int resY, int planarViewResX, int planarViewResY, float planarViewScale, int16_t *planarViewZ, uint16_t *planarViewAmp);
+DLLEXPORT void BTA_CALLCONV BTAgeneratePlanarView(int16_t *chX, int16_t *chY, int16_t *chZ, uint16_t *chAmp, int resX, int resY, int planarViewResX, int planarViewResY, float planarViewScale, int16_t *planarViewZ, uint16_t *planarViewAmp);
 
 
 DLLEXPORT BTA_Status BTA_CALLCONV BTAfreeFrameFromShm(BTA_Frame **frame);

@@ -3,8 +3,7 @@
 #ifndef BTA_STREAM_H_INCLUDED
 #define BTA_STREAM_H_INCLUDED
 
-#ifdef PLAT_WINDOWS
-#else
+#if defined PLAT_LINUX || defined PLAT_APPLE
     #include <unistd.h>
     #include <time.h>
 #endif
@@ -16,6 +15,10 @@
 #include <bvq_queue.h>
 #include <bta_oshelper.h>
 #include "bta_grabbing.h"
+
+#if !defined PLAT_WINDOWS && !defined PLAT_LINUX && !defined PLAT_APPLE
+#   error "Please define PLAT_WINDOWS, PLAT_LINUX or PLAT_APPLE in your makefile/project"
+#endif
 
 // externals
 extern const char *btaGrabVersionKey;

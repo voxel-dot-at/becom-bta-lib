@@ -21,11 +21,14 @@
 #include "bta_helper.h"
 #include <bta_discovery_helper.h>
 #include <bta_oshelper.h>
+#include <sockets_helper.h>
 #include <timing_helper.h>
 #include <pthread_helper.h>
 #include <bitconverter.h>
 #include <bta_serialization.h>
 #include "configuration.h"
+
+#include "lzma/LzmaLib.h"
 
 //#include <bta_p100.h>
 
@@ -51,6 +54,7 @@ static char check3[(2 * (int)(sizeof(uint32_t) == sizeof(BTA_DataFormat))) - 1] 
 static char check4[(2 * (int)(sizeof(uint32_t) == sizeof(BTA_Unit))) - 1] = { 0 };
 static char check5[(2 * (int)(sizeof(uint32_t) == sizeof(BTA_MetadataId))) - 1] = { 0 };
 static char check6[(2 * (int)(sizeof(BTA_Config) == CONFIG_STRUCT_ORG_LEN * BTA_CONFIG_STRUCT_STRIDE)) - 1] = { 0 };
+static char check7[(2 * (int)(sizeof(size_t) == sizeof(void *))) - 1] = { 0 };
 
 // char must be one byte long
 extern char __CHECK0__[1 / (uint8_t)!(sizeof(char) - sizeof(uint8_t))];
@@ -136,7 +140,6 @@ BTA_Status BTAP100restoreDefaultConfig(BTA_WrapperInst *winst);
 #endif
 
 #ifndef BTA_WO_USB
-#error USB
 void *BTAUSBdiscoveryRunFunction(BTA_DiscoveryInst *inst);
 BTA_Status BTAUSBopen(BTA_Config *config, BTA_WrapperInst *wrapperInst);
 BTA_Status BTAUSBclose(BTA_WrapperInst *winst);
@@ -305,17 +308,17 @@ BTA_Status BTA_CALLCONV BTAstartDiscovery(BTA_DiscoveryConfig *config, FN_BTA_De
         // Otherwise syntax error if WO_ETH defined
     }
 #   ifndef BTA_WO_ETH
-    else if (BTAisEthDevice(config->deviceType)) {
+    else if (BTAisEthDevice((uint16_t)config->deviceType)) {
         config->deviceType = BTA_DeviceTypeEthernet;
     }
 #   endif
 #   ifndef BTA_WO_P100
-    else if (BTAisP100Device(config->deviceType)) {
+    else if (BTAisP100Device((uint16_t)config->deviceType)) {
         config->deviceType = BTA_DeviceTypeUsb;
     }
 #   endif
 #   ifndef BTA_WO_USB
-    else if (BTAisUsbDevice(config->deviceType)) {
+    else if (BTAisUsbDevice((uint16_t)config->deviceType)) {
         config->deviceType = BTA_DeviceTypeUsb;
     }
 #   endif
@@ -335,7 +338,7 @@ BTA_Status BTA_CALLCONV BTAstartDiscovery(BTA_DiscoveryConfig *config, FN_BTA_De
             return BTA_StatusInvalidParameter;
         }
         inst->broadcastIpAddrLen = config->broadcastIpAddrLen;
-        inst->broadcastIpAddr = (uint8_t*)malloc(inst->broadcastIpAddrLen);
+        inst->broadcastIpAddr = (uint8_t *)malloc(inst->broadcastIpAddrLen);
         if (!inst->broadcastIpAddr) {
             free(inst);
             return BTA_StatusOutOfMemory;
@@ -350,7 +353,7 @@ BTA_Status BTA_CALLCONV BTAstartDiscovery(BTA_DiscoveryConfig *config, FN_BTA_De
             return BTA_StatusInvalidParameter;
         }
         inst->callbackIpAddrLen = config->callbackIpAddrLen;
-        inst->callbackIpAddr = (uint8_t*)malloc(inst->callbackIpAddrLen);
+        inst->callbackIpAddr = (uint8_t *)malloc(inst->callbackIpAddrLen);
         if (!inst->callbackIpAddr) {
             free(inst->broadcastIpAddr);
             free(inst);
@@ -364,6 +367,11 @@ BTA_Status BTA_CALLCONV BTAstartDiscovery(BTA_DiscoveryConfig *config, FN_BTA_De
     inst->deviceFoundEx = config->deviceFoundEx;
     inst->userArg = config->userArg;
 
+    if (config->millisInterval) {
+        inst->millisInterval = config->millisInterval < 1000 ? 1000 : config->millisInterval;
+    }
+    inst->periodicReports = config->periodicReports;
+
     BTA_InfoEventInst *infoEventInst = (BTA_InfoEventInst *)calloc(1, sizeof(BTA_InfoEventInst));
     if (!infoEventInst) {
         free(inst->callbackIpAddr);
@@ -371,6 +379,7 @@ BTA_Status BTA_CALLCONV BTAstartDiscovery(BTA_DiscoveryConfig *config, FN_BTA_De
         free(inst);
         return BTA_StatusOutOfMemory;
     }
+    infoEventInst->handle = inst;
     infoEventInst->infoEvent = infoEvent;
     infoEventInst->infoEventEx2 = config->infoEventEx2;
     infoEventInst->verbosity = UINT8_MAX;
@@ -392,7 +401,7 @@ BTA_Status BTA_CALLCONV BTAstartDiscovery(BTA_DiscoveryConfig *config, FN_BTA_De
 
 #   ifndef BTA_WO_ETH
     if (inst->deviceType != BTA_DeviceTypeUsb && inst->deviceType != BTA_DeviceTypeUart && inst->deviceType != BTA_DeviceTypeBltstream) {
-        status = BTAcreateThread(&inst->discoveryThreadEth, (void* (*)(void*))&BTAETHdiscoveryRunFunction, inst, 0);
+        status = BTAcreateThread(&inst->discoveryThreadEth, (void *(*)(void *)) & BTAETHdiscoveryRunFunction, inst);
         if (status != BTA_StatusOk) {
             BTAinfoEventHelper(infoEventInst, VERBOSE_ERROR, status, "Discovery: Could not start Eth discoveryThread");
         }
@@ -400,7 +409,7 @@ BTA_Status BTA_CALLCONV BTAstartDiscovery(BTA_DiscoveryConfig *config, FN_BTA_De
 #   endif
 #   ifndef BTA_WO_USB
     if (inst->deviceType != BTA_DeviceTypeEthernet && inst->deviceType != BTA_DeviceTypeUart && inst->deviceType != BTA_DeviceTypeBltstream) {
-        status = BTAcreateThread(&inst->discoveryThreadUsb, (void* (*)(void*))&BTAUSBdiscoveryRunFunction, inst, 0);
+        status = BTAcreateThread(&inst->discoveryThreadUsb, (void *(*)(void *)) & BTAUSBdiscoveryRunFunction, inst);
         if (status != BTA_StatusOk) {
             BTAinfoEventHelper(inst->infoEventInst, VERBOSE_ERROR, status, "Discovery: Could not start USB discoveryThread");
         }
@@ -457,7 +466,7 @@ BTA_Status BTA_CALLCONV BTAstopDiscoveryEx(BTA_Handle *handle, BTA_DeviceInfo **
 
     // If user wants the result in a list, copy the list and let user free device infos. Otherwise free deviceInfos!
     if (deviceList && deviceListLen) {
-        int lenMin = inst->deviceListCount < *deviceListLen ? inst->deviceListCount : *deviceListLen;
+        uint16_t lenMin = inst->deviceListCount < *deviceListLen ? inst->deviceListCount : *deviceListLen;
         for (int i = 0; i < lenMin; i++) {
             deviceList[i] = inst->deviceList[i];
         }
@@ -562,6 +571,7 @@ BTA_Status BTA_CALLCONV BTAinitConfig(BTA_Config *config) {
     MARK_USED(check4);
     MARK_USED(check5);
     MARK_USED(check6);
+    MARK_USED(check7);
     MARK_USED(checkDiscoveryHmaj);
     MARK_USED(checkDiscoveryHmin);
     MARK_USED(checkDiscoveryHnfu);
@@ -595,7 +605,7 @@ BTA_Status BTA_CALLCONV BTAopen(BTA_Config *config, BTA_Handle *handle) {
         sprintf(str, "BTAopen call:  ");
         sprintf(str + strlen(str), "  BltTofApi v%d.%d.%d", BTA_VER_MAJ, BTA_VER_MIN, BTA_VER_NON_FUNC);
         sprintf(str + strlen(str), " %s %s", __DATE__, __TIME__);
-        if (config->deviceType) sprintf(str + strlen(str), "  deviceType 0x%x", config->deviceType);
+        if (config->deviceType) sprintf(str + strlen(str), "  deviceType %s (0x%x)", BTAdeviceTypeToString(config->deviceType), config->deviceType);
         if (config->udpControlOutIpAddr && config->udpControlOutIpAddrLen) {
             sprintf(str + strlen(str), "  udpControlOutIpAddr %d", config->udpControlOutIpAddr[0]);
             for (uint8_t i = 1; i < config->udpControlOutIpAddrLen; i++) sprintf(str + strlen(str), ".%d", config->udpControlOutIpAddr[i]);
@@ -651,7 +661,43 @@ BTA_Status BTA_CALLCONV BTAopen(BTA_Config *config, BTA_Handle *handle) {
         return BTA_StatusOutOfMemory;
     }
 
-    // Initialize LibParams that are not defaultly 0
+    // Initialize LibParams
+    winst->lpDataStreamReadFailedCount = 0;
+    winst->lpDataStreamBytesReceivedCount = 0;
+    winst->lpDataStreamPacketsReceivedCount = 0;
+    winst->lpDataStreamPacketsMissedCount = 0;
+    winst->lpDataStreamPacketsToParse = 0;
+    winst->lpDataStreamParseFrameDuration = 0;
+    winst->lpDataStreamFrameCounterGap = 1;
+    winst->lpDataStreamFrameCounterGapsCount = 0;
+    winst->lpDataStreamFramesParsedCount = 0;
+    winst->lpAllowIncompleteFrames = 1;
+    winst->timeStampLast = 0;
+    winst->frameCounterLast = 0;
+    winst->lpDataStreamFramesParsedPerSecFrametimes = 0;
+    winst->lpDataStreamFramesParsedPerSecUpdated = 0;
+    winst->lpPauseCaptureThread = 0;
+    winst->lpBilateralFilterWindow = 0;
+    winst->lpCalcXyzEnabled = 0;
+    winst->lpCalcXyzOffset = 0;
+    winst->lpColorFromTofEnabled = 0;
+#   ifndef BTA_WO_LIBJPEG
+    winst->lpJpgDecodeEnabled = 1;
+#   else
+    winst->lpJpgDecodeEnabled = 0;
+#   endif
+    winst->lpUndistortRgbEnabled = 0;
+    winst->lpDebugFlags01 = 0;
+    winst->lpDebugValue01 = 0;
+    winst->lpDebugValue02 = 0;
+    winst->lpDebugValue03 = 0;
+    winst->lpDebugValue04 = 0;
+    winst->lpDebugValue05 = 0;
+    winst->lpDebugValue06 = 0;
+    winst->lpDebugValue07 = 0;
+    winst->lpDebugValue08 = 0;
+    winst->lpDebugValue09 = 0;
+    winst->lpDebugValue10 = 0;
 
     winst->infoEventInst = (BTA_InfoEventInst *)calloc(1, sizeof(BTA_InfoEventInst));
     if (!winst->infoEventInst) {
@@ -675,7 +721,7 @@ BTA_Status BTA_CALLCONV BTAopen(BTA_Config *config, BTA_Handle *handle) {
     }
 
     if (str) {
-        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusInformation, str);
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WRITE_OP, BTA_StatusInformation, str);
         free(str);
         str = 0;
     }
@@ -685,40 +731,41 @@ BTA_Status BTA_CALLCONV BTAopen(BTA_Config *config, BTA_Handle *handle) {
     if (configTest != 0 && configTest != 2) {
         if (!config->frameQueueMode) BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusConfigParamError, "BTAopen: frameQueueMode is missing");
         if (!config->frameQueueLength) BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusConfigParamError, "BTAopen: frameQueueLength is missing");
+        BTAclose((BTA_Handle *)&winst);
         return BTA_StatusInvalidParameter;
     }
     if (config->frameQueueMode != BTA_QueueModeDoNotQueue && config->frameQueueMode != BTA_QueueModeDropCurrent && config->frameQueueMode != BTA_QueueModeDropOldest) {
         BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusConfigParamError, "BTAopen: Only queue modes DropCurrent and DropOldest are allowed");
+        BTAclose((BTA_Handle *)&winst);
         return BTA_StatusInvalidParameter;
     }
     if (config->frameArrivedEx2 && config->frameQueueMode) {
         BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusConfigParamError, "BTAopen: FrameArrivedEx2 cannot be used in conjunction with frame queueing");
+        BTAclose((BTA_Handle *)&winst);
         return BTA_StatusInvalidParameter;
     }
-
-    winst->lpAllowIncompleteFrames = 1;
-    winst->lpDataStreamFrameCounterGap = 1;
 
     if (config->deviceType == BTA_DeviceTypeAny)
     {
         if (config->bltstreamFilename) {
             BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusConfigParamError, "BTAopen: Bltstream filename given, but device type not set. Use BTA_DeviceTypeBltstream (15)");
+            BTAclose((BTA_Handle *)&winst);
             return BTA_StatusInvalidParameter;
         }
-        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusWarning, "Trying all interfaces (device type not set)!");
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WARNING, BTA_StatusWarning, "BTAopen: Trying all interfaces (device type not set)!");
     }
 #   ifndef BTA_WO_ETH
-    else if (BTAisEthDevice(config->deviceType)) {
+    else if (BTAisEthDevice((uint16_t)config->deviceType)) {
         config->deviceType = BTA_DeviceTypeEthernet;
     }
 #   endif
 #   ifndef BTA_WO_P100
-    else if (BTAisP100Device(config->deviceType)) {
+    else if (BTAisP100Device((uint16_t)config->deviceType)) {
         config->deviceType = BTA_DeviceTypeUsb;
     }
 #   endif
 #   ifndef BTA_WO_USB
-    else if (BTAisUsbDevice(config->deviceType)) {
+    else if (BTAisUsbDevice((uint16_t)config->deviceType)) {
         config->deviceType = BTA_DeviceTypeUsb;
     }
 #   endif
@@ -728,12 +775,12 @@ BTA_Status BTA_CALLCONV BTAopen(BTA_Config *config, BTA_Handle *handle) {
     }
 #   endif
 #   ifndef BTA_WO_UART
-    else if (BTAisUartDevice(config->deviceType)) {
+    else if (BTAisUartDevice((uint16_t)config->deviceType)) {
         config->deviceType = BTA_DeviceTypeUart;
     }
 #   endif
     else {
-        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusConfigParamError, "Invalid or unsupported device type: %d", config->deviceType);
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusConfigParamError, "BTAopen: Invalid or unsupported device type: %d", config->deviceType);
         BTAclose((BTA_Handle *)&winst);
         return BTA_StatusInvalidParameter;
     }
@@ -752,14 +799,14 @@ BTA_Status BTA_CALLCONV BTAopen(BTA_Config *config, BTA_Handle *handle) {
     }
 
     if (config->frameQueueMode != BTA_QueueModeDoNotQueue && config->frameQueueMode != BTA_QueueModeDropOldest && config->frameQueueMode != BTA_QueueModeDropCurrent) {
-        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusConfigParamError, "Invalid frameQueueMode, use BTA_QueueModeDoNotQueue, BTA_QueueModeDropOldest or BTA_QueueModeDropCurrent");
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusConfigParamError, "BTAopen: Invalid frameQueueMode, use BTA_QueueModeDoNotQueue, BTA_QueueModeDropOldest or BTA_QueueModeDropCurrent");
         BTAclose((BTA_Handle *)&winst);
         return BTA_StatusInvalidParameter;
     }
 
     if ((!config->frameQueueLength && config->frameQueueMode != BTA_QueueModeDoNotQueue) || (config->frameQueueLength && config->frameQueueMode == BTA_QueueModeDoNotQueue)) {
         // queueing on and queue size == 0 or queueing off and queue size > 0. Contradiction
-        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusConfigParamError, "Invalid frameQueueLength - frameQueueMode combination");
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusConfigParamError, "BTAopen: Invalid frameQueueLength - frameQueueMode combination");
         BTAclose((BTA_Handle *)&winst);
         return BTA_StatusInvalidParameter;
     }
@@ -775,23 +822,21 @@ BTA_Status BTA_CALLCONV BTAopen(BTA_Config *config, BTA_Handle *handle) {
         }
     }
 
-#   ifndef BTA_WO_LIBJPEG
-    status = BTAjpgInit(winst);
+    status = BGRBinit(&winst->grabInst, winst->infoEventInst);
     if (status != BTA_StatusOk) {
-        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, status, "BTAopen: Error initializing jpg");
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, status, "BTAopen: Error initializing grabber");
         BTAETHclose(winst);
         return status;
     }
-#   endif
 
-    status = BTAundistortInit(winst);
+    status = BTAundistortInit(&(winst->undistortInst), winst->infoEventInst);
     if (status != BTA_StatusOk) {
         BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, status, "BTAopen: Error initializing undistort");
         BTAETHclose(winst);
         return status;
     }
 
-    status = BTAcalcXYZInit(winst);
+    status = BTAcalcXYZInit(&(winst->calcXYZInst), winst->infoEventInst);
     if (status != BTA_StatusOk) {
         BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, status, "BTAopen: Error initializing calcXYZ");
         BTAETHclose(winst);
@@ -849,8 +894,9 @@ BTA_Status BTA_CALLCONV BTAopen(BTA_Config *config, BTA_Handle *handle) {
             return BTA_StatusOk;
         }
 
-        if (config->deviceType != BTA_DeviceTypeAny) {
+        if (config->deviceType) {
             // The user wanted to connect to a specific device, so do not continue trying others)
+            // infoEvent was sent within BTAETHopen
             BTAclose((BTA_Handle *)&winst);
             return status;
         }
@@ -925,8 +971,9 @@ BTA_Status BTA_CALLCONV BTAopen(BTA_Config *config, BTA_Handle *handle) {
         }
 #       endif
 
-        if (config->deviceType != BTA_DeviceTypeAny) {
+        if (config->deviceType) {
             // The user wanted to connect to a specific device, so do not continue trying others)
+            // infoEvent was sent within BTAP100open/BTAUSBopen
             BTAclose((BTA_Handle *)&winst);
             return status;
         }
@@ -966,8 +1013,9 @@ BTA_Status BTA_CALLCONV BTAopen(BTA_Config *config, BTA_Handle *handle) {
             return BTA_StatusOk;
         }
 
-        if (config->deviceType != BTA_DeviceTypeAny) {
+        if (config->deviceType) {
             // The user wanted to connect to a specific device, so do not continue trying others)
+            // infoEvent was sent within BTAUARTopen
             BTAclose((BTA_Handle *)&winst);
             return status;
         }
@@ -1008,16 +1056,18 @@ BTA_Status BTA_CALLCONV BTAopen(BTA_Config *config, BTA_Handle *handle) {
             return BTA_StatusOk;
         }
 
-        if (config->deviceType != BTA_DeviceTypeAny) {
+        if (config->deviceType) {
             // The user wanted to connect to a specific device, so do not continue trying others)
+            // infoEvent was sent within BTASTREAMopen
             BTAclose((BTA_Handle *)&winst);
             return status;
         }
     }
 #   endif
 
-
+    assert(!config->deviceType);
     BTAclose((BTA_Handle *)&winst);
+    // infoEvent was sent within BTA***open
     return BTA_StatusDeviceUnreachable;
 }
 
@@ -1031,48 +1081,45 @@ BTA_Status BTA_CALLCONV BTAclose(BTA_Handle *handle) {
         return BTA_StatusInvalidParameter;
     }
     BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WRITE_OP, BTA_StatusInformation, "BTAclose call");
+    BTA_Status status;
     if (winst->close) {
-        winst->close(winst);  // close always returns ok. infoevents are called within
+        status = winst->close(winst);
+        if (status != BTA_StatusOk) {
+            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "BTAclose: Failed to close inner handle!");
+        }
     }
 
-    BTA_Status status = BTAcalcXYZClose(winst);
+    status = BTAcalcXYZClose(&(winst->calcXYZInst));
     if (status != BTA_StatusOk) {
-        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "BTAclose: Failed to close calcXYZ");
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "BTAclose: Failed to close calcXYZ!");
     }
 
-    status = BTAundistortClose(winst);
+    status = BTAundistortClose(&(winst->undistortInst));
     if (status != BTA_StatusOk) {
-        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "BTAclose: Failed to close undistort");
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "BTAclose: Failed to close undistort!");
     }
 
-#   ifndef BTA_WO_LIBJPEG
-    status = BTAjpgClose(winst);
+    //BTAinfoEventHelper(winst->infoEventInst, VERBOSE_INFO, BTA_StatusInformation, "BTAclose: Closing grabber");
+    status = BGRBclose(&(winst->grabInst));
     if (status != BTA_StatusOk) {
-        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "BTAclose: Failed to close jpg");
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "BTAclose: Failed to close grabber!");
     }
-#   endif
 
     if (winst->frameQueue) {
-        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_INFO, BTA_StatusInformation, "BTAclose: Closing frameQueue");
+        //BTAinfoEventHelper(winst->infoEventInst, VERBOSE_INFO, BTA_StatusInformation, "BTAclose: Closing frameQueue");
         status = BFQclose(&(winst->frameQueue));
         if (status != BTA_StatusOk) {
-            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "BTAclose: Failed to close frameQueue");
+            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "BTAclose: Failed to close frameQueue!");
         }
     }
 
-    if (winst->grabInst) {
-        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_INFO, BTA_StatusInformation, "BTAclose: Closing grabber");
-        status = BGRBclose(&(winst->grabInst));
-        if (status != BTA_StatusOk) {
-            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "BTAclose: Failed to close grabber");
-        }
-    }
-
-    BTAinfoEventHelper(winst->infoEventInst, VERBOSE_INFO, BTA_StatusInformation, "BTAclose: Freeing up the rest");
+    //BTAinfoEventHelper(winst->infoEventInst, VERBOSE_INFO, BTA_StatusInformation, "BTAclose: Freeing up the rest");
     status = BVQclose(&(winst->lpDataStreamFramesParsedPerSecFrametimes));
     if (status != BTA_StatusOk) {
-        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "BTAclose: Failed to close internal queue");
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "BTAclose: Failed to close internal queue!");
     }
+
+    BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WRITE_OP, BTA_StatusInformation, "BTAclose done");
 
     if (winst->infoEventInst) {
         free(winst->infoEventInst->infoEventFilename);
@@ -1093,7 +1140,7 @@ BTA_Status BTA_CALLCONV BTAclose(BTA_Handle *handle) {
 
 
 BTA_Status BTA_CALLCONV BTAgetDeviceInfo(BTA_Handle handle, BTA_DeviceInfo **deviceInfo) {
-    BTA_WrapperInst *winst = (BTA_WrapperInst*)handle;
+    BTA_WrapperInst *winst = (BTA_WrapperInst *)handle;
     if (!winst) {
         return BTA_StatusInvalidParameter;
     }
@@ -1101,31 +1148,38 @@ BTA_Status BTA_CALLCONV BTAgetDeviceInfo(BTA_Handle handle, BTA_DeviceInfo **dev
     BTA_Status status = winst->getDeviceInfo(winst, deviceInfo);
     if (status == BTA_StatusOk) {
         if ((*deviceInfo)->productOrderNumber) {
-            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_READ_OP, BTA_StatusInformation, "BTAgetDeviceInfo response: device type 0x%04x  PON %s-%06d  fwVer %d.%d.%d  uptime %ds", 
+            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_READ_OP, BTA_StatusInformation, "BTAgetDeviceInfo response:  device type 0x%04x  PON %s-%06d  fwVer %d.%d.%d  uptime %ds", 
                                (*deviceInfo)->deviceType, (*deviceInfo)->productOrderNumber, (*deviceInfo)->serialNumber, 
                                (*deviceInfo)->firmwareVersionMajor, (*deviceInfo)->firmwareVersionMinor, (*deviceInfo)->firmwareVersionNonFunc, (*deviceInfo)->uptime);
         }
         else {
-            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_READ_OP, BTA_StatusInformation, "BTAgetDeviceInfo response: device type 0x%04x  PON %s-%06d  fwVer %d.%d.%d  uptime %ds",
+            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_READ_OP, BTA_StatusInformation, "BTAgetDeviceInfo response:  device type 0x%04x  PON %s-%06d  fwVer %d.%d.%d  uptime %ds",
                                (*deviceInfo)->deviceType, "\?\?\?-\?\?\?\?-\?", (*deviceInfo)->serialNumber,
                                (*deviceInfo)->firmwareVersionMajor, (*deviceInfo)->firmwareVersionMinor, (*deviceInfo)->firmwareVersionNonFunc, (*deviceInfo)->uptime);
         }
     }
+    else BTAinfoEventHelper(winst->infoEventInst, VERBOSE_READ_OP, status, "BTAgetDeviceInfo failed!");
     return status;
 }
 
 
 BTA_Status BTA_CALLCONV BTAgetDeviceType(BTA_Handle handle, BTA_DeviceType *deviceType) {
-    BTA_WrapperInst *winst = (BTA_WrapperInst*)handle;
+    BTA_WrapperInst *winst = (BTA_WrapperInst *)handle;
     if (!winst) {
         return BTA_StatusInvalidParameter;
     }
-    return winst->getDeviceType(winst, deviceType);
+    BTAinfoEventHelper(winst->infoEventInst, VERBOSE_READ_OP, BTA_StatusInformation, "BTAgetDeviceType call");
+    BTA_Status status = winst->getDeviceType(winst, deviceType);
+    if (status == BTA_StatusOk) {
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_READ_OP, BTA_StatusInformation, "BTAgetDeviceType response:  device type 0x%04x", deviceType);
+    }
+    else BTAinfoEventHelper(winst->infoEventInst, VERBOSE_READ_OP, status, "BTAgetDeviceType failed!");
+    return status;
 }
 
 
 uint8_t BTA_CALLCONV BTAisRunning(BTA_Handle handle) {
-    BTA_WrapperInst *winst = (BTA_WrapperInst*)handle;
+    BTA_WrapperInst *winst = (BTA_WrapperInst *)handle;
     if (!winst) {
         return 0;
     }
@@ -1134,7 +1188,7 @@ uint8_t BTA_CALLCONV BTAisRunning(BTA_Handle handle) {
 
 
 uint8_t BTA_CALLCONV BTAisConnected(BTA_Handle handle) {
-    BTA_WrapperInst *winst = (BTA_WrapperInst*)handle;
+    BTA_WrapperInst *winst = (BTA_WrapperInst *)handle;
     if (!winst) {
         return 0;
     }
@@ -1143,18 +1197,21 @@ uint8_t BTA_CALLCONV BTAisConnected(BTA_Handle handle) {
 
 
 BTA_Status BTA_CALLCONV BTAsetFrameMode(BTA_Handle handle, BTA_FrameMode frameMode) {
-    BTA_WrapperInst *winst = (BTA_WrapperInst*)handle;
+    BTA_WrapperInst *winst = (BTA_WrapperInst *)handle;
     if (!winst) {
         return BTA_StatusInvalidParameter;
     }
 
     BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WRITE_OP, BTA_StatusInformation, "BTAsetFrameMode call:  frameMode %s (%d)", BTAframeModeToString(frameMode), frameMode);
-    return winst->setFrameMode(winst, frameMode);
+    BTA_Status status = winst->setFrameMode(winst, frameMode);
+    if (status == BTA_StatusOk) BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WRITE_OP, BTA_StatusInformation, "BTAsetFrameMode done");
+    else BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WRITE_OP, status, "BTAsetFrameMode failed!");
+    return status;
 }
 
 
 BTA_Status BTA_CALLCONV BTAgetFrameMode(BTA_Handle handle, BTA_FrameMode *frameMode) {
-    BTA_WrapperInst *winst = (BTA_WrapperInst*)handle;
+    BTA_WrapperInst *winst = (BTA_WrapperInst *)handle;
     if (!winst) {
         return BTA_StatusInvalidParameter;
     }
@@ -1162,33 +1219,19 @@ BTA_Status BTA_CALLCONV BTAgetFrameMode(BTA_Handle handle, BTA_FrameMode *frameM
 
     BTA_Status status = winst->getFrameMode(winst, frameMode);
     if (status == BTA_StatusOk) BTAinfoEventHelper(winst->infoEventInst, VERBOSE_READ_OP, BTA_StatusInformation, "BTAgetFrameMode response:  frameMode %s (%d)", BTAframeModeToString(*frameMode), *frameMode);
-    return status;
-}
-
-
-BTA_Status BTA_CALLCONV BTApeekFrame(BTA_Handle handle, BTA_Frame** frame, uint32_t millisecondsTimeout) {
-    BTA_WrapperInst* winst = (BTA_WrapperInst*)handle;
-    if (!winst) {
-        return BTA_StatusInvalidParameter;
-    }
-    
-    if (!winst->frameQueue) {
-        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusIllegalOperation, "BTApeekFrame: Frame queueing must be enabled in BTAopen");
-        return BTA_StatusIllegalOperation;
-    }
-    BTA_Status status = BFQpeek(winst->frameQueue, frame, millisecondsTimeout);
+    else BTAinfoEventHelper(winst->infoEventInst, VERBOSE_READ_OP, status, "BTAgetFrameMode failed!");
     return status;
 }
 
 
 BTA_Status BTA_CALLCONV BTAgetFrame(BTA_Handle handle, BTA_Frame **frame, uint32_t millisecondsTimeout) {
-    BTA_WrapperInst *winst = (BTA_WrapperInst*)handle;
+    BTA_WrapperInst *winst = (BTA_WrapperInst *)handle;
     if (!winst) {
         return BTA_StatusInvalidParameter;
     }
 
     if (!winst->frameQueue) {
-        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusIllegalOperation, "BTAgetFrame: Frame queueing must be enabled in BTAopen");
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusIllegalOperation, "BTAgetFrame: Frame queueing must be enabled in BTAopen");
         return BTA_StatusIllegalOperation;
     }
     BTA_Status status = BFQdequeue(winst->frameQueue, frame, millisecondsTimeout);
@@ -1197,12 +1240,27 @@ BTA_Status BTA_CALLCONV BTAgetFrame(BTA_Handle handle, BTA_Frame **frame, uint32
 
 
 BTA_Status BTA_CALLCONV BTAsetChannelSelection(BTA_Handle handle, BTA_ChannelSelection *channelSelection, int channelSelectionCount) {
-    BTA_WrapperInst *winst = (BTA_WrapperInst*)handle;
+    BTA_WrapperInst *winst = (BTA_WrapperInst *)handle;
     if (!winst) {
         return BTA_StatusInvalidParameter;
     }
-    if (channelSelectionCount > 8) {
-        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusInvalidParameter, "Channel selection is limited to at most 8 channels");
+    if (winst->infoEventInst && winst->infoEventInst->verbosity >= VERBOSE_WRITE_OP) {
+        char *str = (char *)malloc(1024);
+        if (!str) return BTA_StatusOutOfMemory;
+        sprintf(str, "BTAsetChannelSelection call:  channelSelection ");
+        if (channelSelection) {
+            for (int i = 0; i < channelSelectionCount; i++) {
+                if (i == 0) sprintf(str + strlen(str), "%s", BTAchannelSelectionToString(channelSelection[i]));
+                else sprintf(str + strlen(str), ", %s", BTAchannelSelectionToString(channelSelection[i]));
+            }
+            sprintf(str + strlen(str), "  channelSelectionCount %d", channelSelectionCount);
+        }
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WRITE_OP, BTA_StatusInformation, str);
+        free(str);
+        str = 0;
+    }
+    if (channelSelectionCount < 1 || channelSelectionCount > 8) {
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusInvalidParameter, "BTAsetChannelSelection: Channel selection is limited to 1-8 channels");
         return BTA_StatusInvalidParameter;
     }
     uint32_t dataLen = 8;
@@ -1212,23 +1270,36 @@ BTA_Status BTA_CALLCONV BTAsetChannelSelection(BTA_Handle handle, BTA_ChannelSel
     }
     BTA_Status status = BTAwriteRegister(handle, 0x620, data, &dataLen);
     if (status != BTA_StatusOk) {
-        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusNotSupported, "Channel selection probably not supported by this device");
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "BTAsetChannelSelection: Channel selection probably not supported by this device");
         return status;
     }
     data[0] = BTA_EthImgModeChannelSelection << 3;
     status = BTAwriteRegister(handle, 4, data, 0);
+    if (status == BTA_StatusOk) BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WRITE_OP, BTA_StatusInformation, "BTAsetChannelSelection done");
+    else BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WRITE_OP, status, "BTAsetChannelSelection failed!");
     return status;
 }
 
 
 BTA_Status BTA_CALLCONV BTAgetChannelSelection(BTA_Handle handle, BTA_ChannelSelection *channelSelection, int *channelSelectionCount) {
+    BTA_WrapperInst *winst = (BTA_WrapperInst *)handle;
+    if (!winst) {
+        return BTA_StatusInvalidParameter;
+    }
+    BTAinfoEventHelper(winst->infoEventInst, VERBOSE_READ_OP, BTA_StatusInformation, "BTAgetChannelSelection call");
     memset(channelSelection, 0, sizeof(BTA_ChannelSelection) * *channelSelectionCount);
     uint32_t imgDataFormat;
     BTA_Status status = BTAreadRegister(handle, 4, &imgDataFormat, 0);
+    if (status != BTA_StatusOk) {
+        *channelSelectionCount = 0;
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_READ_OP, status, "BTAgetChannelSelection failed!");
+        return status;
+    }
     uint8_t imageMode = (imgDataFormat >> 3) & 0xff;
     if (imageMode != BTA_EthImgModeChannelSelection) {
         // The image mode is not set to 'user defined'
         *channelSelectionCount = 0;
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WRITE_OP, BTA_StatusInformation, "BTAgetChannelSelection response:  image mode not set to 'user defined'");
         return BTA_StatusOk;
     }
     uint32_t dataLen = 8;
@@ -1241,145 +1312,168 @@ BTA_Status BTA_CALLCONV BTAgetChannelSelection(BTA_Handle handle, BTA_ChannelSel
     for (int i = 0; i < *channelSelectionCount; i++) {
         if (!data[i]) {
             *channelSelectionCount = i;
-            return BTA_StatusOk;
+            break;
         }
         channelSelection[i] = (BTA_ChannelSelection)data[i];
+    }
+    if (winst->infoEventInst && winst->infoEventInst->verbosity >= VERBOSE_READ_OP) {
+        char *str = (char *)malloc(1024);
+        if (!str) return BTA_StatusOutOfMemory;
+        sprintf(str, "BTAgetChannelSelection response:  channelSelection ");
+        if (channelSelection) {
+            for (int i = 0; i < *channelSelectionCount; i++) {
+                if (i == 0) sprintf(str + strlen(str), "%s", BTAchannelSelectionToString(channelSelection[i]));
+                else sprintf(str + strlen(str), ", %s", BTAchannelSelectionToString(channelSelection[i]));
+            }
+            sprintf(str + strlen(str), "  channelSelectionCount %d", *channelSelectionCount);
+        }
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_READ_OP, BTA_StatusInformation, str);
+        free(str);
+        str = 0;
     }
     return BTA_StatusOk;
 }
 
 
 BTA_Status BTA_CALLCONV BTAgetFrameCount(BTA_Handle handle, uint32_t *frameCount) {
-    BTA_WrapperInst *winst = (BTA_WrapperInst*)handle;
+    BTA_WrapperInst *winst = (BTA_WrapperInst *)handle;
     if (!winst) {
         return BTA_StatusInvalidParameter;
     }
-    BTAinfoEventHelper(winst->infoEventInst, VERBOSE_READ_OP, BTA_StatusInformation, "BTAgetFrameCount call");
-
     if (!winst->frameQueue) {
-        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusIllegalOperation, "BTAgetFrameCount: Frame queueing must be enabled in BTAopen");
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusIllegalOperation, "BTAgetFrameCount: Frame queueing must be enabled in BTAopen");
         return BTA_StatusIllegalOperation;
     }
-
-    BTA_Status status = BFQgetCount(winst->frameQueue, frameCount);
-    return status;
+    return BFQgetCount(winst->frameQueue, frameCount);
 }
 
 
 BTA_Status BTA_CALLCONV BTAflushFrameQueue(BTA_Handle handle) {
-    BTA_WrapperInst *winst = (BTA_WrapperInst*)handle;
+    BTA_WrapperInst *winst = (BTA_WrapperInst *)handle;
     if (!winst) {
         return BTA_StatusInvalidParameter;
     }
-    BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WRITE_OP, BTA_StatusInformation, "BTAflushFrameQueue call");
-
     if (!winst->frameQueue) {
-        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusIllegalOperation, "BTAflushFrameQueue: Frame queueing must be enabled in BTAopen");
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusIllegalOperation, "BTAflushFrameQueue: Frame queueing must be enabled in BTAopen");
         return BTA_StatusIllegalOperation;
     }
-
-    BTA_Status status = BFQclear(winst->frameQueue);
-    return status;
+    return BFQclear(winst->frameQueue);
 }
 
 
 BTA_Status BTA_CALLCONV BTAsetIntegrationTime(BTA_Handle handle, uint32_t integrationTime) {
-    BTA_WrapperInst *winst = (BTA_WrapperInst*)handle;
+    BTA_WrapperInst *winst = (BTA_WrapperInst *)handle;
     if (!winst) {
         return BTA_StatusInvalidParameter;
     }
     BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WRITE_OP, BTA_StatusInformation, "BTAsetIntegrationTime call:  integrationTime %d", integrationTime);
-    return winst->setIntegrationTime(winst, integrationTime);
+    BTA_Status status = winst->setIntegrationTime(winst, integrationTime);
+    if (status == BTA_StatusOk) BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WRITE_OP, BTA_StatusInformation, "BTAsetIntegrationTime done");
+    else BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WRITE_OP, status, "BTAsetIntegrationTime failed!");
+    return status;
 }
 
 
 BTA_Status BTA_CALLCONV BTAgetIntegrationTime(BTA_Handle handle, uint32_t *integrationTime) {
-    BTA_WrapperInst *winst = (BTA_WrapperInst*)handle;
+    BTA_WrapperInst *winst = (BTA_WrapperInst *)handle;
     if (!winst) {
         return BTA_StatusInvalidParameter;
     }
     BTAinfoEventHelper(winst->infoEventInst, VERBOSE_READ_OP, BTA_StatusInformation, "BTAgetIntegrationTime call");
     BTA_Status status = winst->getIntegrationTime(winst, integrationTime);
     if (status == BTA_StatusOk) BTAinfoEventHelper(winst->infoEventInst, VERBOSE_READ_OP, BTA_StatusInformation, "BTAgetIntegrationTime response:  integrationTime %d", *integrationTime);
+    else BTAinfoEventHelper(winst->infoEventInst, VERBOSE_READ_OP, status, "BTAgetIntegrationTime failed!");
     return status;
 }
 
 
 BTA_Status BTA_CALLCONV BTAsetFrameRate(BTA_Handle handle, float frameRate) {
-    BTA_WrapperInst *winst = (BTA_WrapperInst*)handle;
+    BTA_WrapperInst *winst = (BTA_WrapperInst *)handle;
     if (!winst) {
         return BTA_StatusInvalidParameter;
     }
     BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WRITE_OP, BTA_StatusInformation, "BTAsetFrameRate call:  frameRate %f", frameRate);
-    return winst->setFrameRate(winst, frameRate);
+    BTA_Status status = winst->setFrameRate(winst, frameRate);
+    if (status == BTA_StatusOk) BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WRITE_OP, BTA_StatusInformation, "BTAsetFrameRate done");
+    else BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WRITE_OP, status, "BTAsetFrameRate failed!");
+    return status;
 }
 
 
 BTA_Status BTA_CALLCONV BTAgetFrameRate(BTA_Handle handle, float *frameRate) {
-    BTA_WrapperInst *winst = (BTA_WrapperInst*)handle;
+    BTA_WrapperInst *winst = (BTA_WrapperInst *)handle;
     if (!winst) {
         return BTA_StatusInvalidParameter;
     }
     BTAinfoEventHelper(winst->infoEventInst, VERBOSE_READ_OP, BTA_StatusInformation, "BTAgetFrameRate call");
     BTA_Status status = winst->getFrameRate(winst, frameRate);
     if (status == BTA_StatusOk) BTAinfoEventHelper(winst->infoEventInst, VERBOSE_READ_OP, BTA_StatusInformation, "BTAgetFrameRate response:  frameRate %f", *frameRate);
+    else BTAinfoEventHelper(winst->infoEventInst, VERBOSE_READ_OP, status, "BTAgetFrameRate failed!");
     return status;
 }
 
 
 BTA_Status BTA_CALLCONV BTAsetModulationFrequency(BTA_Handle handle, uint32_t modulationFrequency) {
-    BTA_WrapperInst *winst = (BTA_WrapperInst*)handle;
+    BTA_WrapperInst *winst = (BTA_WrapperInst *)handle;
     if (!winst) {
         return BTA_StatusInvalidParameter;
     }
     BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WRITE_OP, BTA_StatusInformation, "BTAsetModulationFrequency call:  modulationFrequency %d", modulationFrequency);
-    return winst->setModulationFrequency(winst, modulationFrequency);
+    BTA_Status status = winst->setModulationFrequency(winst, modulationFrequency);
+    if (status == BTA_StatusOk) BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WRITE_OP, BTA_StatusInformation, "BTAsetModulationFrequency done");
+    else BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WRITE_OP, status, "BTAsetModulationFrequency failed!");
+    return status;
 }
 
 
 BTA_Status BTA_CALLCONV BTAgetModulationFrequency(BTA_Handle handle, uint32_t *modulationFrequency) {
-    BTA_WrapperInst *winst = (BTA_WrapperInst*)handle;
+    BTA_WrapperInst *winst = (BTA_WrapperInst *)handle;
     if (!winst) {
         return BTA_StatusInvalidParameter;
     }
     BTAinfoEventHelper(winst->infoEventInst, VERBOSE_READ_OP, BTA_StatusInformation, "BTAgetModulationFrequency call");
     BTA_Status status = winst->getModulationFrequency(winst, modulationFrequency);
     if (status == BTA_StatusOk) BTAinfoEventHelper(winst->infoEventInst, VERBOSE_READ_OP, BTA_StatusInformation, "BTAgetModulationFrequency response:  modulationFrequency %d", *modulationFrequency);
+    else BTAinfoEventHelper(winst->infoEventInst, VERBOSE_READ_OP, status, "BTAgetModulationFrequency failed!");
     return status;
 }
 
 
 BTA_Status BTA_CALLCONV BTAsetGlobalOffset(BTA_Handle handle, float globalOffset) {
-    BTA_WrapperInst *winst = (BTA_WrapperInst*)handle;
+    BTA_WrapperInst *winst = (BTA_WrapperInst *)handle;
     if (!winst) {
         return BTA_StatusInvalidParameter;
     }
     BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WRITE_OP, BTA_StatusInformation, "BTAsetGlobalOffset call:  globalOffset %f", globalOffset);
-    return winst->setGlobalOffset(winst, globalOffset);
+    BTA_Status status = winst->setGlobalOffset(winst, globalOffset);
+    if (status == BTA_StatusOk) BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WRITE_OP, BTA_StatusInformation, "BTAsetGlobalOffset done");
+    else BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WRITE_OP, status, "BTAsetGlobalOffset failed!");
+    return status;
 }
 
 
 BTA_Status BTA_CALLCONV BTAgetGlobalOffset(BTA_Handle handle, float *globalOffset) {
-    BTA_WrapperInst *winst = (BTA_WrapperInst*)handle;
+    BTA_WrapperInst *winst = (BTA_WrapperInst *)handle;
     if (!winst) {
         return BTA_StatusInvalidParameter;
     }
     BTAinfoEventHelper(winst->infoEventInst, VERBOSE_READ_OP, BTA_StatusInformation, "BTAgetGlobalOffset call");
     BTA_Status status = winst->getGlobalOffset(winst, globalOffset);
     if (status == BTA_StatusOk) BTAinfoEventHelper(winst->infoEventInst, VERBOSE_READ_OP, BTA_StatusInformation, "BTAgetGlobalOffset response:  globalOffset %f", *globalOffset);
+    else BTAinfoEventHelper(winst->infoEventInst, VERBOSE_READ_OP, status, "BTAgetGlobalOffset failed!");
     return status;
 }
 
 
 BTA_Status BTA_CALLCONV BTAreadRegister(BTA_Handle handle, uint32_t address, uint32_t *data, uint32_t *registerCount) {
-    BTA_WrapperInst *winst = (BTA_WrapperInst*)handle;
+    BTA_WrapperInst *winst = (BTA_WrapperInst *)handle;
     if (!winst) {
         return BTA_StatusInvalidParameter;
     }
     if (registerCount) BTAinfoEventHelper(winst->infoEventInst, VERBOSE_READ_OP, BTA_StatusInformation, "BTAreadRegister call:  address 0x%04x  registerCount %d", address, *registerCount);
     else BTAinfoEventHelper(winst->infoEventInst, VERBOSE_READ_OP, BTA_StatusInformation, "BTAreadRegister call:  address 0x%04x", address);
     BTA_Status status = winst->readRegister(winst, address, data, registerCount);
-    if (status == BTA_StatusOk && winst->infoEventInst->verbosity >= VERBOSE_READ_OP) {
+    if (status == BTA_StatusOk && winst->infoEventInst && winst->infoEventInst->verbosity >= VERBOSE_READ_OP) {
         char *str = (char *)malloc(1024);
         if (!str) return BTA_StatusOutOfMemory;
         sprintf(str, "BTAreadRegister response:  address 0x%04x", address);
@@ -1401,16 +1495,17 @@ BTA_Status BTA_CALLCONV BTAreadRegister(BTA_Handle handle, uint32_t address, uin
         free(str);
         str = 0;
     }
+    else BTAinfoEventHelper(winst->infoEventInst, VERBOSE_READ_OP, status, "BTAreadRegister failed!");
     return status;
 }
 
 
 BTA_Status BTA_CALLCONV BTAwriteRegister(BTA_Handle handle, uint32_t address, uint32_t *data, uint32_t *registerCount) {
-    BTA_WrapperInst *winst = (BTA_WrapperInst*)handle;
+    BTA_WrapperInst *winst = (BTA_WrapperInst *)handle;
     if (!winst) {
         return BTA_StatusInvalidParameter;
     }
-    if (winst->infoEventInst->verbosity >= VERBOSE_WRITE_OP) {
+    if (winst->infoEventInst && winst->infoEventInst->verbosity >= VERBOSE_WRITE_OP) {
         char *str = (char *)malloc(1024);
         if (!str) return BTA_StatusOutOfMemory;
         sprintf(str, "BTAwriteRegister call:  address 0x%04x", address);
@@ -1431,12 +1526,15 @@ BTA_Status BTA_CALLCONV BTAwriteRegister(BTA_Handle handle, uint32_t address, ui
         free(str);
         str = 0;
     }
-    return winst->writeRegister(winst, address, data, registerCount);
+    BTA_Status status = winst->writeRegister(winst, address, data, registerCount);
+    if (status == BTA_StatusOk) BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WRITE_OP, BTA_StatusInformation, "BTAwriteRegister done");
+    else BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WRITE_OP, status, "BTAwriteRegister failed!");
+    return status;
 }
 
 
 BTA_Status BTA_CALLCONV BTAsetLibParam(BTA_Handle handle, BTA_LibParam libParam, float value) {
-    BTA_WrapperInst *winst = (BTA_WrapperInst*)handle;
+    BTA_WrapperInst *winst = (BTA_WrapperInst *)handle;
     if (!winst) {
         return BTA_StatusInvalidParameter;
     }
@@ -1446,52 +1544,49 @@ BTA_Status BTA_CALLCONV BTAsetLibParam(BTA_Handle handle, BTA_LibParam libParam,
     else {
         BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WRITE_OP, BTA_StatusInformation, "BTAsetLibParam call:  libParam %s (%d)  value %f", BTAlibParamToString(libParam), libParam, value);
     }
+    BTA_Status status = BTA_StatusOk;
     switch (libParam) {
     case BTA_LibParamInfoEventVerbosity:
         if (!winst->infoEventInst) {
-            return BTA_StatusRuntimeError;
+            status = BTA_StatusRuntimeError;
+            break;
         }
-        winst->infoEventInst->verbosity = (int)value;
-        return BTA_StatusOk;
-    case BTA_LibParamTestPatternEnabled:
-        winst->lpTestPatternEnabled = (uint16_t)value;
-        return BTA_StatusOk;
+        winst->infoEventInst->verbosity = (uint8_t)value;
+        break;
     case BTA_LibParamUndistortRgb:
-        if (!winst->undistortInst) {
-            return BTA_StatusRuntimeError;
-        }
-        winst->undistortInst->enabled = (uint8_t)(value != 0);
-        return BTA_StatusOk;
+        winst->lpUndistortRgbEnabled = (uint8_t)(value != 0);
+        break;
     case BTA_LibParamCalcXYZ:
-        if (!winst->calcXYZInst) {
-            return BTA_StatusRuntimeError;
-        }
-        winst->calcXYZInst->enabled = (uint8_t)(value != 0);
-        return BTA_StatusOk;
+        winst->lpCalcXyzEnabled = (uint8_t)(value != 0);
+        break;
     case BTA_LibParamOffsetForCalcXYZ:
-        if (!winst->calcXYZInst) {
-            return BTA_StatusRuntimeError;
-        }
-        winst->calcXYZInst->offset = value;
-        return BTA_StatusOk;
+        winst->lpCalcXyzOffset = value;
+        break;
     case BTA_LibParamBilateralFilterWindow: {
         uint8_t windowSize = (uint8_t)value;
         if (windowSize == 0 || (windowSize >= 3 && (windowSize % 2) == 1)) {
             winst->lpBilateralFilterWindow = windowSize;
-            return BTA_StatusOk;
+            break;
         }
-        return BTA_StatusInvalidParameter;
+        status = BTA_StatusInvalidParameter;
     }
+    case BTA_LibParamGenerateColorFromTof:
+        winst->lpColorFromTofEnabled = (uint8_t)(value != 0);
+        break;
     case BTA_LibParamEnableJpgDecoding:
 #       ifndef BTA_WO_LIBJPEG
-        return BTAjpgEnable(winst, (uint8_t)(value != 0));
+        winst->lpJpgDecodeEnabled = (uint8_t)(value != 0);
 #       else
-        return BTA_StatusNotSupported;
+        status = value ? BTA_StatusNotSupported : BTA_StatusOk;
 #       endif
+        break;
+    case BTA_LibParamBltstreamCompressionMode:
+        winst->grabInst->lpBltstreamCompressionMode = (BTA_CompressionMode)value;
+        break;
 
     case BTA_LibParamPauseCaptureThread:
-        winst->lpPauseCaptureThread = value > 0 ? 1 : 0;
-        return BTA_StatusOk;
+        winst->lpPauseCaptureThread = (uint8_t)(value != 0);
+        break;
 
 
     case BTA_LibParamDataStreamReadFailedCount:
@@ -1503,63 +1598,68 @@ BTA_Status BTA_CALLCONV BTAsetLibParam(BTA_Handle handle, BTA_LibParam libParam,
     case BTA_LibParamDataStreamFrameCounterGapsCount:
     case BTA_LibParamDataStreamFramesParsedCount:
     case BTA_LibParamDataStreamFramesParsedPerSec:
-        return BTA_StatusIllegalOperation;
+        status = BTA_StatusIllegalOperation;
+        break;
 
     case BTA_LibParamDataStreamFrameCounterGap:
         winst->lpDataStreamFrameCounterGap = value;
-        return BTA_StatusOk;
+        break;
 
     case BTA_LIBParamDataStreamAllowIncompleteFrames:
         winst->lpAllowIncompleteFrames = value < 1.0f ? 0.0f : 1.0f;
-        return BTA_StatusOk;
+        break;
 
     case BTA_LibParamDebugFlags01:
         winst->lpDebugFlags01 = (uint32_t)value;
-        return BTA_StatusOk;
+        break;
     case BTA_LibParamDebugValue01:
         winst->lpDebugValue01 = value;
-        return BTA_StatusOk;
+        break;
     case BTA_LibParamDebugValue02:
         winst->lpDebugValue02 = value;
-        return BTA_StatusOk;
+        break;
     case BTA_LibParamDebugValue03:
         winst->lpDebugValue03 = value;
-        return BTA_StatusOk;
+        break;
     case BTA_LibParamDebugValue04:
         winst->lpDebugValue04 = value;
-        return BTA_StatusOk;
+        break;
     case BTA_LibParamDebugValue05:
         winst->lpDebugValue05 = value;
-        return BTA_StatusOk;
+        break;
     case BTA_LibParamDebugValue06:
         winst->lpDebugValue06 = value;
-        return BTA_StatusOk;
+        break;
     case BTA_LibParamDebugValue07:
         winst->lpDebugValue07 = value;
-        return BTA_StatusOk;
+        break;
     case BTA_LibParamDebugValue08:
         winst->lpDebugValue08 = value;
-        return BTA_StatusOk;
+        break;
     case BTA_LibParamDebugValue09:
         winst->lpDebugValue09 = value;
-        return BTA_StatusOk;
+        break;
     case BTA_LibParamDebugValue10:
         winst->lpDebugValue10 = value;
-        return BTA_StatusOk;
+        break;
 
     default:
-        return winst->setLibParam(winst, libParam, value);
+        status = winst->setLibParam(winst, libParam, value);
+        break;
     }
+    if (status == BTA_StatusOk) BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WRITE_OP, BTA_StatusInformation, "BTAsetLibParam done");
+    else BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WRITE_OP, status, "BTAsetLibParam failed!");
+    return status;
 }
 
 
 BTA_Status BTA_CALLCONV BTAgetLibParam(BTA_Handle handle, BTA_LibParam libParam, float *value) {
-    BTA_WrapperInst *winst = (BTA_WrapperInst*)handle;
+    BTA_WrapperInst *winst = (BTA_WrapperInst *)handle;
     if (!winst || !value) {
         return BTA_StatusInvalidParameter;
     }
     BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WRITE_OP, BTA_StatusInformation, "BTAgetLibParam call:  libParam %d (%s)", libParam, BTAlibParamToString(libParam));
-    BTA_Status status;
+    BTA_Status status = BTA_StatusOk;
     switch (libParam) {
     case BTA_LibParamInfoEventVerbosity:
         if (!winst->infoEventInst) {
@@ -1568,103 +1668,76 @@ BTA_Status BTA_CALLCONV BTAgetLibParam(BTA_Handle handle, BTA_LibParam libParam,
         else {
             *value = (float)winst->infoEventInst->verbosity;
         }
-        status = BTA_StatusOk;
-        break;
-    case BTA_LibParamTestPatternEnabled:
-        *value = winst->lpTestPatternEnabled;
-        status = BTA_StatusOk;
         break;
     case BTA_LibParamUndistortRgb:
-        *value = winst->undistortInst ? (float)winst->undistortInst->enabled : 0;
-        status = BTA_StatusOk;
+        *value = (float)winst->lpUndistortRgbEnabled;
         break;
     case BTA_LibParamCalcXYZ:
-        *value = winst->calcXYZInst ? (float)winst->calcXYZInst->enabled : 0;
-        status = BTA_StatusOk;
+        *value = (float)winst->lpCalcXyzEnabled;
         break;
     case BTA_LibParamOffsetForCalcXYZ:
-        *value = winst->calcXYZInst ? winst->calcXYZInst->offset : 0;
-        status = BTA_StatusOk;
+        *value = winst->lpCalcXyzOffset;
         break;
     case BTA_LibParamBilateralFilterWindow:
-        *value = winst->lpBilateralFilterWindow;
-        status = BTA_StatusOk;
+        *value = (float)winst->lpBilateralFilterWindow;
         break;
-    case BTA_LibParamEnableJpgDecoding: {
-#       ifndef BTA_WO_LIBJPEG
-        uint8_t enabled;
-        status = BTAjpgIsEnabled(winst, &enabled);
-        if (status == BTA_StatusOk) {
-            *value = enabled;
-        }
-#       else
-        *value = 0;
-        status = BTA_StatusOk;
-#       endif
+    case BTA_LibParamGenerateColorFromTof:
+        *value = (float)winst->lpColorFromTofEnabled;
         break;
-    }
+    case BTA_LibParamEnableJpgDecoding:
+        *value = (float)winst->lpJpgDecodeEnabled;
+        break;
+    case BTA_LibParamBltstreamCompressionMode:
+        *value = (float)winst->grabInst->lpBltstreamCompressionMode;
+        break;
 
     case BTA_LibParamPauseCaptureThread:
         *value = (float)winst->lpPauseCaptureThread;
-        status = BTA_StatusOk;
         break;
 
 
     case BTA_LibParamDataStreamReadFailedCount:
         *value = winst->lpDataStreamReadFailedCount;
         winst->lpDataStreamReadFailedCount = 0;
-        status = BTA_StatusOk;
         break;
     case BTA_LibParamDataStreamBytesReceivedCount:
         *value = winst->lpDataStreamBytesReceivedCount;
         winst->lpDataStreamBytesReceivedCount = 0;
-        status = BTA_StatusOk;
         break;
     case BTA_LibParamDataStreamPacketsReceivedCount:
         *value = winst->lpDataStreamPacketsReceivedCount;
         winst->lpDataStreamPacketsReceivedCount = 0;
-        status = BTA_StatusOk;
         break;
     case BTA_LibParamDataStreamPacketsMissedCount:
         *value = winst->lpDataStreamPacketsMissedCount;
         winst->lpDataStreamPacketsMissedCount = 0;
-        status = BTA_StatusOk;
         break;
     case BTA_LibParamDataStreamPacketsToParse:
         *value = winst->lpDataStreamPacketsToParse;
         winst->lpDataStreamPacketsToParse = 0;
-        status = BTA_StatusOk;
         break;
     case BTA_LibParamDataStreamParseFrameDuration:
         *value = winst->lpDataStreamParseFrameDuration;
         winst->lpDataStreamParseFrameDuration = 0;
-        status = BTA_StatusOk;
         break;
     case BTA_LibParamDataStreamFrameCounterGapsCount:
         *value = winst->lpDataStreamFrameCounterGapsCount;
-        status = BTA_StatusOk;
         break;
     case BTA_LibParamDataStreamFrameCounterGap:
         *value = winst->lpDataStreamFrameCounterGap;
-        status = BTA_StatusOk;
         break;
     case BTA_LibParamDataStreamFramesParsedCount:
         *value = winst->lpDataStreamFramesParsedCount;
         winst->lpDataStreamFramesParsedCount = 0;
-        status = BTA_StatusOk;
         break;
     case BTA_LibParamDataStreamFramesParsedPerSec: {
         void **list;
         uint32_t listLen;
-        uint32_t microsSum = 0;
+        uint64_t microsSum = 0;
         uint32_t count = 0;
         BVQgetList(winst->lpDataStreamFramesParsedPerSecFrametimes, &list, &listLen);
         for (uint32_t i = 0; i < listLen; i++) {
-#           if defined(PLAT_WINDOWS)
-                microsSum += (uint32_t)(uint64_t)list[i];
-#           else
-                microsSum += (uint64_t)list[i];
-#           endif
+            microsSum += (uint64_t)(size_t)list[i];
             count++;
             if (microsSum > 1500) {
                 break;
@@ -1674,11 +1747,10 @@ BTA_Status BTA_CALLCONV BTAgetLibParam(BTA_Handle handle, BTA_LibParam libParam,
         list = 0;
         if (microsSum == 0 || count == 0) {
             *value = 0;
-            status = BTA_StatusOk;
             break;
         }
         float microsAverage = (float)microsSum / count;
-        uint32_t millisPassed = (uint32_t)(BTAgetTickCount() - winst->lpDataStreamFramesParsedPerSecUpdated);
+        uint64_t millisPassed = (uint64_t)(BTAgetTickCount64() - winst->lpDataStreamFramesParsedPerSecUpdated);
         if (millisPassed > 5000) {
             // not updated in 5 seconds
             *value = 0;
@@ -1690,63 +1762,50 @@ BTA_Status BTA_CALLCONV BTAgetLibParam(BTA_Handle handle, BTA_LibParam libParam,
         else {
             *value = (int)(10000000.0f / microsAverage) / 10.0f;
         }
-        status = BTA_StatusOk;
         break;
     }
 
     case BTA_LIBParamDataStreamAllowIncompleteFrames:
         *value = winst->lpAllowIncompleteFrames;
-        status = BTA_StatusOk;
         break;
     case BTA_LibParamDebugFlags01:
         *value = (float)winst->lpDebugFlags01;
-        status = BTA_StatusOk;
         break;
     case BTA_LibParamDebugValue01:
         *value = (float)winst->lpDebugValue01;
-        status = BTA_StatusOk;
         break;
     case BTA_LibParamDebugValue02:
         *value = (float)winst->lpDebugValue02;
-        status = BTA_StatusOk;
         break;
     case BTA_LibParamDebugValue03:
         *value = (float)winst->lpDebugValue03;
-        status = BTA_StatusOk;
         break;
     case BTA_LibParamDebugValue04:
         *value = (float)winst->lpDebugValue04;
         winst->lpDebugValue04 = 0;
-        status = BTA_StatusOk;
         break;
     case BTA_LibParamDebugValue05:
         *value = (float)winst->lpDebugValue05;
-        status = BTA_StatusOk;
         break;
     case BTA_LibParamDebugValue06:
         *value = (float)winst->lpDebugValue06;
         winst->lpDebugValue06 = 0;
-        status = BTA_StatusOk;
         break;
     case BTA_LibParamDebugValue07:
         *value = (float)winst->lpDebugValue07;
         winst->lpDebugValue07 = 0;
-        status = BTA_StatusOk;
         break;
     case BTA_LibParamDebugValue08:
         *value = (float)winst->lpDebugValue08;
         winst->lpDebugValue08 = 0;
-        status = BTA_StatusOk;
         break;
     case BTA_LibParamDebugValue09:
         *value = (float)winst->lpDebugValue09;
         winst->lpDebugValue09 = 0;
-        status = BTA_StatusOk;
         break;
     case BTA_LibParamDebugValue10:
         *value = (float)winst->lpDebugValue10;
         winst->lpDebugValue10 = 0;
-        status = BTA_StatusOk;
         break;
 
     default:
@@ -1754,19 +1813,23 @@ BTA_Status BTA_CALLCONV BTAgetLibParam(BTA_Handle handle, BTA_LibParam libParam,
         break;
     }
     if (status == BTA_StatusOk) BTAinfoEventHelper(winst->infoEventInst, VERBOSE_READ_OP, BTA_StatusInformation, "BTAgetLibParam response:  value %f", *value);
+    else BTAinfoEventHelper(winst->infoEventInst, VERBOSE_READ_OP, status, "BTAgetLibParam failed!");
     return status;
 }
 
 
 BTA_Status BTA_CALLCONV BTAsendReset(BTA_Handle handle) {
-    BTA_WrapperInst *winst = (BTA_WrapperInst*)handle;
+    BTA_WrapperInst *winst = (BTA_WrapperInst *)handle;
     if (!winst) {
         return BTA_StatusInvalidParameter;
     }
-    if (winst->infoEventInst->verbosity >= VERBOSE_WRITE_OP) {
+    if (winst->infoEventInst && winst->infoEventInst->verbosity >= VERBOSE_WRITE_OP) {
         BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WRITE_OP, BTA_StatusInformation, "BTAsendReset call");
     }
-    return winst->sendReset(winst);
+    BTA_Status status = winst->sendReset(winst);
+    if (status == BTA_StatusOk) BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WRITE_OP, BTA_StatusInformation, "BTAsendReset done");
+    else BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WRITE_OP, status, "BTAsendReset failed!");
+    return status;
 }
 
 
@@ -1780,26 +1843,36 @@ BTA_Status BTA_CALLCONV BTAinitFlashUpdateConfig(BTA_FlashUpdateConfig *config) 
 
 
 BTA_Status BTA_CALLCONV BTAflashUpdate(BTA_Handle handle, BTA_FlashUpdateConfig *flashUpdateConfig, FN_BTA_ProgressReport progressReport) {
-    BTA_WrapperInst *winst = (BTA_WrapperInst*)handle;
+    BTA_WrapperInst *winst = (BTA_WrapperInst *)handle;
     if (!winst || !flashUpdateConfig) {
         return BTA_StatusInvalidParameter;
     }
     BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WRITE_OP, BTA_StatusInformation, "BTAflashUpdate call:  target %d  flashId %d  address 0x%x  data 0x%p  dataLen %d",
                        flashUpdateConfig->target, flashUpdateConfig->flashId, flashUpdateConfig->address, flashUpdateConfig->data, flashUpdateConfig->dataLen);
-    return winst->flashUpdate(winst, flashUpdateConfig, progressReport);
+    BTA_Status status = winst->flashUpdate(winst, flashUpdateConfig, progressReport);
+    if (status == BTA_StatusOk) BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WRITE_OP, BTA_StatusInformation, "BTAflashUpdate done");
+    else BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WRITE_OP, status, "BTAflashUpdate failed!");
+    return status;
 }
 
 
-BTA_Status BTA_CALLCONV BTAgetLensParameters(BTA_Handle handle, BTA_IntrinsicData *intData, uint32_t *intDataLen, BTA_ExtrinsicData *extData, uint32_t *extDataLen) {
-    BTA_WrapperInst *winst = (BTA_WrapperInst*)handle;
+BTA_Status BTA_CALLCONV BTAgetLensParameters(BTA_Handle handle, BTA_IntrinsicData *intrinsicData, uint32_t *intrinsicDataLen, BTA_ExtrinsicData *extrinsicData, uint32_t *extrinsicDataLen) {
+    BTA_WrapperInst *winst = (BTA_WrapperInst *)handle;
     if (!winst) {
         return BTA_StatusInvalidParameter;
     }
-    if (intData && intDataLen) {
-        memset(intData, 0, *intDataLen * sizeof(BTA_IntrinsicData));
+    if (!intrinsicData == !!intrinsicDataLen) {  // checks if both or none are given
+        return BTA_StatusInvalidParameter;
     }
-    if (extData && extDataLen) {
-        memset(extData, 0, *extDataLen * sizeof(BTA_ExtrinsicData));
+    if (!extrinsicData == !!extrinsicDataLen) {  // checks if both or none are given
+        return BTA_StatusInvalidParameter;
+    }
+    BTAinfoEventHelper(winst->infoEventInst, VERBOSE_READ_OP, BTA_StatusInformation, "BTAgetLensParameters call");
+    if (intrinsicData && intrinsicDataLen) {
+        memset(intrinsicData, 0, *intrinsicDataLen * sizeof(BTA_IntrinsicData));
+    }
+    if (extrinsicData && extrinsicDataLen) {
+        memset(extrinsicData, 0, *extrinsicDataLen * sizeof(BTA_ExtrinsicData));
     }
 
     BTA_IntrinsicData **intDataTemp = 0;
@@ -1807,79 +1880,135 @@ BTA_Status BTA_CALLCONV BTAgetLensParameters(BTA_Handle handle, BTA_IntrinsicDat
     BTA_ExtrinsicData **extDataTemp = 0;
     uint16_t extDataLenTemp = 0;
     BTA_Status status = BTAreadGeomModelFromFlash(winst, &intDataTemp, &intDataLenTemp, &extDataTemp, &extDataLenTemp, 0);
-    if (status != BTA_StatusOk) {
-        *intDataLen = 0;
-        *extDataLen = 0;
-        return status;
-    }
-
-    if (intData && intDataLen) {
-        if (*intDataLen < intDataLenTemp) {
-            BTAfreeIntrinsicData(&intDataTemp, intDataLenTemp);
-            BTAfreeExtrinsicData(&extDataTemp, extDataLenTemp);
-            return BTA_StatusOutOfMemory;
-        }
-        *intDataLen = intDataLenTemp;
-        for (int i = 0; i < intDataLenTemp; i++) {
-            if (intDataTemp[i]) {
-                memcpy(&(intData[i]), intDataTemp[i], sizeof(BTA_IntrinsicData));
+    if (status == BTA_StatusOk) {
+        if (intrinsicData && intrinsicDataLen) {
+            if (*intrinsicDataLen < intDataLenTemp) {
+                BTAfreeIntrinsicData(&intDataTemp, intDataLenTemp);
+                BTAfreeExtrinsicData(&extDataTemp, extDataLenTemp);
+                BTAinfoEventHelper(winst->infoEventInst, VERBOSE_READ_OP, BTA_StatusInformation, "BTAgetLensParameters failed:  Not enough spcae for %d intrinsic calibrations", intDataLenTemp);
+                return BTA_StatusOutOfMemory;
             }
-            else
-            {
-                memset(&(intData[i]), 0, sizeof(BTA_IntrinsicData));
+            *intrinsicDataLen = intDataLenTemp;
+            for (int i = 0; i < intDataLenTemp; i++) {
+                if (intDataTemp[i]) {
+                    memcpy(&(intrinsicData[i]), intDataTemp[i], sizeof(BTA_IntrinsicData));
+                }
+                else
+                {
+                    memset(&(intrinsicData[i]), 0, sizeof(BTA_IntrinsicData));
+                }
+            }
+        }
+        if (extrinsicData && extrinsicDataLen) {
+            if (*extrinsicDataLen < extDataLenTemp) {
+                BTAfreeIntrinsicData(&intDataTemp, intDataLenTemp);
+                BTAfreeExtrinsicData(&extDataTemp, extDataLenTemp);
+                BTAinfoEventHelper(winst->infoEventInst, VERBOSE_READ_OP, BTA_StatusInformation, "BTAgetLensParameters failed:  Not enough spcae for %d extrinsic calibrations", extDataLenTemp);
+                return BTA_StatusOutOfMemory;
+            }
+            *extrinsicDataLen = extDataLenTemp;
+            for (int i = 0; i < extDataLenTemp; i++) {
+                if (extDataTemp[i]) {
+                    memcpy(&(extrinsicData[i]), extDataTemp[i], sizeof(BTA_ExtrinsicData));
+                }
+                else
+                {
+                    memset(&(extrinsicData[i]), 0, sizeof(BTA_ExtrinsicData));
+                }
             }
         }
         BTAfreeIntrinsicData(&intDataTemp, intDataLenTemp);
-    }
-    if (extData && extDataLen) {
-        if (*extDataLen < extDataLenTemp) {
-            BTAfreeExtrinsicData(&extDataTemp, extDataLenTemp);
-            return BTA_StatusOutOfMemory;
-        }
-        *extDataLen = extDataLenTemp;
-        for (int i = 0; i < extDataLenTemp; i++) {
-            if (extDataTemp[i]) {
-                memcpy(&(extData[i]), extDataTemp[i], sizeof(BTA_ExtrinsicData));
-            }
-            else
-            {
-                memset(&(extData[i]), 0, sizeof(BTA_ExtrinsicData));
-            }
-        }
         BTAfreeExtrinsicData(&extDataTemp, extDataLenTemp);
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_READ_OP, BTA_StatusInformation, "BTAgetLensParameters response:  %d intrinsic and %d extrinsic calibrations", intDataLenTemp, extDataLenTemp);
     }
+    else {
+        if (intrinsicDataLen) *intrinsicDataLen = 0;
+        if (extrinsicDataLen) *extrinsicDataLen = 0;
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_READ_OP, status, "BTAgetLensParameters failed!");
+    }
+    return status;
+}
+
+
+BTA_Status BTA_CALLCONV BTAgetLensVectors(BTA_Handle handle, BTA_LensVectors **lensVectorsList, uint16_t *lensVectorsListLen) {
+    if (!handle || !lensVectorsList || !lensVectorsListLen) {
+        return BTA_StatusInvalidParameter;
+    }
+    memset(lensVectorsList, 0, *lensVectorsListLen * sizeof(BTA_LensVectors *));
+    BTA_WrapperInst *winst = (BTA_WrapperInst *)handle;
+
+    BTAinfoEventHelper(winst->infoEventInst, VERBOSE_READ_OP, BTA_StatusInformation, "BTAgetLensVectors call");
+    BTA_FlashUpdateConfig flashUpdateConfig;
+    BTAinitFlashUpdateConfig(&flashUpdateConfig);
+    flashUpdateConfig.target = BTA_FlashTargetLensCalibration;
+    BTA_LensVectors *vectors = 0;
+    BTA_Status status = BTAflashRead(winst, &flashUpdateConfig, 0);
+    if (status != BTA_StatusOk) {
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_READ_OP, status, "BTAgetLensVectors failed!");
+        return status;
+    }
+    status = BTAparseLenscalib(flashUpdateConfig.data, flashUpdateConfig.dataLen, &vectors, winst->infoEventInst);
+    free(flashUpdateConfig.data);
+    if (status != BTA_StatusOk) {
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_READ_OP, status, "BTAgetLensVectors failed!");
+        return status;
+    }
+    lensVectorsList[0] = vectors;
+    *lensVectorsListLen = 1;
+    BTAinfoEventHelper(winst->infoEventInst, VERBOSE_READ_OP, BTA_StatusInformation, "BTAgetLensVectors response:  Read %d lens vector sets", *lensVectorsListLen);
     return BTA_StatusOk;
 }
 
 
+void BTA_CALLCONV BTAfreeLensVectors(BTA_LensVectors *lensVectors) {
+    free(lensVectors->vectorsX);
+    lensVectors->vectorsX = 0;
+    free(lensVectors->vectorsY);
+    lensVectors->vectorsY = 0;
+    free(lensVectors->vectorsZ);
+    lensVectors->vectorsZ = 0;
+    free(lensVectors);
+    lensVectors = 0;
+}
+
+
 BTA_Status BTA_CALLCONV BTAflashRead(BTA_Handle handle, BTA_FlashUpdateConfig *flashUpdateConfig, FN_BTA_ProgressReport progressReport) {
-    BTA_WrapperInst *winst = (BTA_WrapperInst*)handle;
+    BTA_WrapperInst *winst = (BTA_WrapperInst *)handle;
     if (!winst || !flashUpdateConfig) {
         return BTA_StatusInvalidParameter;
     }
     BTAinfoEventHelper(winst->infoEventInst, VERBOSE_READ_OP, BTA_StatusInformation, "BTAflashRead call:  target %d  flashId %d  address 0x%x  data 0x%p  dataLen %d",
                        100 + flashUpdateConfig->target, flashUpdateConfig->flashId, flashUpdateConfig->address, flashUpdateConfig->data, flashUpdateConfig->dataLen);
-    return winst->flashRead(winst, flashUpdateConfig, progressReport, 0);
+    BTA_Status status = winst->flashRead(winst, flashUpdateConfig, progressReport, 0);
+    if (status == BTA_StatusOk) BTAinfoEventHelper(winst->infoEventInst, VERBOSE_READ_OP, BTA_StatusInformation, "BTAflashRead done");
+    else BTAinfoEventHelper(winst->infoEventInst, VERBOSE_READ_OP, status, "BTAflashRead failed!");
+    return status;
 }
 
 
 BTA_Status BTA_CALLCONV BTAwriteCurrentConfigToNvm(BTA_Handle handle) {
-    BTA_WrapperInst *winst = (BTA_WrapperInst*)handle;
+    BTA_WrapperInst *winst = (BTA_WrapperInst *)handle;
     if (!winst) {
         return BTA_StatusInvalidParameter;
     }
     BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WRITE_OP, BTA_StatusInformation, "BTAwriteCurrentConfigToNvm call");
-    return winst->writeCurrentConfigToNvm(winst);
+    BTA_Status status = winst->writeCurrentConfigToNvm(winst);
+    if (status == BTA_StatusOk) BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WRITE_OP, BTA_StatusInformation, "BTAwriteCurrentConfigToNvm done");
+    else BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WRITE_OP, status, "BTAwriteCurrentConfigToNvm failed!");
+    return status;
 }
 
 
 BTA_Status BTA_CALLCONV BTArestoreDefaultConfig(BTA_Handle handle) {
-    BTA_WrapperInst *winst = (BTA_WrapperInst*)handle;
+    BTA_WrapperInst *winst = (BTA_WrapperInst *)handle;
     if (!winst) {
         return BTA_StatusInvalidParameter;
     }
     BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WRITE_OP, BTA_StatusInformation, "BTArestoreDefaultConfig call");
-    return winst->restoreDefaultConfig(winst);
+    BTA_Status status = winst->restoreDefaultConfig(winst);
+    if (status == BTA_StatusOk) BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WRITE_OP, BTA_StatusInformation, "BTArestoreDefaultConfig done");
+    else BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WRITE_OP, status, "BTArestoreDefaultConfig failed!");
+    return status;
 }
 
 
@@ -1888,19 +2017,14 @@ BTA_Status BTA_CALLCONV BTAstartGrabbing(BTA_Handle handle, BTA_GrabbingConfig *
     if (!winst) {
         return BTA_StatusInvalidParameter;
     }
-    if (config) BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WRITE_OP, BTA_StatusInformation, "BTAstartGrabbing call  filename %s", config->filename);
-    else BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WRITE_OP, BTA_StatusInformation, "BTAstartGrabbing call  grabbingConfig null");
+    if (config) BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WRITE_OP, BTA_StatusInformation, "BTAstartGrabbing call:  filename %s", config->filename);
+    else BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WRITE_OP, BTA_StatusInformation, "BTAstartGrabbing call:  grabbingConfig null");
 
     if (!config) {
         // == stopGrabbing
-        BTA_GrabInst *instTemp = winst->grabInst;
-        // had problems, so try to set it null immediately
-        winst->grabInst = 0;
-        return BGRBclose(&instTemp);
+        return BGRBstop(winst->grabInst);
     }
 
-    uint8_t libNameVer[70];
-    sprintf((char *)libNameVer, "BltTofApiLib v%d.%d.%d", BTA_VER_MAJ, BTA_VER_MIN, BTA_VER_NON_FUNC);
     BTA_DeviceInfo *deviceInfo;
     BTA_Status status = winst->getDeviceInfo(winst, &deviceInfo);
     if (status != BTA_StatusOk) {
@@ -1910,11 +2034,10 @@ BTA_Status BTA_CALLCONV BTAstartGrabbing(BTA_Handle handle, BTA_GrabbingConfig *
             return BTA_StatusOutOfMemory;
         }
     }
-    BTA_GrabInst *instPtr = 0;
-    status = BGRBinit(config, libNameVer, deviceInfo, &instPtr, winst->infoEventInst);
-    // When completely initialized, apply the instance globally
-    winst->grabInst = instPtr;
+    status = BGRBstart(winst->grabInst, config, deviceInfo);
     BTAfreeDeviceInfo(deviceInfo);
+    if (status == BTA_StatusOk) BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WRITE_OP, BTA_StatusInformation, "BTAstartGrabbing done");
+    else BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WRITE_OP, status, "BTAstartGrabbing failed!");
     return status;
 }
 
@@ -1924,8 +2047,11 @@ BTA_Status BTA_CALLCONV BTAfirmwareUpdate(BTA_Handle handle, const uint8_t *file
     if (!winst) {
         return BTA_StatusInvalidParameter;
     }
-    BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WRITE_OP, BTA_StatusInformation, "BTAfirmwareUpdate call  filename %s  progressReport 0x%p", filename, (void *)progressReport);
-    return flashUpdate(winst, filename, progressReport, BTA_FlashTargetApplication);
+    BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WRITE_OP, BTA_StatusInformation, "BTAfirmwareUpdate call:  filename %s  progressReport 0x%p", filename, (void *)progressReport);
+    BTA_Status status = flashUpdate(winst, filename, progressReport, BTA_FlashTargetApplication);
+    if (status == BTA_StatusOk) BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WRITE_OP, BTA_StatusInformation, "BTAfirmwareUpdate done");
+    else BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WRITE_OP, status, "BTAfirmwareUpdate failed!");
+    return status;
 }
 
 BTA_Status BTA_CALLCONV BTAfpnUpdate(BTA_Handle handle, const uint8_t *filename, FN_BTA_ProgressReport progressReport) {
@@ -1933,8 +2059,11 @@ BTA_Status BTA_CALLCONV BTAfpnUpdate(BTA_Handle handle, const uint8_t *filename,
     if (!winst) {
         return BTA_StatusInvalidParameter;
     }
-    BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WRITE_OP, BTA_StatusInformation, "BTAfpnUpdate call  filename %s  progressReport 0x%p", filename, (void *)progressReport);
-    return flashUpdate(winst, filename, progressReport, BTA_FlashTargetFpn);
+    BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WRITE_OP, BTA_StatusInformation, "BTAfpnUpdate call:  filename %s  progressReport 0x%p", filename, (void *)progressReport);
+    BTA_Status status = flashUpdate(winst, filename, progressReport, BTA_FlashTargetFpn);
+    if (status == BTA_StatusOk) BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WRITE_OP, BTA_StatusInformation, "BTAfpnUpdate done");
+    else BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WRITE_OP, status, "BTAfpnUpdate failed!");
+    return status;
 }
 
 BTA_Status BTA_CALLCONV BTAfppnUpdate(BTA_Handle handle, const uint8_t *filename, FN_BTA_ProgressReport progressReport) {
@@ -1942,8 +2071,11 @@ BTA_Status BTA_CALLCONV BTAfppnUpdate(BTA_Handle handle, const uint8_t *filename
     if (!winst) {
         return BTA_StatusInvalidParameter;
     }
-    BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WRITE_OP, BTA_StatusInformation, "BTAfppnUpdate call  filename %s  progressReport 0x%p", filename, (void *)progressReport);
-    return flashUpdate(winst, filename, progressReport, BTA_FlashTargetFppn);
+    BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WRITE_OP, BTA_StatusInformation, "BTAfppnUpdate call:  filename %s  progressReport 0x%p", filename, (void *)progressReport);
+    BTA_Status status = flashUpdate(winst, filename, progressReport, BTA_FlashTargetFppn);
+    if (status == BTA_StatusOk) BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WRITE_OP, BTA_StatusInformation, "BTAfppnUpdate done");
+    else BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WRITE_OP, status, "BTAfppnUpdate failed!");
+    return status;
 }
 
 BTA_Status BTA_CALLCONV BTAwigglingUpdate(BTA_Handle handle, const uint8_t *filename, FN_BTA_ProgressReport progressReport) {
@@ -1951,9 +2083,154 @@ BTA_Status BTA_CALLCONV BTAwigglingUpdate(BTA_Handle handle, const uint8_t *file
     if (!winst) {
         return BTA_StatusInvalidParameter;
     }
-    BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WRITE_OP, BTA_StatusInformation, "BTAwigglingUpdate call  filename %s  progressReport 0x%p", filename, (void *)progressReport);
-    return flashUpdate(winst, filename, progressReport, BTA_FlashTargetWigglingCalibration);
+    BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WRITE_OP, BTA_StatusInformation, "BTAwigglingUpdate call:  filename %s  progressReport 0x%p", filename, (void *)progressReport);
+    BTA_Status status = flashUpdate(winst, filename, progressReport, BTA_FlashTargetWigglingCalibration);
+    if (status == BTA_StatusOk) BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WRITE_OP, BTA_StatusInformation, "BTAwigglingUpdate done");
+    else BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WRITE_OP, status, "BTAwigglingUpdate failed!");
+    return status;
 }
+
+
+BTA_Status BTA_CALLCONV BTAgetValidModulationFrequencies(BTA_Handle handle, const uint32_t **modulationFrequencies, int32_t *modulationFrequenciesCount) {
+    BTA_Status status;
+    BTA_WrapperInst *winst = (BTA_WrapperInst *)handle;
+    if (!winst) {
+        return BTA_StatusInvalidParameter;
+    }
+    if (!modulationFrequencies || !modulationFrequenciesCount) {
+        return BTA_StatusInvalidParameter;
+    }
+    BTAinfoEventHelper(winst->infoEventInst, VERBOSE_READ_OP, BTA_StatusInformation, "BTAgetValidModulationFrequencies call:  modulationFrequencies 0x%p  modulationFrequenciesCount %d", modulationFrequencies, modulationFrequenciesCount);
+
+    if (winst->modFreqsReadFromDevice > -3 && winst->modFreqsReadFromDevice <= 0) {
+        // try to read registers that specify supported modulation frequencies
+        uint32_t dataLen = sizeof(winst->modFreqs) / sizeof(uint32_t);
+        status = BTAreadRegister(handle, 0x700, (uint32_t *)winst->modFreqs, &dataLen);
+        if (status == BTA_StatusOk) {
+            // remove empty items from tail of list
+            while (dataLen >= 0 && !winst->modFreqs[dataLen - 1]) {
+                dataLen--;
+            }
+            for (uint32_t i = 0; i < dataLen; i++) {
+                winst->modFreqs[i] *= 10000;
+            }
+            if (dataLen) {
+                winst->modFreqsReadFromDevice = dataLen;
+            }
+            else {
+                // We read the registers, but all of them are 0. no retry
+                winst->modFreqsReadFromDevice = -3;
+            }
+        }
+        else if (status == BTA_StatusInvalidParameter) {
+            // We couldn't read the registers, unsupported
+            winst->modFreqsReadFromDevice = -4;
+        }
+        else {
+            // We couldn't read the registers, error, ..retry
+            winst->modFreqsReadFromDevice--;
+        }
+    }
+    if (winst->modFreqsReadFromDevice > 0) {
+        *modulationFrequencies = winst->modFreqs;
+        *modulationFrequenciesCount = winst->modFreqsReadFromDevice;
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_READ_OP, BTA_StatusInformation, "BTAgetValidModulationFrequencies response:  modulationFrequenciesCount %d", *modulationFrequenciesCount);
+        return BTA_StatusOk;
+    }
+    BTA_DeviceType deviceType;
+    status = BTAgetDeviceType(handle, &deviceType);
+    if (status != BTA_StatusOk) {
+        *modulationFrequencies = 0;
+        *modulationFrequenciesCount = 0;
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_READ_OP, status, "BTAgetValidModulationFrequencies failed! (when reading device type for fallback)");
+        return status;
+    }
+    // fallback: use compiled values
+    switch ((int)deviceType) {
+    case Argos3dP33x:                *modulationFrequencies = modFreqs_05; *modulationFrequenciesCount = sizeof(modFreqs_05); break;
+    case Mlx75123ValidationPlatform: *modulationFrequencies = modFreqs_04; *modulationFrequenciesCount = sizeof(modFreqs_04); break;
+    case Evk7512x:                   *modulationFrequencies = modFreqs_04; *modulationFrequenciesCount = sizeof(modFreqs_04); break;
+    case Evk75027:                   *modulationFrequencies = 0;           *modulationFrequenciesCount = 0;                   break;
+    case Evk7512xTofCcBa:            *modulationFrequencies = modFreqs_04; *modulationFrequenciesCount = sizeof(modFreqs_04); break;
+    case Argos3dP320S:               *modulationFrequencies = modFreqs_01; *modulationFrequenciesCount = sizeof(modFreqs_01); break;
+    case GrabberBoard:           *modulationFrequencies = modFreqs_01; *modulationFrequenciesCount = sizeof(modFreqs_01); break;
+    case Sentis3dP509:               *modulationFrequencies = modFreqs_01; *modulationFrequenciesCount = sizeof(modFreqs_01); break;
+    case LimTesterV2:                *modulationFrequencies = modFreqs_06; *modulationFrequenciesCount = sizeof(modFreqs_06); break;
+    case Sentis3dM520:               *modulationFrequencies = modFreqs_01; *modulationFrequenciesCount = sizeof(modFreqs_01); break;
+    case Sentis3dM530:               *modulationFrequencies = modFreqs_05; *modulationFrequenciesCount = sizeof(modFreqs_05); break;
+    case TimUpIrs1125:               *modulationFrequencies = modFreqs_08; *modulationFrequenciesCount = sizeof(modFreqs_08); break;
+    case TimUpIrs1125Ffc:            *modulationFrequencies = modFreqs_10; *modulationFrequenciesCount = sizeof(modFreqs_10); break;
+    case Mlx75023TofEval:            *modulationFrequencies = modFreqs_03; *modulationFrequenciesCount = sizeof(modFreqs_03); break;
+    case TimUp19kS3Eth:              *modulationFrequencies = modFreqs_02; *modulationFrequenciesCount = sizeof(modFreqs_02); break;
+    case Epc610TofModule:            *modulationFrequencies = modFreqs_06; *modulationFrequenciesCount = sizeof(modFreqs_06); break;
+    case Argos3dP310:                *modulationFrequencies = modFreqs_01; *modulationFrequenciesCount = sizeof(modFreqs_01); break;
+    case Sentis3dM100:               *modulationFrequencies = modFreqs_01; *modulationFrequenciesCount = sizeof(modFreqs_01); break;
+    case Argos3dP32x:                *modulationFrequencies = modFreqs_01; *modulationFrequenciesCount = sizeof(modFreqs_01); break;
+    case Argos3dP321:                *modulationFrequencies = modFreqs_01; *modulationFrequenciesCount = sizeof(modFreqs_01); break;
+    case Sentis3dP509Irs1020:        *modulationFrequencies = modFreqs_05; *modulationFrequenciesCount = sizeof(modFreqs_05); break;
+    case Argos3dP510Skt:             *modulationFrequencies = modFreqs_01; *modulationFrequenciesCount = sizeof(modFreqs_01); break;
+    case TimUp19kS3EthP:             *modulationFrequencies = modFreqs_02; *modulationFrequenciesCount = sizeof(modFreqs_02); break;
+    case MultiTofPlatformMlx:        *modulationFrequencies = modFreqs_04; *modulationFrequenciesCount = sizeof(modFreqs_04); break;
+    case MhsCamera:                  *modulationFrequencies = modFreqs_05; *modulationFrequenciesCount = sizeof(modFreqs_05); break;
+    case PuFCamera:                  *modulationFrequencies = modFreqs_09; *modulationFrequenciesCount = sizeof(modFreqs_09); break;
+    default:
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WRITE_OP, BTA_StatusNotSupported, "BTAgetValidModulationFrequencies failed!");
+        return BTA_StatusNotSupported;
+    }
+    *modulationFrequenciesCount = *modulationFrequenciesCount / sizeof(uint32_t);
+    BTAinfoEventHelper(winst->infoEventInst, VERBOSE_READ_OP, BTA_StatusInformation, "BTAgetValidModulationFrequencies response:  (fallback result) modulationFrequenciesCount %d", *modulationFrequenciesCount);
+    return BTA_StatusOk;
+}
+
+
+BTA_Status BTA_CALLCONV BTAgetNextBestModulationFrequency(BTA_Handle handle, uint32_t modFreq, uint32_t *validModFreq, int32_t *index) {
+    BTA_WrapperInst *winst = (BTA_WrapperInst *)handle;
+    if (!winst) {
+        return BTA_StatusInvalidParameter;
+    }
+    BTAinfoEventHelper(winst->infoEventInst, VERBOSE_READ_OP, BTA_StatusInformation, "BTAgetNextBestModulationFrequency call:  modFreq %d", modFreq);
+    const uint32_t *modulationFrequencies;
+    int32_t modulationFrequenciesCount;
+    BTA_Status status = BTAgetValidModulationFrequencies(handle, &modulationFrequencies, &modulationFrequenciesCount);
+    if (status != BTA_StatusOk) {
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_READ_OP, BTA_StatusInformation, "BTAgetNextBestModulationFrequency failed!");
+        return status;
+    }
+
+    if (!modulationFrequencies) {
+        // All devices that don't need no intelligence, just allow any frequency and use offset index 0
+        if (index) {
+            *index = 0;
+        }
+        if (validModFreq) {
+            *validModFreq = modFreq;
+        }
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_READ_OP, BTA_StatusInformation, "BTAgetNextBestModulationFrequency response:  modFreq %d", modFreq);
+        return BTA_StatusOk;
+    }
+
+    uint32_t differenceBest = UINT32_MAX;
+    for (uint8_t modFreqInd = 0; modFreqInd < modulationFrequenciesCount; modFreqInd++) {
+        uint32_t difference = (uint32_t)abs((int32_t)(modulationFrequencies[modFreqInd] - modFreq));
+        if (difference < differenceBest) {
+            differenceBest = difference;
+            if (index) {
+                *index = modFreqInd;
+            }
+            if (validModFreq) {
+                *validModFreq = modulationFrequencies[modFreqInd];
+            }
+        }
+    }
+    if (validModFreq) BTAinfoEventHelper(winst->infoEventInst, VERBOSE_READ_OP, BTA_StatusInformation, "BTAgetNextBestModulationFrequency response:  modFreq %d", *validModFreq);
+    else BTAinfoEventHelper(winst->infoEventInst, VERBOSE_READ_OP, BTA_StatusInformation, "BTAgetNextBestModulationFrequency done");
+    return BTA_StatusOk;
+}
+
+
+// obsolete
+BTA_Status BTA_CALLCONV BTAsetKeepAliveMsgInterval(BTA_Handle handle, float interval) { return BTA_StatusNotSupported; }
+BTA_Status BTA_CALLCONV BTAsetControlCrcEnabled(BTA_Handle handle, uint8_t enabled) { return BTA_StatusNotSupported; }
 
 
 
@@ -1964,19 +2241,17 @@ BTA_Status BTA_CALLCONV BTAwigglingUpdate(BTA_Handle handle, const uint8_t *file
 
 
 BTA_Status BTA_CALLCONV BTAgetDataByChannelId(BTA_Frame *frame, BTA_ChannelId channelId, void **data, BTA_DataFormat *dataFormat, BTA_Unit *unit, uint16_t *xRes, uint16_t *yRes) {
-    if (!frame || !data || !dataFormat || !unit || !xRes || !yRes) {
+    if (!frame || !frame->channels || !data || !dataFormat || !unit || !xRes || !yRes) {
         return BTA_StatusInvalidParameter;
     }
-    if (frame->channels) {
-        for (int chInd = 0; chInd < frame->channelsLen; chInd++) {
-            if (frame->channels[chInd]->id == channelId) {
-                *dataFormat = frame->channels[chInd]->dataFormat;
-                *unit = frame->channels[chInd]->unit;
-                *xRes = frame->channels[chInd]->xRes;
-                *yRes = frame->channels[chInd]->yRes;
-                *data = frame->channels[chInd]->data;
-                return BTA_StatusOk;
-            }
+    for (int chInd = 0; chInd < frame->channelsLen; chInd++) {
+        if (frame->channels[chInd]->id == channelId) {
+            *dataFormat = frame->channels[chInd]->dataFormat;
+            *unit = frame->channels[chInd]->unit;
+            *xRes = frame->channels[chInd]->xRes;
+            *yRes = frame->channels[chInd]->yRes;
+            *data = frame->channels[chInd]->data;
+            return BTA_StatusOk;
         }
     }
     return BTA_StatusInvalidParameter;
@@ -1985,19 +2260,17 @@ BTA_Status BTA_CALLCONV BTAgetDataByChannelId(BTA_Frame *frame, BTA_ChannelId ch
 
 BTA_Status BTA_CALLCONV BTAgetDistances(BTA_Frame *frame, void **distBuffer, BTA_DataFormat *dataFormat, BTA_Unit *unit, uint16_t *xRes, uint16_t *yRes) {
     int chInd;
-    if (!frame || !distBuffer || !dataFormat || !unit || !xRes || !yRes) {
+    if (!frame || !frame->channels || !distBuffer || !dataFormat || !unit || !xRes || !yRes) {
         return BTA_StatusInvalidParameter;
     }
-    if (frame->channels) {
-        for (chInd = 0; chInd < frame->channelsLen; chInd++) {
-            if (frame->channels[chInd]->id == BTA_ChannelIdDistance) {
-                *dataFormat = frame->channels[chInd]->dataFormat;
-                *unit = frame->channels[chInd]->unit;
-                *xRes = frame->channels[chInd]->xRes;
-                *yRes = frame->channels[chInd]->yRes;
-                *distBuffer = frame->channels[chInd]->data;
-                return BTA_StatusOk;
-            }
+    for (chInd = 0; chInd < frame->channelsLen; chInd++) {
+        if (frame->channels[chInd]->id == BTA_ChannelIdDistance) {
+            *dataFormat = frame->channels[chInd]->dataFormat;
+            *unit = frame->channels[chInd]->unit;
+            *xRes = frame->channels[chInd]->xRes;
+            *yRes = frame->channels[chInd]->yRes;
+            *distBuffer = frame->channels[chInd]->data;
+            return BTA_StatusOk;
         }
     }
     return BTA_StatusInvalidParameter;
@@ -2006,19 +2279,17 @@ BTA_Status BTA_CALLCONV BTAgetDistances(BTA_Frame *frame, void **distBuffer, BTA
 
 BTA_Status BTA_CALLCONV BTAgetAmplitudes(BTA_Frame *frame, void **ampBuffer, BTA_DataFormat *dataFormat, BTA_Unit *unit, uint16_t *xRes, uint16_t *yRes) {
     int chInd;
-    if (!frame || !ampBuffer || !dataFormat || !unit || !xRes || !yRes) {
+    if (!frame || !frame->channels || !ampBuffer || !dataFormat || !unit || !xRes || !yRes) {
         return BTA_StatusInvalidParameter;
     }
-    if (frame->channels) {
-        for (chInd = 0; chInd < frame->channelsLen; chInd++) {
-            if (frame->channels[chInd]->id == BTA_ChannelIdAmplitude) {
-                *dataFormat = frame->channels[chInd]->dataFormat;
-                *unit = frame->channels[chInd]->unit;
-                *xRes = frame->channels[chInd]->xRes;
-                *yRes = frame->channels[chInd]->yRes;
-                *ampBuffer = frame->channels[chInd]->data;
-                return BTA_StatusOk;
-            }
+    for (chInd = 0; chInd < frame->channelsLen; chInd++) {
+        if (frame->channels[chInd]->id == BTA_ChannelIdAmplitude) {
+            *dataFormat = frame->channels[chInd]->dataFormat;
+            *unit = frame->channels[chInd]->unit;
+            *xRes = frame->channels[chInd]->xRes;
+            *yRes = frame->channels[chInd]->yRes;
+            *ampBuffer = frame->channels[chInd]->data;
+            return BTA_StatusOk;
         }
     }
     return BTA_StatusInvalidParameter;
@@ -2027,19 +2298,17 @@ BTA_Status BTA_CALLCONV BTAgetAmplitudes(BTA_Frame *frame, void **ampBuffer, BTA
 
 BTA_Status BTA_CALLCONV BTAgetFlags(BTA_Frame *frame, void **flagBuffer, BTA_DataFormat *dataFormat, BTA_Unit *unit, uint16_t *xRes, uint16_t *yRes) {
     int i;
-    if (!frame || !flagBuffer || !dataFormat || !unit || !xRes || !yRes) {
+    if (!frame || !frame->channels || !flagBuffer || !dataFormat || !unit || !xRes || !yRes) {
         return BTA_StatusInvalidParameter;
     }
-    if (frame->channels) {
-        for (i = 0; i < frame->channelsLen; i++) {
-            if (frame->channels[i]->id == BTA_ChannelIdFlags) {
-                *dataFormat = frame->channels[i]->dataFormat;
-                *unit = frame->channels[i]->unit;
-                *xRes = frame->channels[i]->xRes;
-                *yRes = frame->channels[i]->yRes;
-                *flagBuffer = frame->channels[i]->data;
-                return BTA_StatusOk;
-            }
+    for (i = 0; i < frame->channelsLen; i++) {
+        if (frame->channels[i]->id == BTA_ChannelIdFlags) {
+            *dataFormat = frame->channels[i]->dataFormat;
+            *unit = frame->channels[i]->unit;
+            *xRes = frame->channels[i]->xRes;
+            *yRes = frame->channels[i]->yRes;
+            *flagBuffer = frame->channels[i]->data;
+            return BTA_StatusOk;
         }
     }
     return BTA_StatusInvalidParameter;
@@ -2051,41 +2320,57 @@ BTA_Status BTA_CALLCONV BTAgetXYZcoordinates(BTA_Frame *frame, void **xBuffer, v
     int xChannel = -1;
     int yChannel = -1;
     int zChannel = -1;
-    if (!frame || !xBuffer || !yBuffer || !zBuffer || !dataFormat || !unit || !xRes || !yRes) {
+    if (!frame || !frame->channels || !xBuffer || !yBuffer || !zBuffer || !dataFormat || !unit || !xRes || !yRes) {
         return BTA_StatusInvalidParameter;
     }
-    if (frame->channels) {
-        for (chInd = 0; chInd < frame->channelsLen; chInd++) {
-            if (frame->channels[chInd]->id == BTA_ChannelIdX) {
-                xChannel = chInd;
-            }
-            if (frame->channels[chInd]->id == BTA_ChannelIdY) {
-                yChannel = chInd;
-            }
-            if (frame->channels[chInd]->id == BTA_ChannelIdZ) {
-                zChannel = chInd;
-            }
+    for (chInd = 0; chInd < frame->channelsLen; chInd++) {
+        if (frame->channels[chInd]->id == BTA_ChannelIdX) {
+            xChannel = chInd;
         }
-        if (xChannel >= 0 && yChannel >= 0 && zChannel >= 0) {
-            *dataFormat = frame->channels[xChannel]->dataFormat;
-            if (*dataFormat != frame->channels[yChannel]->dataFormat || *dataFormat != frame->channels[zChannel]->dataFormat) {
-                return BTA_StatusInvalidParameter;
-            }
-            *unit = frame->channels[xChannel]->unit;
-            if (*unit != frame->channels[yChannel]->unit || *unit != frame->channels[zChannel]->unit) {
-                return BTA_StatusInvalidParameter;
-            }
-            *xRes = frame->channels[xChannel]->xRes;
-            if (*xRes != frame->channels[yChannel]->xRes || *xRes != frame->channels[zChannel]->xRes) {
-                return BTA_StatusInvalidParameter;
-            }
-            *yRes = frame->channels[xChannel]->yRes;
-            if (*yRes != frame->channels[yChannel]->yRes || *yRes != frame->channels[zChannel]->yRes) {
-                return BTA_StatusInvalidParameter;
-            }
-            *xBuffer = frame->channels[xChannel]->data;
-            *yBuffer = frame->channels[yChannel]->data;
-            *zBuffer = frame->channels[zChannel]->data;
+        if (frame->channels[chInd]->id == BTA_ChannelIdY) {
+            yChannel = chInd;
+        }
+        if (frame->channels[chInd]->id == BTA_ChannelIdZ) {
+            zChannel = chInd;
+        }
+    }
+    if (xChannel >= 0 && yChannel >= 0 && zChannel >= 0) {
+        *dataFormat = frame->channels[xChannel]->dataFormat;
+        if (*dataFormat != frame->channels[yChannel]->dataFormat || *dataFormat != frame->channels[zChannel]->dataFormat) {
+            return BTA_StatusInvalidParameter;
+        }
+        *unit = frame->channels[xChannel]->unit;
+        if (*unit != frame->channels[yChannel]->unit || *unit != frame->channels[zChannel]->unit) {
+            return BTA_StatusInvalidParameter;
+        }
+        *xRes = frame->channels[xChannel]->xRes;
+        if (*xRes != frame->channels[yChannel]->xRes || *xRes != frame->channels[zChannel]->xRes) {
+            return BTA_StatusInvalidParameter;
+        }
+        *yRes = frame->channels[xChannel]->yRes;
+        if (*yRes != frame->channels[yChannel]->yRes || *yRes != frame->channels[zChannel]->yRes) {
+            return BTA_StatusInvalidParameter;
+        }
+        *xBuffer = frame->channels[xChannel]->data;
+        *yBuffer = frame->channels[yChannel]->data;
+        *zBuffer = frame->channels[zChannel]->data;
+        return BTA_StatusOk;
+    }
+    return BTA_StatusInvalidParameter;
+}
+
+
+BTA_Status BTA_CALLCONV BTAgetColors(BTA_Frame *frame, void **colorBuffer, BTA_DataFormat *dataFormat, BTA_Unit *unit, uint16_t *xRes, uint16_t *yRes) {
+    if (!frame || !frame->channels || !colorBuffer || !dataFormat || !unit || !xRes || !yRes) {
+        return BTA_StatusInvalidParameter;
+    }
+    for (int chInd = 0; chInd < frame->channelsLen; chInd++) {
+        if (frame->channels[chInd]->id == BTA_ChannelIdColor) {
+            *dataFormat = frame->channels[chInd]->dataFormat;
+            *unit = frame->channels[chInd]->unit;
+            *xRes = frame->channels[chInd]->xRes;
+            *yRes = frame->channels[chInd]->yRes;
+            *colorBuffer = frame->channels[chInd]->data;
             return BTA_StatusOk;
         }
     }
@@ -2093,28 +2378,31 @@ BTA_Status BTA_CALLCONV BTAgetXYZcoordinates(BTA_Frame *frame, void **xBuffer, v
 }
 
 
-BTA_Status BTA_CALLCONV BTAgetColors(BTA_Frame *frame, void **colorBuffer, BTA_DataFormat *dataFormat, BTA_Unit *unit, uint16_t *xRes, uint16_t *yRes) {
-    int chInd;
-    if (!frame || !colorBuffer || !dataFormat || !unit || !xRes || !yRes) {
+BTA_Status BTA_CALLCONV BTAgetChannels(BTA_Frame *frame, BTA_ChannelFilter *filter, BTA_Channel **channels, int *channlesLen) {
+    if (!frame || !frame->channels || !filter || !channels || !channlesLen || !*channlesLen) {
         return BTA_StatusInvalidParameter;
     }
-    if (frame->channels) {
-        for (chInd = 0; chInd < frame->channelsLen; chInd++) {
-            if (frame->channels[chInd]->id == BTA_ChannelIdColor) {
-                *dataFormat = frame->channels[chInd]->dataFormat;
-                *unit = frame->channels[chInd]->unit;
-                *xRes = frame->channels[chInd]->xRes;
-                *yRes = frame->channels[chInd]->yRes;
-                *colorBuffer = frame->channels[chInd]->data;
-                return BTA_StatusOk;
-            }
+    int count = 0;
+    for (int chInd = 0; chInd < frame->channelsLen; chInd++) {
+        BTA_Channel *channel = frame->channels[chInd];
+        if (filter->filterByChannelId && channel->id != filter->id) continue;
+        if (filter->filterByResolution && (channel->xRes != filter->xRes || channel->yRes != filter->yRes)) continue;
+        if (filter->filterByDataFormat && channel->dataFormat != filter->dataFormat) continue;
+        if (filter->filterByLensIndex && channel->lensIndex != filter->lensIndex) continue;
+        if (filter->filterByFlagsMask & (channel->flags ^ filter->flags)) continue;
+        if (filter->filterBySequenceCounter && channel->sequenceCounter != filter->sequenceCounter) continue;
+        // It's a match!
+        channels[count++] = channel;
+        if (count >= *channlesLen) {
+            return BTA_StatusOutOfMemory;
         }
     }
-    return BTA_StatusInvalidParameter;
+    *channlesLen = count;
+    return count > 0 ? BTA_StatusOk : BTA_StatusInvalidData;
 }
 
 
-BTA_Status BTA_CALLCONV BTAgetMetadata(BTA_Channel *channel, uint32_t metadataId, void **metadata, uint32_t *metadataLen) {
+BTA_Status BTA_CALLCONV BTAgetMetadata(BTA_Channel *channel, BTA_MetadataId metadataId, void **metadata, uint32_t *metadataLen) {
     if (!channel || !metadata || !metadataLen) {
         return BTA_StatusInvalidParameter;
     }
@@ -2141,28 +2429,30 @@ BTA_Status BTA_CALLCONV BTAcloneFrame(BTA_Frame *frameSrc, BTA_Frame **frameDst)
         return BTA_StatusOutOfMemory;
     }
     memcpy(frame, frameSrc, sizeof(BTA_Frame));
-    frame->channels = (BTA_Channel **)calloc(frame->channelsLen, sizeof(BTA_Channel *));;
-    for (int chInd = 0; chInd < frameSrc->channelsLen; chInd++) {
+    frame->channels = (BTA_Channel **)calloc(frame->channelsLen, sizeof(BTA_Channel *));
+    if (!frame->channels) {
+        free(frame);
+        frame = 0;
+        return BTA_StatusOutOfMemory;
+    }
+    for (uint8_t chInd = 0; chInd < frameSrc->channelsLen; chInd++) {
         BTA_Status status = BTAcloneChannel(frameSrc->channels[chInd], &(frame->channels[chInd]));
         if (status != BTA_StatusOk) {
-            for (chInd--; chInd >= 0; chInd--) {
-                BTAfreeChannel(&(frame->channels[chInd]));
-            }
-            free(frame->channels);
-            frame->channels = 0;
+            frame->channelsLen = chInd;
             BTAfreeFrame(&frame);
             return status;
         }
     }
-    frame->metadata = (BTA_Metadata **)calloc(frame->metadataLen, sizeof(BTA_Metadata *));;
+    frame->metadata = (BTA_Metadata **)calloc(frame->metadataLen, sizeof(BTA_Metadata *));
+    if (!frame->metadata) {
+        frame->metadataLen = 0;
+        BTAfreeFrame(&frame);
+        return BTA_StatusOutOfMemory;
+    }
     for (uint32_t mdInd = 0; mdInd < frameSrc->metadataLen; mdInd++) {
         BTA_Status status = BTAcloneMetadata(frameSrc->metadata[mdInd], &(frame->metadata[mdInd]));
         if (status != BTA_StatusOk) {
-            for (mdInd--; mdInd >= 0; mdInd--) {
-                BTAfreeMetadata(&(frame->metadata[mdInd]));
-            }
-            free(frame->metadata);
-            frame->metadata = 0;
+            frame->metadataLen = mdInd;
             BTAfreeFrame(&frame);
             return status;
         }
@@ -2217,10 +2507,6 @@ BTA_Status BTA_CALLCONV BTAgetSerializedLength(BTA_Frame *frame, uint32_t *frame
 }
 
 
-
-#define BTA_FRAME_SERIALIZED_PREAMBLE   0xb105
-#define BTA_FRAME_SERIALIZED_VERSION    5
-
 BTA_Status BTA_CALLCONV BTAserializeFrame(BTA_Frame *frame, uint8_t *frameSerialized, uint32_t *frameSerializedLen) {
     BTA_Status status;
     uint32_t length;
@@ -2236,49 +2522,62 @@ BTA_Status BTA_CALLCONV BTAserializeFrame(BTA_Frame *frame, uint8_t *frameSerial
     if (*frameSerializedLen < length) {
         return BTA_StatusOutOfMemory;
     }
-    BTAbitConverterFromUInt16(frameSerialized, &index, BTA_FRAME_SERIALIZED_PREAMBLE);
-    BTAbitConverterFromUInt08(frameSerialized, &index, BTA_FRAME_SERIALIZED_VERSION);
-    BTAbitConverterFromUInt08(frameSerialized, &index, frame->firmwareVersionNonFunc);
-    BTAbitConverterFromUInt08(frameSerialized, &index, frame->firmwareVersionMinor);
-    BTAbitConverterFromUInt08(frameSerialized, &index, frame->firmwareVersionMajor);
-    BTAbitConverterFromFloat4(frameSerialized, &index, frame->mainTemp);
-    BTAbitConverterFromFloat4(frameSerialized, &index, frame->ledTemp);
-    BTAbitConverterFromFloat4(frameSerialized, &index, frame->genericTemp);
-    BTAbitConverterFromUInt32(frameSerialized, &index, frame->frameCounter);
-    BTAbitConverterFromUInt32(frameSerialized, &index, frame->timeStamp);
-    BTAbitConverterFromUInt08(frameSerialized, &index, frame->channelsLen);
+    BTAbitConverterFromUInt16(BTA_FRAME_SERIALIZED_PREAMBLE, frameSerialized, &index);
+    BTAbitConverterFromUInt08(BTA_FRAME_SERIALIZED_VERSION, frameSerialized, &index);
+    BTAbitConverterFromUInt08(frame->firmwareVersionNonFunc, frameSerialized, &index);
+    BTAbitConverterFromUInt08(frame->firmwareVersionMinor, frameSerialized, &index);
+    BTAbitConverterFromUInt08(frame->firmwareVersionMajor, frameSerialized, &index);
+    BTAbitConverterFromFloat4(frame->mainTemp, frameSerialized, &index);
+    BTAbitConverterFromFloat4(frame->ledTemp, frameSerialized, &index);
+    BTAbitConverterFromFloat4(frame->genericTemp, frameSerialized, &index);
+    BTAbitConverterFromUInt32(frame->frameCounter, frameSerialized, &index);
+    BTAbitConverterFromUInt32(frame->timeStamp, frameSerialized, &index);
+    BTAbitConverterFromUInt08(frame->channelsLen, frameSerialized, &index);
     for (chInd = 0; chInd < frame->channelsLen; chInd++) {
         BTA_Channel *channel = frame->channels[chInd];
-        BTAbitConverterFromUInt32(frameSerialized, &index, channel->id);
-        BTAbitConverterFromUInt16(frameSerialized, &index, channel->xRes);
-        BTAbitConverterFromUInt16(frameSerialized, &index, channel->yRes);
-        BTAbitConverterFromUInt32(frameSerialized, &index, channel->dataFormat);
-        BTAbitConverterFromUInt32(frameSerialized, &index, channel->unit);
-        BTAbitConverterFromUInt32(frameSerialized, &index, channel->integrationTime);
-        BTAbitConverterFromUInt32(frameSerialized, &index, channel->modulationFrequency);
-        BTAbitConverterFromUInt32(frameSerialized, &index, channel->dataLen);
-        BTAbitConverterFromStream(frameSerialized, &index, channel->data, frame->channels[chInd]->dataLen);
-        BTAbitConverterFromUInt32(frameSerialized, &index, channel->metadataLen);
+        BTAbitConverterFromUInt32(channel->id, frameSerialized, &index);
+        BTAbitConverterFromUInt16(channel->xRes, frameSerialized, &index);
+        BTAbitConverterFromUInt16(channel->yRes, frameSerialized, &index);
+        BTAbitConverterFromUInt32(channel->dataFormat, frameSerialized, &index);
+        BTAbitConverterFromUInt32(channel->unit, frameSerialized, &index);
+        BTAbitConverterFromUInt32(channel->integrationTime, frameSerialized, &index);
+        BTAbitConverterFromUInt32(channel->modulationFrequency, frameSerialized, &index);
+        BTAbitConverterFromUInt32(channel->dataLen, frameSerialized, &index);
+        BTAbitConverterFromStream(channel->data, frame->channels[chInd]->dataLen, frameSerialized, &index);
+        BTAbitConverterFromUInt32(channel->metadataLen, frameSerialized, &index);
         for (mdInd = 0; mdInd < frame->channels[chInd]->metadataLen; mdInd++) {
             BTA_Metadata *metadata = channel->metadata[mdInd];
-            BTAbitConverterFromUInt32(frameSerialized, &index, metadata->id);
-            BTAbitConverterFromUInt32(frameSerialized, &index, metadata->dataLen);
-            BTAbitConverterFromStream(frameSerialized, &index, (uint8_t *)metadata->data, metadata->dataLen);
+            BTAbitConverterFromUInt32(metadata->id, frameSerialized, &index);
+            BTAbitConverterFromUInt32(metadata->dataLen, frameSerialized, &index);
+            BTAbitConverterFromStream((uint8_t *)metadata->data, metadata->dataLen, frameSerialized, &index);
         }
-        BTAbitConverterFromUInt08(frameSerialized, &index, channel->lensIndex);
-        BTAbitConverterFromUInt32(frameSerialized, &index, channel->flags);
-        BTAbitConverterFromUInt08(frameSerialized, &index, channel->sequenceCounter);
-        BTAbitConverterFromFloat4(frameSerialized, &index, channel->gain);
+        BTAbitConverterFromUInt08(channel->lensIndex, frameSerialized, &index);
+        BTAbitConverterFromUInt32(channel->flags, frameSerialized, &index);
+        BTAbitConverterFromUInt08(channel->sequenceCounter, frameSerialized, &index);
+        BTAbitConverterFromFloat4(channel->gain, frameSerialized, &index);
     }
-    BTAbitConverterFromUInt32(frameSerialized, &index, frame->metadataLen);
+    BTAbitConverterFromUInt32(frame->metadataLen, frameSerialized, &index);
     for (mdInd = 0; mdInd < frame->metadataLen; mdInd++) {
         BTA_Metadata *metadata = frame->metadata[mdInd];
-        BTAbitConverterFromUInt32(frameSerialized, &index, metadata->id);
-        BTAbitConverterFromUInt32(frameSerialized, &index, metadata->dataLen);
-        BTAbitConverterFromStream(frameSerialized, &index, (uint8_t *)metadata->data, metadata->dataLen);
+        BTAbitConverterFromUInt32(metadata->id, frameSerialized, &index);
+        BTAbitConverterFromUInt32(metadata->dataLen, frameSerialized, &index);
+        BTAbitConverterFromStream((uint8_t *)metadata->data, metadata->dataLen, frameSerialized, &index);
     }
     *frameSerializedLen = index;
     return BTA_StatusOk;
+}
+
+
+BTA_Status BTA_CALLCONV BTAcompressSerializedFrame(uint8_t *frameSerialized, uint32_t frameSerializedLen, BTA_CompressionMode compressionMode, uint8_t *frameSerializedCompressed, uint32_t *frameSerializedCompressedLen) {
+    if (!frameSerialized || !frameSerializedCompressed || !frameSerializedCompressedLen) {
+        return BTA_StatusInvalidParameter;
+    }
+    switch (compressionMode) {
+    case BTA_CompressionModeLzmaV22:
+        return BTAcompressSerializedFrameLzmaV22(frameSerialized, frameSerializedLen, frameSerializedCompressed, frameSerializedCompressedLen);
+    default:
+        return BTA_StatusInvalidParameter;
+    }
 }
 
 
@@ -2292,15 +2591,34 @@ BTA_Status BTA_CALLCONV BTAdeserializeFrame(BTA_Frame **framePtr, uint8_t *frame
         return BTA_StatusOutOfMemory;
     }
     uint32_t index = 0;
-    uint16_t preamble;
-    BTAbitConverterToUInt16(frameSerialized, &index, &preamble);
-    if (preamble != BTA_FRAME_SERIALIZED_PREAMBLE) {
+    uint16_t preamble = BTAbitConverterToUInt16(frameSerialized, &index);
+    if (preamble == BTA_FRAME_SERIALIZED_PREAMBLE_LZMAV22) {
+        // The frame is compressed
+        uint32_t frameUncompressedLen = BTAbitConverterToUInt32(frameSerialized, &index);
+        uint8_t *frameUncompressed = (uint8_t *)malloc(frameUncompressedLen);
+        size_t srcLen = *frameSerializedLen - index - LZMA_PROPS_SIZE;
+        size_t dstLen = frameUncompressedLen;
+        int result = LzmaUncompress(frameUncompressed, &dstLen, frameSerialized + index + LZMA_PROPS_SIZE, &srcLen, frameSerialized + index, (size_t)LZMA_PROPS_SIZE);
+        if (result != SZ_OK) {
+            free(frameUncompressed);
+            frameUncompressed = 0;
+            return BTA_StatusRuntimeError;
+        }
+        if (dstLen != frameUncompressedLen) {
+            return BTA_StatusRuntimeError;
+        }
+        BTA_Status status = BTAdeserializeFrame(framePtr, frameUncompressed, &frameUncompressedLen);
+        free(frameUncompressed);
+        frameUncompressed = 0;
+        *frameSerializedLen = (uint32_t)srcLen + sizeof(uint16_t) + sizeof(uint32_t) + LZMA_PROPS_SIZE;
+        return status;
+    }
+    else if (preamble != BTA_FRAME_SERIALIZED_PREAMBLE) {
         // wrong preamble
         return BTA_StatusInvalidParameter;
     }
 
-    uint8_t version;
-    BTAbitConverterToUInt08(frameSerialized, &index, &version);
+    uint8_t version = BTAbitConverterToUInt08(frameSerialized, &index);
     switch (version) {
     case 1:
         return BTAdeserializeFrameV1(framePtr, frameSerialized, frameSerializedLen);
@@ -2398,7 +2716,23 @@ BTA_Status BTA_CALLCONV BTAfreeDeviceInfo(BTA_DeviceInfo *deviceInfo) {
 }
 
 
-const char* BTA_CALLCONV BTAlibParamToString(BTA_LibParam libParam) {
+const char *BTA_CALLCONV BTAdeviceTypeToString(BTA_DeviceType deviceType) {
+    switch (deviceType) {
+    case BTA_DeviceTypeEthernet:
+        return "Ethernet";
+    case BTA_DeviceTypeUsb:
+        return "USB";
+    case BTA_DeviceTypeUart:
+        return "UART";
+    case BTA_DeviceTypeBltstream:
+        return "bltstream";
+    default:
+        return "<Not a device type>";
+    }
+}
+
+
+const char *BTA_CALLCONV BTAlibParamToString(BTA_LibParam libParam) {
     switch ((int)libParam) {
     case BTA_LibParamKeepAliveMsgInterval: return "KeepAliveMsgInterval";
     case BTA_LibParamCrcControlEnabled: return "CrcControlEnabled";
@@ -2406,7 +2740,6 @@ const char* BTA_CALLCONV BTAlibParamToString(BTA_LibParam libParam) {
     case BTA_LibParamBltStreamAutoPlaybackSpeed: return "BltStreamAutoPlaybackSpeed";
     case BTA_LibParamBltStreamPos: return "BltStreamPos";
     case BTA_LibParamBltStreamPosIncrement: return "BltStreamPosIncrement";
-    case BTA_LibParamTestPatternEnabled: return "TestPatternEnabled";
     case BTA_LibParamPauseCaptureThread: return "PauseCaptureThread";
     case BTA_LibParamDisableDataScaling: return "DisableDataScaling";
     case BTA_LibParamUndistortRgb: return "UndistortRgb";
@@ -2432,6 +2765,10 @@ const char* BTA_CALLCONV BTAlibParamToString(BTA_LibParam libParam) {
     case BTA_LibParamDataSockOptRcvtimeo: return "DataSockOptRcvtimeo";
     case BTA_LibParamDataSockOptRcvbuf: return "DataSockOptRcvbuf";
     case BTA_LibParamCalcXYZ: return "CalcXYZ";
+    case BTA_LibParamOffsetForCalcXYZ: return "OffsetForCalcXYZ";
+    case BTA_LibParamBilateralFilterWindow: return "BilateralFilterWindow";
+    case BTA_LibParamGenerateColorFromTof: return "GenerateColorFromTof";
+    case BTA_LibParamBltstreamCompressionMode: return "BltstreamCompressionMode";
     case BTA_LIBParamDataStreamAllowIncompleteFrames: return "DataStreamAllowIncompleteFrames";
     case BTA_LibParamDebugFlags01: return "DebugFlags01";
     case BTA_LibParamDebugValue01: return "DebugValue01";
@@ -2444,12 +2781,14 @@ const char* BTA_CALLCONV BTAlibParamToString(BTA_LibParam libParam) {
     case BTA_LibParamDebugValue08: return "DebugValue08";
     case BTA_LibParamDebugValue09: return "DebugValue09";
     case BTA_LibParamDebugValue10: return "DebugValue10";
-    default: return "<not a BTA_LibParam>";
+    default:
+        assert(0);
+        return "<Not a BTA_LibParam>";
     }
 }
 
 
-const char* BTA_CALLCONV BTAstatusToString2(BTA_Status status) {
+const char *BTA_CALLCONV BTAstatusToString2(BTA_Status status) {
     switch (status) {
     case BTA_StatusOk: return "Ok";
     case BTA_StatusInvalidParameter: return "InvalidParameter";
@@ -2468,12 +2807,13 @@ const char* BTA_CALLCONV BTAstatusToString2(BTA_Status status) {
     case BTA_StatusWarning: return "Warning";
     case BTA_StatusAlive: return "Alive";
     case BTA_StatusConfigParamError: return "ConfigParamError";
-    default: return "<not a BTA_Status>";
+    default:
+        return "<Not a BTA_Status>";
     }
 }
 
 
-const char* BTA_CALLCONV BTAframeModeToString(BTA_FrameMode frameMode) {
+const char *BTA_CALLCONV BTAframeModeToString(BTA_FrameMode frameMode) {
     switch (frameMode) {
     case BTA_FrameModeCurrentConfig:        return "Current config";
     case BTA_FrameModeDistAmp:              return "Distance, Amplitude";
@@ -2497,7 +2837,64 @@ const char* BTA_CALLCONV BTAframeModeToString(BTA_FrameMode frameMode) {
     case BTA_FrameModeXYZConfColor:         return "X, Y, Z, Amplitude, Confidence, Color";
     case BTA_FrameModeXYZAmpColorOverlay:   return "X, Y, Z, Amplitude, Color, Overlay";
     case BTA_FrameModeDistAmpConf:          return "Distance, Amplitude, Confidence";
-    default: return "<not a BTA_FrameMode>";
+    case BTA_FrameModeChannelSelection:     return "Channel selection mode";
+    default:
+        assert(0); 
+        return "<Not a BTA_FrameMode>";
+    }
+}
+
+
+const char *BTA_CALLCONV BTAdataFormatToString(BTA_DataFormat dataFormat) {
+    switch (dataFormat) {
+        case BTA_DataFormatUnknown: return "Unknown";
+        case BTA_DataFormatUInt8: return "UInt8";
+        case BTA_DataFormatUInt16: return "UInt16";
+        case BTA_DataFormatSInt16Mlx1C11S: return "SInt16Mlx1C11S";
+        case BTA_DataFormatSInt16Mlx12S: return "SInt16Mlx12S";
+        case BTA_DataFormatUInt16Mlx1C11U: return "UInt16Mlx1C11U";
+        case BTA_DataFormatUInt16Mlx12U: return "UInt16Mlx12U";
+        //case BTA_DataFormatUInt24 return "UInt24";
+        case BTA_DataFormatUInt32: return "UInt32";
+        //case BTA_DataFormatSInt8  return "SInt8";
+        case BTA_DataFormatSInt16: return "SInt16";
+        //case BTA_DataFormatSInt24 return "SInt24";
+        case BTA_DataFormatSInt32: return "SInt32";
+        //case BTA_DataFormatFloat8 return "Float8";
+        //case BTA_DataFormatFloat16return "Float16";
+        //case BTA_DataFormatFloat24return "Float24";
+        case BTA_DataFormatFloat32: return "Float32";
+        case BTA_DataFormatFloat64: return "Float64";
+        case BTA_DataFormatRgb565: return "Rgb565";
+        case BTA_DataFormatRgb24: return "Rgb24";
+        case BTA_DataFormatJpeg: return "Jpeg";
+        case BTA_DataFormatYuv422: return "Yuv422";
+        case BTA_DataFormatYuv444: return "Yuv444";
+        case BTA_DataFormatYuv444UYV: return "Yuv444UYV";
+        default:
+            assert(0);
+            return "<Not a BTA_DataFormat>";
+    }
+}
+
+
+const char *BTA_CALLCONV BTAchannelSelectionToString(BTA_ChannelSelection channelSelection) {
+    switch (channelSelection) {
+    case BTA_ChannelSelectionInactive:      return "Inactive";
+    case BTA_ChannelSelectionDistance:      return "Distance";
+    case BTA_ChannelSelectionAmplitude:     return "Amplitude";
+    case BTA_ChannelSelectionX:             return "X";
+    case BTA_ChannelSelectionY:             return "Y";
+    case BTA_ChannelSelectionZ:             return "Z";
+    case BTA_ChannelSelectionConfidence:    return "Confidence";
+    case BTA_ChannelSelectionHeightMap:     return "HeightMap";
+    case BTA_ChannelSelectionStdev:         return "Stdev";
+    case BTA_ChannelSelectionColor0:        return "Color0";
+    case BTA_ChannelSelectionOverlay0:      return "Overlay0";
+    case BTA_ChannelSelectionColor1:        return "Color1";
+    case BTA_ChannelSelectionOverlay1:      return "Overlay1";
+    case BTA_ChannelSelectionAmplitude8:    return "Amplitude8";
+    default: return "<Not a BTA_ChannelSelection>";
     }
 }
 
@@ -2525,46 +2922,96 @@ BTA_Status BTA_CALLCONV BTAeventIdToString(BTA_EventId status, char *statusStrin
 }
 
 
-
-BTA_Status BTA_CALLCONV BTAunitToString(BTA_Unit unit, char *unitString, uint16_t unitStringLen) {
-    char unitStringTemp[50];
-    if (!unitString) {
-        return BTA_StatusInvalidParameter;
-    }
+const char *BTA_CALLCONV BTAunitToString(BTA_Unit unit) {
     switch (unit) {
-    case BTA_UnitUnitLess:
-        strcpy((char *)unitStringTemp, "");
-        break;
     case BTA_UnitMeter:
-        strcpy((char *)unitStringTemp, "m");
-        break;
+        return "m";
     case BTA_UnitMillimeter:
-        strcpy((char *)unitStringTemp, "mm");
-        break;
+        return "mm";
     default:
-        sprintf((char *)unitStringTemp, "%d", unit);
-        break;
+        return "";
     }
-    if (strlen(unitStringTemp) + 1 > unitStringLen) {
-        return BTA_StatusOutOfMemory;
-    }
-#ifdef PLAT_WINDOWS
-    strcpy_s((char *)unitString, unitStringLen, unitStringTemp);
-#elif defined PLAT_LINUX || defined PLAT_APPLE
-    strcpy((char *)unitString, unitStringTemp);
-#endif
-    return BTA_StatusOk;
 }
 
 
-BTA_Status BTA_CALLCONV BTAsetKeepAliveMsgInterval(BTA_Handle handle, float interval) { return BTA_StatusNotSupported; }
-BTA_Status BTA_CALLCONV BTAsetControlCrcEnabled(BTA_Handle handle, uint8_t enabled) { return BTA_StatusNotSupported; }
+const char *BTA_CALLCONV BTAchannelIdToString(BTA_ChannelId id) {
+    switch (id)
+    {
+    case BTA_ChannelIdUnknown:
+        return "Unknown";
+    case BTA_ChannelIdDistance:
+        return "Distance";
+    case BTA_ChannelIdAmplitude:
+        return "Amplitude";
+    case BTA_ChannelIdX:
+        return "X";
+    case BTA_ChannelIdY:
+        return "Y";
+    case BTA_ChannelIdZ:
+        return "Z";
+    case BTA_ChannelIdHeightMap:
+        return "HeightMap";
+    case BTA_ChannelIdConfidence:
+        return "Confidence";
+    case BTA_ChannelIdFlags:
+        return "Flags";
+    case BTA_ChannelIdPhase0:
+        return "Phase0";
+    case BTA_ChannelIdPhase90:
+        return "Phase90";
+    case BTA_ChannelIdPhase180:
+        return "Phase180";
+    case BTA_ChannelIdPhase270:
+        return "Phase270";
+    case BTA_ChannelIdRawPhase:
+        return "RawPhase";
+    case BTA_ChannelIdRawQ:
+        return "RawQ";
+    case BTA_ChannelIdRawI:
+        return "RawI";
+    case BTA_ChannelIdTest:
+        return "Test";
+    case BTA_ChannelIdColor:
+        return "Color";
+    case BTA_ChannelIdRawDist:
+        return "RawDist";
+    case BTA_ChannelIdBalance:
+        return "Balance";
+    case BTA_ChannelIdStdDev:
+        return "StdDev";
+    case BTA_ChannelIdCustom01:
+        return "Custom01";
+    case BTA_ChannelIdCustom02:
+        return "Custom02";
+    case BTA_ChannelIdCustom03:
+        return "Custom03";
+    case BTA_ChannelIdCustom04:
+        return "Custom04";
+    case BTA_ChannelIdCustom05:
+        return "Custom05";
+    case BTA_ChannelIdCustom06:
+        return "Custom06";
+    case BTA_ChannelIdCustom07:
+        return "Custom07";
+    case BTA_ChannelIdCustom08:
+        return "Custom08";
+    case BTA_ChannelIdCustom09:
+        return "Custom09";
+    case BTA_ChannelIdCustom10:
+        return "Custom10";
+    default:
+        assert(0);
+        return "<Not a BTA_ChannelId>";
+    }
+}
 
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 
-
+void BTA_CALLCONV BTAzeroLogTimestamp() {
+    BHLPzeroLogTimestamp();
+}
 
 
 uint8_t BTA_CALLCONV BTAisEthDevice(uint16_t deviceType) {
@@ -2654,7 +3101,8 @@ BTA_Status BTA_CALLCONV BTAinsertChannelIntoFrame(BTA_Frame *frame, BTA_Channel 
 }
 
 
-BTA_Status BTA_CALLCONV BTAinsertChannelIntoFrame2(BTA_Frame *frame, BTA_ChannelId id, uint16_t xRes, uint16_t yRes, BTA_DataFormat dataFormat, BTA_Unit unit, uint32_t integrationTime, uint32_t modulationFrequency, uint8_t *data, uint32_t dataLen) {
+BTA_Status BTA_CALLCONV BTAinsertChannelIntoFrame2(BTA_Frame *frame, BTA_ChannelId id, uint16_t xRes, uint16_t yRes, BTA_DataFormat dataFormat, BTA_Unit unit, uint32_t integrationTime, uint32_t modulationFrequency, uint8_t *data, uint32_t dataLen,
+                                                   BTA_Metadata **metadata, uint32_t metadataLen, uint8_t lensIndex, uint32_t flags, uint8_t sequenceCounter, float gain) {
     BTA_Channel *channel;
     channel = (BTA_Channel *)calloc(1, sizeof(BTA_Channel));
     if (!channel) {
@@ -2669,6 +3117,13 @@ BTA_Status BTA_CALLCONV BTAinsertChannelIntoFrame2(BTA_Frame *frame, BTA_Channel
     channel->modulationFrequency = modulationFrequency;
     channel->data = data;
     channel->dataLen = dataLen;
+    for (uint32_t mdInd = 0; mdInd < metadataLen; mdInd++) {
+        BTAinsertMetadataIntoChannel(channel, metadata[mdInd]);
+    }
+    channel->lensIndex = lensIndex;
+    channel->flags = flags;
+    channel->sequenceCounter = sequenceCounter;
+    channel->gain = gain;
     return BTAinsertChannelIntoFrame(frame, channel);
 }
 
@@ -2680,7 +3135,7 @@ BTA_Status BTA_CALLCONV BTAremoveChannelFromFrame(BTA_Frame *frame, BTA_Channel 
     if (!frame->channels) {
         return BTA_StatusInvalidParameter;
     }
-    int channelsLenNew = 0;
+    uint8_t channelsLenNew = 0;
     int chInd;
     for (chInd = 0; chInd < frame->channelsLen; chInd++) {
         if (frame->channels[chInd] != channel) {
@@ -2722,18 +3177,19 @@ BTA_Status BTA_CALLCONV BTAcloneChannel(BTA_Channel *channelSrc, BTA_Channel **c
         return BTA_StatusOutOfMemory;
     }
     memcpy(channel->data, channelSrc->data, channel->dataLen * sizeof(uint8_t));
-    channel->metadata = (BTA_Metadata **)calloc(channel->metadataLen, sizeof(BTA_Metadata *));;
-    int i;
-    for (i = 0; i < (int)channel->metadataLen; i++) {
-        BTA_Status status = BTAcloneMetadata(channelSrc->metadata[i], &(channel->metadata[i]));
+    channel->metadata = (BTA_Metadata **)calloc(channel->metadataLen, sizeof(BTA_Metadata *));
+    if (!channel->metadata) {
+        free(channel->data);
+        channel->data = 0;
+        free(channel);
+        channel = 0;
+        return BTA_StatusOutOfMemory;
+    }
+    for (uint32_t mdInd = 0; mdInd < channel->metadataLen; mdInd++) {
+        BTA_Status status = BTAcloneMetadata(channelSrc->metadata[mdInd], &(channel->metadata[mdInd]));
         if (status != BTA_StatusOk) {
-            for (i--; i >= 0; i--) {
-                BTAfreeMetadata(&(channel->metadata[i]));
-            }
-            free(channel->metadata);
-            channel->metadata = 0;
-            free(channel);
-            channel = 0;
+            channel->metadataLen = mdInd;
+            BTAfreeChannel(&channel);
             return status;
         }
     }
@@ -2828,48 +3284,6 @@ BTA_Status BTA_CALLCONV BTAcloneMetadata(BTA_Metadata *metadataSrc, BTA_Metadata
 }
 
 
-BTA_Status BTA_CALLCONV BTAcolorToBw(BTA_Channel *channelIn, BTA_Channel **channelOut) {
-    if (!channelIn || !channelOut || (channelIn->dataFormat != BTA_DataFormatRgb24 && channelIn->dataFormat != BTA_DataFormatRgb565)) {
-        return BTA_StatusInvalidParameter;
-    }
-    BTA_Channel *result = *channelOut;
-    result = (BTA_Channel *)malloc(sizeof(BTA_Channel));
-    result->id = BTA_ChannelIdGrayScale;
-    result->unit = BTA_UnitUnitLess;
-    result->integrationTime = channelIn->integrationTime;
-    result->modulationFrequency = channelIn->modulationFrequency;
-    result->dataFormat = BTA_DataFormatUInt16;
-    result->xRes = channelIn->xRes;
-    result->yRes = channelIn->yRes;
-    result->dataLen = result->xRes * result->yRes * 2;
-    result->data = (uint8_t *)malloc(result->dataLen);
-    int xy;
-    switch (channelIn->dataFormat) {
-
-    case BTA_DataFormatRgb24:
-        for (xy = 0; xy < result->yRes * result->xRes; xy++) {
-            uint16_t rgb = 0;
-            rgb += ((uint8_t *)channelIn->data)[3 * xy + 0];
-            rgb += ((uint8_t *)channelIn->data)[3 * xy + 1];
-            rgb += ((uint8_t *)channelIn->data)[3 * xy + 2];
-            ((uint16_t *)result->data)[xy] = 65535 * rgb / (255 * 3);
-        }
-        return BTA_StatusOk;
-
-    case BTA_DataFormatRgb565:
-        for (xy = 0; xy < result->yRes * result->xRes; xy++) {
-            ((uint16_t *)result->data)[xy] = (((uint16_t *)channelIn->data)[xy] >> 11) | ((((uint16_t *)channelIn->data)[xy] >> 5) & 0x3f) | (((uint16_t *)channelIn->data)[xy] & 0x1f);
-        }
-        return BTA_StatusOk;
-
-    default:
-        // unreachable
-        assert(0);
-        return BTA_StatusNotSupported;
-    }
-}
-
-
 BTA_Status BTA_CALLCONV BTAdivideChannelByNumber(BTA_Channel *dividend, uint32_t divisor, BTA_Channel **quotient/*, BTA_InfoEventInst *infoEventInst*/) {
     int xy;
     BTA_Channel *result;
@@ -2880,12 +3294,12 @@ BTA_Status BTA_CALLCONV BTAdivideChannelByNumber(BTA_Channel *dividend, uint32_t
     switch (dividend->dataFormat) {
     case BTA_DataFormatUInt16:
         for (xy = 0; xy < dividend->xRes * dividend->yRes; xy++) {
-            ((uint16_t *)result->data)[xy] = ((uint16_t *)dividend->data)[xy] / divisor;
+            ((uint16_t *)result->data)[xy] = (uint16_t)(((uint16_t *)dividend->data)[xy] / divisor);
         }
         break;
     case BTA_DataFormatSInt32:
         for (xy = 0; xy < dividend->xRes * dividend->yRes; xy++) {
-            ((int32_t *)result->data)[xy] = ((int32_t *)dividend->data)[xy] / divisor;
+            ((int32_t *)result->data)[xy] = (int32_t)(((int32_t *)dividend->data)[xy] / divisor);
         }
         break;
     default:
@@ -3006,7 +3420,7 @@ BTA_Status BTA_CALLCONV BTAthresholdInPlace(BTA_Channel *channel, uint32_t thres
             break;
         case BTA_DataFormatSInt32:
             for (xy = 0; xy < channel->xRes * channel->yRes; xy++) {
-                ((int32_t *)channel->data)[xy] = (((int32_t *)channel->data)[xy] >(int32_t)threshold) || (((int32_t *)channel->data)[xy] < -(int32_t)threshold);
+                ((int32_t *)channel->data)[xy] = (((int32_t *)channel->data)[xy] > (int32_t)threshold) || (((int32_t *)channel->data)[xy] < -(int32_t)threshold);
             }
             break;
         default:
@@ -3023,7 +3437,7 @@ BTA_Status BTA_CALLCONV BTAthresholdInPlace(BTA_Channel *channel, uint32_t thres
             break;
         case BTA_DataFormatSInt32:
             for (xy = 0; xy < channel->xRes * channel->yRes; xy++) {
-                ((int32_t *)channel->data)[xy] = ((int32_t *)channel->data)[xy] >(int32_t)threshold;
+                ((int32_t *)channel->data)[xy] = ((int32_t *)channel->data)[xy] > (int32_t)threshold;
             }
             break;
         default:
@@ -3050,7 +3464,7 @@ BTA_Status BTA_CALLCONV BTAchangeDataFormat(BTA_Channel *channel, BTA_DataFormat
                 return BTA_StatusOutOfMemory;
             }
             for (xy = 0; xy < channel->xRes * channel->yRes; xy++) {
-                data[xy] = ((int32_t *)channel->data)[xy];
+                data[xy] = (uint16_t)((int32_t *)channel->data)[xy];
             }
             free(channel->data);
             channel->dataLen = dataLen;
@@ -3111,127 +3525,51 @@ BTA_Status BTA_CALLCONV BTAfreeMetadata(BTA_Metadata **metadata) {
 }
 
 
-BTA_Status BTA_CALLCONV BTAgetValidModulationFrequencies(BTA_Handle handle, const uint32_t **modulationFrequencies, int32_t *modulationFrequenciesCount) {
-    BTA_Status status;
-    BTA_WrapperInst *winst = (BTA_WrapperInst *)handle;
-    if (!winst) {
+BTA_Status BTA_CALLCONV BTAgetOptimalAmplitude(uint16_t deviceType, float *amplitude) {
+    if (!amplitude) {
         return BTA_StatusInvalidParameter;
     }
-    if (!modulationFrequencies && !modulationFrequenciesCount) {
-        return BTA_StatusInvalidParameter;
+    switch (deviceType)
+    {
+        // 19kS3
+        case TimUp19kS3Spartan6:
+        case Argos3dP320S:
+        case TimUp19kS3Eth:
+        case Argos3dP100:
+        case Sentis3dM100:
+        case Argos3dP32x:
+            *amplitude = 7500;
+            return BTA_StatusOk;
+        // IRS1020
+        case Argos3dP33x:
+        case TimUpIrs1125:
+        case TimUpIrs1125Ffc:
+        case MhsCamera:
+        case BTA_DeviceTypeSentis3dP509Irs1020:
+            *amplitude = 1800;
+            return BTA_StatusOk;
+        // PuF TofWare
+        case PuFCamera:
+        case Argos3dPulse:
+        case ToreoP65x:
+            *amplitude = 10000;
+            return BTA_StatusOk;
+        // boh...
+        case MultiTofPlatformMlx:
+        case Argos3dP510Skt:
+        case Argos3dP310:
+        case Evk7512x:
+        case Evk75027:
+        case Evk7512xTofCcBa:
+        case GrabberBoard:
+        case Sentis3dP509:
+        case Sentis3dM520:
+        case Sentis3dM530:
+        case Epc610TofModule:
+            return BTA_StatusNotSupported;
+        default:
+            return BTA_StatusNotSupported;
     }
-
-    if (winst->modFreqsReadFromDevice > -3 && winst->modFreqsReadFromDevice <= 0) {
-        // try to read registers that specify supported modulation frequencies
-        uint32_t dataLen = sizeof(winst->modFreqs) / sizeof(uint32_t);
-        status = BTAreadRegister(handle, 0x700, (uint32_t *)winst->modFreqs, &dataLen);
-        if (status == BTA_StatusOk) {
-            // remove empty items from tail of list
-            while (dataLen >= 0 && !winst->modFreqs[dataLen - 1]) {
-                dataLen--;
-            }
-            for (uint32_t i = 0; i < dataLen; i++) {
-                winst->modFreqs[i] *= 10000;
-            }
-            if (dataLen) {
-                winst->modFreqsReadFromDevice = dataLen;
-            }
-            else {
-                // We read the registers, but all of them are 0. no retry
-                winst->modFreqsReadFromDevice = -3;
-            }
-        }
-        else if (status == BTA_StatusInvalidParameter) {
-            // We couldn't read the registers, unsupported
-            winst->modFreqsReadFromDevice = -4;
-        }
-        else {
-            // We couldn't read the registers, error, ..retry
-            winst->modFreqsReadFromDevice--;
-        }
-    }
-    if (winst->modFreqsReadFromDevice > 0) {
-        *modulationFrequencies = winst->modFreqs;
-        *modulationFrequenciesCount = winst->modFreqsReadFromDevice;
-        return BTA_StatusOk;
-    }
-    BTA_DeviceType deviceType;
-    status = BTAgetDeviceType(handle, &deviceType);
-    if (status != BTA_StatusOk) {
-        *modulationFrequencies = 0;
-        *modulationFrequenciesCount = 0;
-        return status;
-    }
-    // fallback: use compiled values
-    switch ((int)deviceType) {
-        case Argos3dP33x:                *modulationFrequencies = modFreqs_05; *modulationFrequenciesCount = sizeof(modFreqs_05); break;
-        case Mlx75123ValidationPlatform: *modulationFrequencies = modFreqs_04; *modulationFrequenciesCount = sizeof(modFreqs_04); break;
-        case Evk7512x:                   *modulationFrequencies = modFreqs_04; *modulationFrequenciesCount = sizeof(modFreqs_04); break;
-        case Evk75027:                   *modulationFrequencies = 0;           *modulationFrequenciesCount = 0;                   break;
-        case Evk7512xTofCcBa:            *modulationFrequencies = modFreqs_04; *modulationFrequenciesCount = sizeof(modFreqs_04); break;
-        case Argos3dP320S:               *modulationFrequencies = modFreqs_01; *modulationFrequenciesCount = sizeof(modFreqs_01); break;
-        case AudiGrabberBoard:           *modulationFrequencies = modFreqs_01; *modulationFrequenciesCount = sizeof(modFreqs_01); break;
-        case Sentis3dP509:               *modulationFrequencies = modFreqs_01; *modulationFrequenciesCount = sizeof(modFreqs_01); break;
-        case LimTesterV2:                *modulationFrequencies = modFreqs_06; *modulationFrequenciesCount = sizeof(modFreqs_06); break;
-        case Sentis3dM520:               *modulationFrequencies = modFreqs_01; *modulationFrequenciesCount = sizeof(modFreqs_01); break;
-        case Sentis3dM530:               *modulationFrequencies = modFreqs_05; *modulationFrequenciesCount = sizeof(modFreqs_05); break;
-        case TimUpIrs1125:               *modulationFrequencies = modFreqs_08; *modulationFrequenciesCount = sizeof(modFreqs_08); break;
-        case TimUpIrs1125Ffc:            *modulationFrequencies = modFreqs_10; *modulationFrequenciesCount = sizeof(modFreqs_10); break;
-        case Mlx75023TofEval:            *modulationFrequencies = modFreqs_03; *modulationFrequenciesCount = sizeof(modFreqs_03); break;
-        case TimUp19kS3Eth:              *modulationFrequencies = modFreqs_02; *modulationFrequenciesCount = sizeof(modFreqs_02); break;
-        case Epc610TofModule:            *modulationFrequencies = modFreqs_06; *modulationFrequenciesCount = sizeof(modFreqs_06); break;
-        case Argos3dP310:                *modulationFrequencies = modFreqs_01; *modulationFrequenciesCount = sizeof(modFreqs_01); break;
-        case Sentis3dM100:               *modulationFrequencies = modFreqs_01; *modulationFrequenciesCount = sizeof(modFreqs_01); break;
-        case Argos3dP32x:                *modulationFrequencies = modFreqs_01; *modulationFrequenciesCount = sizeof(modFreqs_01); break;
-        case Argos3dP321:                *modulationFrequencies = modFreqs_01; *modulationFrequenciesCount = sizeof(modFreqs_01); break;
-        case Sentis3dP509Irs1020:        *modulationFrequencies = modFreqs_05; *modulationFrequenciesCount = sizeof(modFreqs_05); break;
-        case Argos3dP510Skt:             *modulationFrequencies = modFreqs_01; *modulationFrequenciesCount = sizeof(modFreqs_01); break;
-        case TimUp19kS3EthP:             *modulationFrequencies = modFreqs_02; *modulationFrequenciesCount = sizeof(modFreqs_02); break;
-        case MultiTofPlatformMlx:        *modulationFrequencies = modFreqs_04; *modulationFrequenciesCount = sizeof(modFreqs_04); break;
-        case MhsCamera:                  *modulationFrequencies = modFreqs_05; *modulationFrequenciesCount = sizeof(modFreqs_05); break;
-        case PuFCamera:                  *modulationFrequencies = modFreqs_09; *modulationFrequenciesCount = sizeof(modFreqs_09); break;
-    default:
-        return BTA_StatusNotSupported;
-    }
-    *modulationFrequenciesCount = *modulationFrequenciesCount / sizeof(uint32_t);
-    return BTA_StatusOk;
-}
-
-
-BTA_Status BTA_CALLCONV BTAgetNextBestModulationFrequency(BTA_Handle handle, uint32_t modFreq, uint32_t *validModFreq, int32_t *index) {
-
-    const uint32_t *modulationFrequencies;
-    int32_t modulationFrequenciesCount;
-    BTA_Status status = BTAgetValidModulationFrequencies(handle, &modulationFrequencies, &modulationFrequenciesCount);
-    if (status != BTA_StatusOk) {
-        return status;
-    }
-
-    if (!modulationFrequencies) {
-        // All devices that don't need no intelligence, just allow any frequency and use offset index 0
-        if (index) {
-            *index = 0;
-        }
-        if (validModFreq) {
-            *validModFreq = modFreq;
-        }
-        return BTA_StatusOk;
-    }
-
-    uint32_t differenceBest = UINT32_MAX;
-    for (uint8_t modFreqInd = 0; modFreqInd < modulationFrequenciesCount; modFreqInd++) {
-        uint32_t difference = (uint32_t)abs((int32_t)(modulationFrequencies[modFreqInd] - modFreq));
-        if (difference < differenceBest) {
-            differenceBest = difference;
-            if (index) {
-                *index = modFreqInd;
-            }
-            if (validModFreq) {
-                *validModFreq = modulationFrequencies[modFreqInd];
-            }
-        }
-    }
-    return BTA_StatusOk;
 }
 
 
@@ -3296,7 +3634,67 @@ void BTA_CALLCONV BTAsleep(uint32_t milliseconds) {
 }
 
 
-void BTAgeneratePlanarView(int16_t *chX, int16_t *chY, int16_t *chZ, uint16_t *chAmp, int resX, int resY, int planarViewResX, int planarViewResY, float planarViewScale, int16_t *planarViewZ, uint16_t *planarViewAmp) {
+void BTA_CALLCONV BTAfreeNetworkBroadcastAddrs(uint8_t ***localIpAddrs, uint8_t ***networkBroadcastAddrs, uint32_t networkBroadcastAddrsLen) {
+    for (uint32_t i = 0; i < networkBroadcastAddrsLen; i++) {
+        free((*localIpAddrs)[i]);
+        (*localIpAddrs)[i] = 0;
+        free((*networkBroadcastAddrs)[i]);
+        (*networkBroadcastAddrs)[i] = 0;
+    }
+    free(*localIpAddrs);
+    *localIpAddrs = 0;
+    free(*networkBroadcastAddrs);
+    *networkBroadcastAddrs = 0;
+}
+
+
+BTA_Status BTA_CALLCONV BTAgetNetworkBroadcastAddrs(uint8_t ***localIpAddrs, uint8_t ***networkBroadcastAddrs, uint32_t *networkBroadcastAddrsLen) {
+    if (!localIpAddrs || !networkBroadcastAddrs || !networkBroadcastAddrsLen) {
+        return BTA_StatusInvalidParameter;
+    }
+    uint32_t *ipAddrs, *subnetMasks;
+    BTA_Status status = BTAlistLocalIpAddrs(&ipAddrs, &subnetMasks, networkBroadcastAddrsLen);
+    if (status != BTA_StatusOk) {
+        return status;
+    }
+    uint32_t len = *networkBroadcastAddrsLen;
+    if (len) {
+        uint8_t **resultA1 = *localIpAddrs = (uint8_t **)calloc(len, sizeof(uint8_t *));
+        uint8_t **resultB1 = *networkBroadcastAddrs = (uint8_t **)calloc(len, sizeof(uint8_t *));
+        if (!resultA1 || !resultB1) {
+            BTAfreeNetworkBroadcastAddrs(localIpAddrs, networkBroadcastAddrs, len);
+            free(ipAddrs);
+            free(subnetMasks);
+            return BTA_StatusOutOfMemory;
+        }
+        for (uint32_t i = 0; i < len; i++) {
+            uint8_t *resultA2 = resultA1[i] = (uint8_t *)malloc(4 * sizeof(uint8_t));
+            uint8_t *resultB2 = resultB1[i] = (uint8_t *)malloc(4 * sizeof(uint8_t));
+            if (!resultA2 || !resultB2) {
+                BTAfreeNetworkBroadcastAddrs(localIpAddrs, networkBroadcastAddrs, len);
+                free(ipAddrs);
+                free(subnetMasks);
+                return BTA_StatusOutOfMemory;
+            }
+            uint32_t ipAddr = ipAddrs[i];
+            resultA2[0] = ipAddr & 0xff;
+            resultA2[1] = (ipAddr >> 8) & 0xff;
+            resultA2[2] = (ipAddr >> 16) & 0xff;
+            resultA2[3] = (ipAddr >> 24) & 0xff;
+            uint32_t broadcast = ipAddrs[i] | ~subnetMasks[i];
+            resultB2[0] = broadcast & 0xff;
+            resultB2[1] = (broadcast >> 8) & 0xff;
+            resultB2[2] = (broadcast >> 16) & 0xff;
+            resultB2[3] = (broadcast >> 24) & 0xff;
+        }
+        free(ipAddrs);
+        free(subnetMasks);
+    }
+    return BTA_StatusOk;
+}
+
+
+void BTA_CALLCONV BTAgeneratePlanarView(int16_t *chX, int16_t *chY, int16_t *chZ, uint16_t *chAmp, int resX, int resY, int planarViewResX, int planarViewResY, float planarViewScale, int16_t *planarViewZ, uint16_t *planarViewAmp) {
     planarViewScale *= 10.0;
     int planarViewResXhalf = planarViewResX / 2;
     int planarViewResYhalf = planarViewResY / 2;

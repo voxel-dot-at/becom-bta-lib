@@ -12,12 +12,9 @@
 
 #ifdef PLAT_WINDOWS
 #   include <Windows.h>
-#elif defined PLAT_LINUX
+#else
 #   include <netdb.h>
 #   include <errno.h>
-#elif defined PLAT_APPLE
-#   include <netdb.h>
-#   include <sys/errno.h>
 #endif
 
 #include <string.h>
@@ -48,8 +45,8 @@ static BTA_Status freeFrameAndIndex(FrameAndIndex **frameAndIndex);
 static int getLastError() {
 #ifdef PLAT_WINDOWS
     return GetLastError();
-#elif defined PLAT_LINUX || defined PLAT_APPLE
-     return errno;
+#else
+    return errno;
 #endif
 }
 
@@ -96,6 +93,31 @@ BTA_Status BTASTREAMopen(BTA_Config *config, BTA_WrapperInst *winst) {
         return BTA_StatusOutOfMemory;
     }
     strcpy((char *)inst->inputFilename, (char *)config->bltstreamFilename);
+
+    //// Try to parse file with BTAdeserializeFrame in case it is not a stream but a single frame
+    //status = BTAfopen((char*)inst->inputFilename, "r", &file);
+    //if (status == BTA_StatusOk) {
+    //    uint32_t filesize;
+    //    status = BTAfseek(file, 0, BTA_SeekOriginEnd, &filesize);
+    //    if (status == BTA_StatusOk) {
+    //        status = BTAfseek(file, 0, BTA_SeekOriginBeginning, 0);
+    //        if (status == BTA_StatusOk) {
+    //            uint8_t* cdata = (unsigned char*)malloc(filesize);
+    //            if (cdata) {
+    //                uint32_t fileSizeRead;
+    //                status = BTAfread(file, cdata, filesize, &fileSizeRead);
+    //                if (status == BTA_StatusOk || fileSizeRead == filesize) {
+    //                    BTA_Frame* frame;
+    //                    status = BTAdeserializeFrame(&frame, cdata, &fileSizeRead);
+    //                    if (status == BTA_StatusOk) {
+    //                        // Yes, we were able to parse a frame!
+    //                    }
+    //                }
+    //            }
+    //        }
+    //    }
+    //    BTAfclose(file);
+    //}
 
     void *file;
     status = BTAfLargeOpen((char *)inst->inputFilename, "r", &file);
@@ -180,7 +202,7 @@ BTA_Status BTASTREAMopen(BTA_Config *config, BTA_WrapperInst *winst) {
         return BTA_StatusRuntimeError;
     }
 
-    status = BTAcreateThread(&(inst->parseThread), &streamRunFunction, (void *)winst, 0);
+    status = BTAcreateThread(&(inst->parseThread), &streamRunFunction, (void *)winst);
     if (status != BTA_StatusOk) {
         BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "BTAopen stream: Could not start parseThread");
         BTASTREAMclose(winst);
@@ -243,7 +265,6 @@ BTA_Status BTASTREAMgetDeviceInfo(BTA_WrapperInst *winst, BTA_DeviceInfo **devic
             deviceInfoTemp = 0;
             return BTA_StatusOutOfMemory;
         }
-        deviceInfoTemp->productOrderNumber[0] = 0;
         sprintf((char *)deviceInfoTemp->productOrderNumber, "%s", inst->pon);
     }
     deviceInfoTemp->serialNumber = inst->serialNumber;
@@ -306,7 +327,7 @@ static BTA_Status getFrameFromFile(BTA_WrapperInst *winst, int32_t index, BTA_Fr
     }
     if (inst->bufferThread /*<-Auto playback enabled!*/) {
         assert(0);
-        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusRuntimeError, "Stream: Auto playback enabled!");
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "Stream: Auto playback enabled!");
         return BTA_StatusRuntimeError;
     }
     BTA_Status status;
@@ -519,14 +540,14 @@ static void *bufferRunFunction(void *handle) {
     }
 
     BTA_Status status;
-    const int32_t bufferLenMax = 100000000;
-    int32_t bufferLen = 0;
+    const uint32_t bufferLenMax = 100000000;
+    uint32_t bufferLen = 0;
     uint8_t *buffer = (uint8_t *)malloc(bufferLenMax);
     if (!buffer) {
         BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusOutOfMemory, "Stream: BufferRunFunction could not allocate 4");
         return 0;
     }
-    int32_t bufferPos = 0;
+    uint32_t bufferPos = 0;
     uint64_t filePos;
     status = BTAfLargeSeek(inst->file, inst->filePos, BTA_SeekOriginBeginning, &filePos);
     if (status != BTA_StatusOk) {
@@ -545,13 +566,13 @@ static void *bufferRunFunction(void *handle) {
     while (!inst->abortBufferThread) {
         float autoPlaybackSpeed = inst->autoPlaybackSpeed;
         if (autoPlaybackSpeed > 0) {
-            int32_t frameDeserializedLen = 0;
+            uint32_t frameSerializedLen = 0;
             if (bufferPos >= bufferLen) {
                 status = BTA_StatusOutOfMemory;
             }
             else {
-                frameDeserializedLen = bufferLen - bufferPos - frameHeaderLen;
-                status = BTAdeserializeFrame(&frame, &buffer[bufferPos + frameHeaderLen], (uint32_t *)&frameDeserializedLen);
+                frameSerializedLen = bufferLen - bufferPos - frameHeaderLen;
+                status = BTAdeserializeFrame(&frame, &buffer[bufferPos + frameHeaderLen], &frameSerializedLen);
             }
 
             if (status == BTA_StatusOk) {
@@ -564,9 +585,9 @@ static void *bufferRunFunction(void *handle) {
                 frameAndIndex->index = inst->frameIndexAtFilePos;
                 frameAndIndex->frame = frame;
                 // Frame was deserialized, set filePos to next frame
-                bufferPos += frameHeaderLen + frameDeserializedLen + frameFooterLen;
+                bufferPos += frameHeaderLen + frameSerializedLen + frameFooterLen;
                 // adjust filePos and frameIndexAtFilePos to current frame, seek to this position when thread ends
-                inst->filePos += frameHeaderLen + frameDeserializedLen + frameFooterLen;
+                inst->filePos += frameHeaderLen + frameSerializedLen + frameFooterLen;
                 inst->frameIndexAtFilePos++;
                 while (1) {
                     if (inst->abortBufferThread) {
@@ -594,7 +615,7 @@ static void *bufferRunFunction(void *handle) {
                     break;
                 }
                 // Go back # of bytes that are still in the buffer (gonna read them again)
-                status = BTAfLargeSeek(inst->file, -(int64_t)(bufferLen - bufferPos), BTA_SeekOriginCurrent, &filePos);
+                status = BTAfLargeSeek(inst->file, -((int64_t)bufferLen - (int64_t)bufferPos), BTA_SeekOriginCurrent, &filePos);
                 if (status != BTA_StatusOk) {
                     BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "Stream: BufferRunFunction could not fseek 2 %d", getLastError());
                     break;
@@ -636,8 +657,8 @@ static void *bufferRunFunction(void *handle) {
                     // adjust filePos and frameIndexAtFilePos to current frame, seek to this position when thread ends
                     inst->filePos -= frameLen + frameHeaderLen + frameFooterLen;
                     inst->frameIndexAtFilePos--;
-                    uint32_t frameDeserializedLen = bufferLen - bufferPos - frameHeaderLen;
-                    status = BTAdeserializeFrame(&frame, &buffer[bufferPos + frameHeaderLen], (uint32_t *)&frameDeserializedLen);
+                    uint32_t frameSerializedLen = bufferLen - bufferPos - frameHeaderLen;
+                    status = BTAdeserializeFrame(&frame, &buffer[bufferPos + frameHeaderLen], &frameSerializedLen);
                 }
             }
             if (status == BTA_StatusOk) {
@@ -763,7 +784,7 @@ static void *streamRunFunction(void *handle) {
             //}
             // start bufferThread
             inst->abortBufferThread = 0;
-            status = BTAcreateThread(&inst->bufferThread, &bufferRunFunction, (void *)winst, 0);
+            status = BTAcreateThread(&inst->bufferThread, &bufferRunFunction, (void *)winst);
             if (status != BTA_StatusOk) {
                 BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "Stream: RunFunction could not start bufferThread");
                 return 0;
@@ -774,7 +795,7 @@ static void *streamRunFunction(void *handle) {
             }
 
             //BTAinfoEventHelper(winst->infoEventInst, IMPORTANCE_INFO, BTA_EventIdInformation, "StreamThread: Stream starts");
-            uint32_t timeTriggerPrev = BTAgetTickCount();
+            uint64_t timeTriggerPrev = BTAgetTickCount64();
             uint32_t timestampPrev = 0;
             while (inst->autoPlaybackSpeed != 0 && !inst->closing) {
                 FrameAndIndex *frameAndIndex;
@@ -811,16 +832,14 @@ static void *streamRunFunction(void *handle) {
                     timestampDiff = 1;
                 }
                 // The frames timestamp implies the framerate. calc waiting time and wait
-                uint32_t timeTrigger;
                 while (inst->autoPlaybackSpeed != 0 && !inst->closing) {
                     BTAmsleep(1);
-                    uint32_t time = BTAgetTickCount();
                     float autoPlaybackSpeed = inst->autoPlaybackSpeed > 0 ? inst->autoPlaybackSpeed : -inst->autoPlaybackSpeed;
                     if (autoPlaybackSpeed == 0) {
                         break;
                     }
-                    timeTrigger = timeTriggerPrev + (uint32_t)(timestampDiff / autoPlaybackSpeed);
-                    if (time >= timeTrigger) {
+                    uint64_t timeTrigger = timeTriggerPrev + (uint64_t)(timestampDiff / autoPlaybackSpeed);
+                    if (BTAgetTickCount64() >= timeTrigger) {
                         BVQdequeue(inst->frameAndIndexQueueInst, 0, 0);
                         BTApostprocessGrabCallbackEnqueue(winst, frameAndIndex->frame);
                         inst->frameIndex = frameAndIndex->index;

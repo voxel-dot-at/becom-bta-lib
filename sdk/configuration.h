@@ -16,14 +16,14 @@
 #define TimUp19kS3EthP              0xb620      /*Ethernet                          */
 #define TimUpIrs1125                0x5a79      /*Ethernet, USB                     */
 #define TimUpIrs1125Ffc             0x524d      /*Ethernet, USB                     */
-#define Argos3dP25x                 0xb250      /*Ethernet                          */
-#define Argos3dP65x                 0xb650      /*Ethernet                          */
+#define Argos3dPulse                0xb250      /*Ethernet                          */
+#define ToreoP65x                   0xb650      /*Ethernet                          */
 #define Mlx75123ValidationPlatform  0x1e3c      /*Ethernet                          */
 #define Mlx75023TofEval             0x7502      /*Ethernet                          */
 #define Evk7512x                    0x31ee      /*Ethernet                          */
 #define Evk75027                    0x31ff      /*Ethernet                          */
 #define Evk7512xTofCcBa             0x32ee      /*Ethernet                          */
-#define AudiGrabberBoard            0x4762      /*Ethernet                          */
+#define GrabberBoard                0x4762      /*Ethernet                          */
 #define MultiTofPlatformMlx         0xbe41      /*Ethernet                          */
 #define MhsCamera                   0x22d3      /*Ethernet                          */
 #define PuFCamera                   0x5046      /*Ethernet                          */
@@ -55,12 +55,12 @@
                                                     Evk7512x,\
                                                     Evk75027,\
                                                     Evk7512xTofCcBa,\
-                                                    AudiGrabberBoard,\
+                                                    GrabberBoard,\
                                                     MultiTofPlatformMlx,\
                                                     MhsCamera,\
                                                     PuFCamera,\
-                                                    Argos3dP25x,\
-                                                    Argos3dP65x
+                                                    Argos3dPulse,\
+                                                    ToreoP65x
 #endif
 
 

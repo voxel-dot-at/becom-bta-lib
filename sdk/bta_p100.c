@@ -97,7 +97,7 @@ BTA_Status BTAP100open(BTA_Config *config, BTA_WrapperInst *winst) {
             return BTA_StatusDeviceUnreachable;
         }
     }
-    BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusInformation, "BTAopen P100: Connected");
+    BTAinfoEventHelper(winst->infoEventInst, VERBOSE_INFO, BTA_StatusInformation, "BTAopen P100: Connected");
 
     status = BTAinitMutex(&inst->handleMutex);
     if (status != BTA_StatusOk || !inst->handleMutex) {
@@ -215,7 +215,7 @@ BTA_Status BTAP100open(BTA_Config *config, BTA_WrapperInst *winst) {
             BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusRuntimeError, "BTAopen P100: Cannot set calibration data");
         }
         else {
-            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusInformation, "BTAopen P100: custom lens calibration file applied");
+            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_INFO, BTA_StatusInformation, "BTAopen P100: custom lens calibration file applied");
         }
         free(calibFileData);
         calibFileData = 0;
@@ -256,7 +256,7 @@ BTA_Status BTAP100open(BTA_Config *config, BTA_WrapperInst *winst) {
     }
 
     #if DEVEL_DEBUG
-    printf("BTAopen P100: device index %u - handle %lu\n", inst->deviceIndex, (BTA_Handle)inst);
+    println("BTAopen P100: device index %u - handle %lu", inst->deviceIndex, (BTA_Handle)inst);
     #endif
 
 
@@ -315,7 +315,7 @@ BTA_Status BTAP100open(BTA_Config *config, BTA_WrapperInst *winst) {
     if ((winst->frameArrivedInst && (winst->frameArrivedInst->frameArrived || winst->frameArrivedInst->frameArrivedEx || winst->frameArrivedInst->frameArrivedEx2)) || inst->frameQueueInst) {
         // Proactive frame capturing is desired implicitly by the callback and/or queueing
         BTAinfoEventHelper(winst->infoEventInst, VERBOSE_INFO, BTA_StatusInformation, "BTAopen P100: Starting capture thread. Polling BTAgetFrame()");
-        status = BTAcreateThread(&(inst->captureThread), &captureRunFunction, (void *)winst, 0);
+        status = BTAcreateThread(&(inst->captureThread), &captureRunFunction, (void *)winst);
         if (status != BTA_StatusOk) {
             BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, status, "BTAopen P100: Could not start captureThread");
             BTAP100close(winst);
@@ -352,7 +352,7 @@ BTA_Status BTAP100close(BTA_WrapperInst *winst) {
     }
 
     #if DEVEL_DEBUG
-    printf("BTAclose: device index %u - handle %lu\n",inst->deviceIndex, *handle);
+    println("BTAclose: device index %u - handle %lu",inst->deviceIndex, *handle);
     #endif
 
     if (inst->captureThread) {
@@ -621,7 +621,7 @@ BTA_Status BTAP100readRegister(BTA_WrapperInst *winst, uint32_t address, uint32_
         else {
             BTAinfoEventHelper(winst->infoEventInst, 5, BTA_StatusDeviceUnreachable, "BTAreadRegister: Internal error %d", my_reg_res);
             #if USB_COMM_ERR_DEBUG
-                printf("%s: Error from getRegister() [%d] [%u]\n", __func__, my_reg_res, __LINE__);
+                println("%s: Error from getRegister() [%d] [%u]", __func__, my_reg_res, __LINE__);
             #endif
             return BTA_StatusDeviceUnreachable;
         }
@@ -683,8 +683,8 @@ BTA_Status BTAP100writeRegister(BTA_WrapperInst *winst, uint32_t address, uint32
                     return BTA_StatusInvalidParameter;
                 }
                 if ((*data >= 3) && (*data <= BILAT_MAX_WINDOWSIZE) && (((*data) & 0x01) == 1)) {
-                    inst->filterBilateralConfig2 = *((uint32_t *)data);
-                    setBilateralWindow(inst->deviceIndex, data[0]);
+                    inst->filterBilateralConfig2 = (uint8_t) *((uint32_t *)data);
+                    setBilateralWindow(inst->deviceIndex, (uint8_t)data[0]);
                     if (registerCount) {
                         *registerCount = 1;
                     }
@@ -840,9 +840,9 @@ static BTA_Status getFrameInstant(BTA_WrapperInst *winst, BTA_Frame **framePtr) 
         frame->firmwareVersionNonFunc = 0;
     }
     else {
-        frame->firmwareVersionMajor = (inst->version & 0xF800) >> 11;
-        frame->firmwareVersionMinor = (inst->version & 0x07C0) >> 6;
-        frame->firmwareVersionNonFunc = inst->version & 0x003F;
+        frame->firmwareVersionMajor = (uint8_t)((inst->version & 0xF800) >> 11);
+        frame->firmwareVersionMinor = (uint8_t)((inst->version & 0x07C0) >> 6);
+        frame->firmwareVersionNonFunc = (uint8_t)(inst->version & 0x003F);
     }
     tempTemp = src_data_container_header_pos_ntohs(rawData, 0, IMG_HEADER_TEMERATURE_ILL);
     if (tempTemp & 0x1000) {
@@ -861,7 +861,8 @@ static BTA_Status getFrameInstant(BTA_WrapperInst *winst, BTA_Frame **framePtr) 
     frame->genericTemp = (float)((int32_t)tempTemp) / (float)16.0;
     frame->frameCounter = src_data_container_header_pos_ntohs(rawData, 0, IMG_HEADER_FRAME_COUNTER);
     frame->timeStamp = 1000*src_data_container_header_pos_ntohs(rawData, 0, IMG_HEADER_TIME_STAMP);
-    frame->sequenceCounter = src_data_container_header_pos_ntohs(rawData, 0, IMG_HEADER_SEQ_LENGTH);
+    uint8_t sequenceCounter = (uint8_t)src_data_container_header_pos_ntohs(rawData, 0, IMG_HEADER_SEQ_LENGTH);
+    frame->sequenceCounter = sequenceCounter;
     frame->channelsLen = 0;
     frame->channels = 0;
 
@@ -889,27 +890,12 @@ static BTA_Status getFrameInstant(BTA_WrapperInst *winst, BTA_Frame **framePtr) 
             rawPos = i;
             break;
         }
-        if (winst->lpTestPatternEnabled) {
-            if (channelId == IMG_HEADER_DIST_VALUES) {
-                // Set the modulation frequency to the value where the unambiguous range is 65,535m
-                uint32_t *modFreq = (((unsigned int *)(rawData + (P100_WIDTH*P100_HEIGHT*P100_BYTES_PER_PIXEL*i + P100_IMG_HEADER_SIZE*i))) + IMG_HEADER_MODULATIONFREQUENCY);
-                // Set to 2287269Hz == 0x0022e6a5 reversed:
-                *modFreq = 0xa5e62200;
-            }
-            uint32_t x, y, val = 0;
-            uint16_t *temp = (uint16_t *)(rawData + P100_IMG_HEADER_SIZE*(i + 1) + P100_WIDTH*P100_HEIGHT*P100_BYTES_PER_PIXEL*i);
-            for (y = 0; y < P100_HEIGHT; y++) {
-                for (x = 0; x < P100_WIDTH; x++) {
-                    temp[P100_WIDTH - 1 - x + y*P100_WIDTH] = val++;
-                }
-            }
-        }
     }
 
     status = BTA_StatusOk;
     if (distPos >= 0 && (frameMode == BTA_FrameModeXYZ || frameMode == BTA_FrameModeXYZAmp || frameMode == BTA_FrameModeXYZAmpFlags)) {
-        uint16_t xRes = src_data_container_header_pos_ntohs(rawData, distPos, 5);
-        uint16_t yRes = src_data_container_header_pos_ntohs(rawData, distPos, 4);
+        uint16_t xRes = (uint16_t)src_data_container_header_pos_ntohs(rawData, distPos, 5);
+        uint16_t yRes = (uint16_t)src_data_container_header_pos_ntohs(rawData, distPos, 4);
         uint32_t integrationTime = src_data_container_header_pos_ntohs(rawData, distPos, IMG_HEADER_INTEGRATIONTIME);
         uint32_t modulationFrequency = src_data_container_header_pos_ntohs(rawData, distPos, IMG_HEADER_MODULATIONFREQUENCY);
         uint32_t dataLen = P100_WIDTH*P100_HEIGHT*sizeof(float);
@@ -919,19 +905,19 @@ static BTA_Status getFrameInstant(BTA_WrapperInst *winst, BTA_Frame **framePtr) 
         if (dataX && dataY && dataZ) {
             result = calc3Dcoordinates(inst->deviceIndex, rawData, rawDataSize, dataX, dataY, dataZ, FLAGS_NONE, 0);
             if (result == P100_OKAY) {
-                status = BTAinsertChannelIntoFrame2(frame, BTA_ChannelIdX, xRes, yRes, BTA_DataFormatFloat32, BTA_UnitMillimeter, integrationTime, modulationFrequency, (uint8_t *)dataX, dataLen);
+                status = BTAinsertChannelIntoFrame2(frame, BTA_ChannelIdX, xRes, yRes, BTA_DataFormatFloat32, BTA_UnitMillimeter, integrationTime, modulationFrequency, (uint8_t *)dataX, dataLen, 0, 0, 0, 0, sequenceCounter, 0);
                 if (status != BTA_StatusOk) {
                     free(dataX);
                     dataX = 0;
                     BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "BTAgetFrameInstant: Error adding channel (X)");
                 }
-                status = BTAinsertChannelIntoFrame2(frame, BTA_ChannelIdY, xRes, yRes, BTA_DataFormatFloat32, BTA_UnitMillimeter, integrationTime, modulationFrequency, (uint8_t *)dataY, dataLen);
+                status = BTAinsertChannelIntoFrame2(frame, BTA_ChannelIdY, xRes, yRes, BTA_DataFormatFloat32, BTA_UnitMillimeter, integrationTime, modulationFrequency, (uint8_t *)dataY, dataLen, 0, 0, 0, 0, sequenceCounter, 0);
                 if (status != BTA_StatusOk) {
                     free(dataY);
                     dataY = 0;
                     BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "BTAgetFrameInstant: Error adding channel (Y)");
                 }
-                status = BTAinsertChannelIntoFrame2(frame, BTA_ChannelIdZ, xRes, yRes, BTA_DataFormatFloat32, BTA_UnitMillimeter, integrationTime, modulationFrequency, (uint8_t *)dataZ, dataLen);
+                status = BTAinsertChannelIntoFrame2(frame, BTA_ChannelIdZ, xRes, yRes, BTA_DataFormatFloat32, BTA_UnitMillimeter, integrationTime, modulationFrequency, (uint8_t *)dataZ, dataLen, 0, 0, 0, 0, sequenceCounter, 0);
                 if (status != BTA_StatusOk) {
                     free(dataZ);
                     dataZ = 0;
@@ -954,8 +940,8 @@ static BTA_Status getFrameInstant(BTA_WrapperInst *winst, BTA_Frame **framePtr) 
     }
 
     if (distPos >= 0 && (frameMode == BTA_FrameModeCurrentConfig || frameMode == BTA_FrameModeDistAmp || frameMode == BTA_FrameModeDistAmpColor || frameMode == BTA_FrameModeDistAmpFlags)) {
-        uint16_t xRes = src_data_container_header_pos_ntohs(rawData, distPos, 5);
-        uint16_t yRes = src_data_container_header_pos_ntohs(rawData, distPos, 4);
+        uint16_t xRes = (uint16_t)src_data_container_header_pos_ntohs(rawData, distPos, 5);
+        uint16_t yRes = (uint16_t)src_data_container_header_pos_ntohs(rawData, distPos, 4);
         uint32_t integrationTime = src_data_container_header_pos_ntohs(rawData, distPos, IMG_HEADER_INTEGRATIONTIME);
         uint32_t modulationFrequency = src_data_container_header_pos_ntohs(rawData, distPos, IMG_HEADER_MODULATIONFREQUENCY);
         uint32_t dataLen = P100_WIDTH*P100_HEIGHT*sizeof(float);
@@ -976,7 +962,7 @@ static BTA_Status getFrameInstant(BTA_WrapperInst *winst, BTA_Frame **framePtr) 
         if (data) {
             result = calcDistances(inst->deviceIndex, rawData, rawDataSize, data, dataLen, flags, 0);
             if (result == P100_OKAY) {
-                status = BTAinsertChannelIntoFrame2(frame, id, xRes, yRes, BTA_DataFormatFloat32, unit, integrationTime, modulationFrequency, (uint8_t *)data, dataLen);
+                status = BTAinsertChannelIntoFrame2(frame, id, xRes, yRes, BTA_DataFormatFloat32, unit, integrationTime, modulationFrequency, (uint8_t *)data, dataLen, 0, 0, 0, 0, sequenceCounter, 0);
                 if (status != BTA_StatusOk) {
                     free(data);
                     data = 0;
@@ -995,8 +981,8 @@ static BTA_Status getFrameInstant(BTA_WrapperInst *winst, BTA_Frame **framePtr) 
     }
 
     if (ampPos >= 0 && (frameMode == BTA_FrameModeCurrentConfig || frameMode == BTA_FrameModeDistAmp || frameMode == BTA_FrameModeDistAmpColor || frameMode == BTA_FrameModeDistAmpFlags || frameMode == BTA_FrameModeXYZAmp || frameMode == BTA_FrameModeXYZAmpFlags)) {
-        uint16_t xRes = src_data_container_header_pos_ntohs(rawData, ampPos, 5);
-        uint16_t yRes = src_data_container_header_pos_ntohs(rawData, ampPos, 4);
+        uint16_t xRes = (uint16_t)src_data_container_header_pos_ntohs(rawData, ampPos, 5);
+        uint16_t yRes = (uint16_t)src_data_container_header_pos_ntohs(rawData, ampPos, 4);
         uint32_t integrationTime = src_data_container_header_pos_ntohs(rawData, ampPos, IMG_HEADER_INTEGRATIONTIME);
         uint32_t modulationFrequency = src_data_container_header_pos_ntohs(rawData, ampPos, IMG_HEADER_MODULATIONFREQUENCY);
         uint32_t dataLen = P100_WIDTH*P100_HEIGHT*sizeof(float);
@@ -1005,7 +991,7 @@ static BTA_Status getFrameInstant(BTA_WrapperInst *winst, BTA_Frame **framePtr) 
             result = calcAmplitudes(rawData, rawDataSize, data, dataLen, FLAGS_NONE, 0);
             status = BTA_StatusOk;
             if (result == P100_OKAY) {
-                status = BTAinsertChannelIntoFrame2(frame, BTA_ChannelIdAmplitude, xRes, yRes, BTA_DataFormatFloat32, BTA_UnitUnitLess, integrationTime, modulationFrequency, (uint8_t *)data, dataLen);
+                status = BTAinsertChannelIntoFrame2(frame, BTA_ChannelIdAmplitude, xRes, yRes, BTA_DataFormatFloat32, BTA_UnitUnitLess, integrationTime, modulationFrequency, (uint8_t *)data, dataLen, 0, 0, 0, 0, sequenceCounter, 0);
                 if (status != BTA_StatusOk) {
                     free(data);
                     data = 0;
@@ -1024,8 +1010,8 @@ static BTA_Status getFrameInstant(BTA_WrapperInst *winst, BTA_Frame **framePtr) 
     }
 
     if (flagPos >= 0 && (frameMode == BTA_FrameModeCurrentConfig || frameMode == BTA_FrameModeDistAmpFlags || frameMode == BTA_FrameModeXYZAmpFlags)) {
-        uint16_t xRes = src_data_container_header_pos_ntohs(rawData, flagPos, 5);
-        uint16_t yRes = src_data_container_header_pos_ntohs(rawData, flagPos, 4);
+        uint16_t xRes = (uint16_t)src_data_container_header_pos_ntohs(rawData, flagPos, 5);
+        uint16_t yRes = (uint16_t)src_data_container_header_pos_ntohs(rawData, flagPos, 4);
         uint32_t integrationTime = src_data_container_header_pos_ntohs(rawData, flagPos, IMG_HEADER_INTEGRATIONTIME);
         uint32_t modulationFrequency = src_data_container_header_pos_ntohs(rawData, flagPos, IMG_HEADER_MODULATIONFREQUENCY);
         uint32_t dataLen = P100_WIDTH*P100_HEIGHT*sizeof(uint32_t);
@@ -1033,7 +1019,7 @@ static BTA_Status getFrameInstant(BTA_WrapperInst *winst, BTA_Frame **framePtr) 
         if (data) {
             result = calcFlags(rawData, rawDataSize, data, dataLen, FLAGS_NONE, 0);
             if (result == P100_OKAY) {
-                status = BTAinsertChannelIntoFrame2(frame, BTA_ChannelIdFlags, xRes, yRes, BTA_DataFormatUInt32, BTA_UnitUnitLess, integrationTime, modulationFrequency, (uint8_t *)data, dataLen);
+                status = BTAinsertChannelIntoFrame2(frame, BTA_ChannelIdFlags, xRes, yRes, BTA_DataFormatUInt32, BTA_UnitUnitLess, integrationTime, modulationFrequency, (uint8_t *)data, dataLen, 0, 0, 0, 0, sequenceCounter, 0);
                 if (status != BTA_StatusOk) {
                     free(data);
                     data = 0;
@@ -1052,8 +1038,8 @@ static BTA_Status getFrameInstant(BTA_WrapperInst *winst, BTA_Frame **framePtr) 
     }
 
     if (intensPos >= 0 && (frameMode == BTA_FrameModeCurrentConfig || frameMode == BTA_FrameModeIntensities)) {
-        uint16_t xRes = src_data_container_header_pos_ntohs(rawData, intensPos, 5);
-        uint16_t yRes = src_data_container_header_pos_ntohs(rawData, intensPos, 4);
+        uint16_t xRes = (uint16_t)src_data_container_header_pos_ntohs(rawData, intensPos, 5);
+        uint16_t yRes = (uint16_t)src_data_container_header_pos_ntohs(rawData, intensPos, 4);
         uint32_t integrationTime = src_data_container_header_pos_ntohs(rawData, intensPos, IMG_HEADER_INTEGRATIONTIME);
         uint32_t modulationFrequency = src_data_container_header_pos_ntohs(rawData, intensPos, IMG_HEADER_MODULATIONFREQUENCY);
         uint32_t dataLen = P100_WIDTH*P100_HEIGHT*sizeof(uint16_t);
@@ -1061,7 +1047,7 @@ static BTA_Status getFrameInstant(BTA_WrapperInst *winst, BTA_Frame **framePtr) 
         if (data) {
             result = calc_intensities(rawData, rawDataSize, data, dataLen);
             if (result == P100_OKAY) {
-                status = BTAinsertChannelIntoFrame2(frame, BTA_ChannelIdGrayScale, xRes, yRes, BTA_DataFormatUInt16, BTA_UnitUnitLess, integrationTime, modulationFrequency, (uint8_t *)data, dataLen);
+                status = BTAinsertChannelIntoFrame2(frame, BTA_ChannelIdColor, xRes, yRes, BTA_DataFormatUInt16, BTA_UnitUnitLess, integrationTime, modulationFrequency, (uint8_t *)data, dataLen, 0, 0, 0, 0, sequenceCounter, 0);
                 if (status != BTA_StatusOk) {
                     free(data);
                     data = 0;
@@ -1080,8 +1066,8 @@ static BTA_Status getFrameInstant(BTA_WrapperInst *winst, BTA_Frame **framePtr) 
     }
 
     if (rawPos >= 0 && (frameMode == BTA_FrameModeCurrentConfig || frameMode == BTA_FrameModeRawPhases)) {
-        uint16_t xRes = src_data_container_header_pos_ntohs(rawData, 0, 5);
-        uint16_t yRes = src_data_container_header_pos_ntohs(rawData, 0, 4);
+        uint16_t xRes = (uint16_t)src_data_container_header_pos_ntohs(rawData, 0, 5);
+        uint16_t yRes = (uint16_t)src_data_container_header_pos_ntohs(rawData, 0, 4);
         uint32_t integrationTime = src_data_container_header_pos_ntohs(rawData, 0, IMG_HEADER_INTEGRATIONTIME);
         uint32_t modulationFrequency = src_data_container_header_pos_ntohs(rawData, 0, IMG_HEADER_MODULATIONFREQUENCY);
         uint32_t dataLen = P100_WIDTH*P100_HEIGHT*sizeof(uint16_t);
@@ -1091,7 +1077,7 @@ static BTA_Status getFrameInstant(BTA_WrapperInst *winst, BTA_Frame **framePtr) 
             if (data) {
                 result = calc_phases(rawData, rawDataSize, data, dataLen, i);
                 if (result == P100_OKAY) {
-                    status = BTAinsertChannelIntoFrame2(frame, ids[i], xRes, yRes, BTA_DataFormatSInt16, BTA_UnitUnitLess, integrationTime, modulationFrequency, (uint8_t *)data, dataLen);
+                    status = BTAinsertChannelIntoFrame2(frame, ids[i], xRes, yRes, BTA_DataFormatSInt16, BTA_UnitUnitLess, integrationTime, modulationFrequency, (uint8_t *)data, dataLen, 0, 0, 0, 0, sequenceCounter, 0);
                     if (status != BTA_StatusOk) {
                         free(data);
                         data = 0;
@@ -1127,7 +1113,7 @@ BTA_Status BTAP100flushFrameQueue(BTA_WrapperInst *winst) {
     }
 
     if (!inst->frameQueueInst) {
-        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusIllegalOperation, "BTAgetFrame: Frame queueing must be enabled in BTAopen");
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusIllegalOperation, "BTAgetFrame: Frame queueing must be enabled in BTAopen");
         return BTA_StatusIllegalOperation;
     }
 
@@ -1294,7 +1280,7 @@ BTA_Status BTAP100getFrameMode(BTA_WrapperInst *winst, BTA_FrameMode *frameMode)
     //if (status != BTA_StatusOk) {
     //    return status;
     //}
-    //BTA_ChannelId ids0[4] = { BTA_ChannelIdGrayScale, BTA_ChannelIdDistance, BTA_ChannelIdAmplitude, BTA_ChannelIdPhase0 };
+    //BTA_ChannelId ids0[4] = { BTA_ChannelIdColor, BTA_ChannelIdDistance, BTA_ChannelIdAmplitude, BTA_ChannelIdPhase0 };
     //BTA_ChannelId ids1[4] = { BTA_ChannelIdDistance, BTA_ChannelIdDistance, BTA_ChannelIdFlags, BTA_ChannelIdPhase90 };
     //BTA_ChannelId ids2[4] = { BTA_ChannelIdAmplitude, BTA_ChannelIdAmplitude, BTA_ChannelIdUnknown, BTA_ChannelIdPhase180 };
     //BTA_ChannelId ids3[4] = { BTA_ChannelIdFlags, BTA_ChannelIdDistance, BTA_ChannelIdUnknown, BTA_ChannelIdPhase270 };
@@ -1413,7 +1399,7 @@ BTA_Status BTAP100setFrameRate(BTA_WrapperInst *winst, float frameRate){
     if (firmwareDate < BTA_P100_GLOBALOFFSET_FIRMWARE_OLD) {
         //########### OLD FIRMWARE ###############
         #if DEVEL_DEBUG
-        printf(">>>>>>>>>> OLD FIRMWARE\n");
+        println(">>>>>>>>>> OLD FIRMWARE");
         #endif
         int res = setFPS(inst->deviceIndex, frameRate);
         if (res != P100_OKAY) {
@@ -1425,7 +1411,7 @@ BTA_Status BTAP100setFrameRate(BTA_WrapperInst *winst, float frameRate){
     else {
         //########### NEW FIRMWARE ###############
         #if DEVEL_DEBUG
-        printf(">>>>>>>>>> NEW FIRMWARE\n");
+        println(">>>>>>>>>> NEW FIRMWARE");
         #endif
         uint32_t frameRateInt = (uint32_t)frameRate;
         status = BTAP100writeRegister(winst, P100_REG_FRAMES_PER_SECOND, &frameRateInt, 0);
@@ -1454,7 +1440,7 @@ BTA_Status BTAP100getFrameRate(BTA_WrapperInst *winst, float *frameRate) {
     if (firmwareDate < BTA_P100_GLOBALOFFSET_FIRMWARE_OLD) {
         //########### OLD FIRMWARE ###############
         #if DEVEL_DEBUG
-        printf(">>>>>>>>>> OLD FIRMWARE\n");
+        println(">>>>>>>>>> OLD FIRMWARE");
         #endif
         int res = getFPS(inst->deviceIndex, frameRate);
         if (res != P100_OKAY) {
@@ -1465,7 +1451,7 @@ BTA_Status BTAP100getFrameRate(BTA_WrapperInst *winst, float *frameRate) {
     else {
         //########### NEW FIRMWARE ###############
         #if DEVEL_DEBUG
-        printf(">>>>>>>>>> NEW FIRMWARE\n");
+        println(">>>>>>>>>> NEW FIRMWARE");
         #endif
         status = BTAP100readRegister(winst, P100_REG_FRAMES_PER_SECOND, (unsigned int *)&frameRateint, 0);
         if (status != BTA_StatusOk) {
@@ -1495,7 +1481,7 @@ BTA_Status BTAP100setModulationFrequency(BTA_WrapperInst *winst, uint32_t modula
     }
     firmwareDate = ((firmwareDate & 0xFFFF) << 16) | ((firmwareDate & 0xFF0000) >> 8) | ((firmwareDate & 0xFF000000) >> 24);
     if (firmwareDate < BTA_P100_GLOBALOFFSET_FIRMWARE_OLD) {
-        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusNotSupported, "BTAsetModulationFrequency: Not supported below firmware v2.0.0");
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusNotSupported, "BTAsetModulationFrequency: Not supported below firmware v2.0.0");
         return BTA_StatusNotSupported;
     }
     else {
@@ -1514,7 +1500,7 @@ BTA_Status BTAP100setModulationFrequency(BTA_WrapperInst *winst, uint32_t modula
             return status;
         }
         uint32_t regData;
-        BTA_Status status = BTAP100readRegister(winst, P100_REG_SEQ_LENGTH, &regData, 0);
+        status = BTAP100readRegister(winst, P100_REG_SEQ_LENGTH, &regData, 0);
         if (status != BTA_StatusOk) {
             return status;
         }
@@ -1580,7 +1566,7 @@ BTA_Status BTAP100setGlobalOffset(BTA_WrapperInst *winst, float globalOffset) {
     if (firmwareDate < BTA_P100_GLOBALOFFSET_FIRMWARE_OLD) {
         //########### OLD FIRMWARE ###############
         #if DEVEL_DEBUG
-        printf(">>>>>>>>>> OLD FIRMWARE\n");
+        println(">>>>>>>>>> OLD FIRMWARE");
         #endif
         status = BTAP100readRegister(winst, P100_REG_SEQ0_MOD_FREQ, &modulationFrequency, 0);
         if (status != BTA_StatusOk) {
@@ -1600,7 +1586,7 @@ BTA_Status BTAP100setGlobalOffset(BTA_WrapperInst *winst, float globalOffset) {
     else {
         //########### NEW FIRMWARE ###############
         #if DEVEL_DEBUG
-        printf(">>>>>>>>>> NEW FIRMWARE\n");
+        println(">>>>>>>>>> NEW FIRMWARE");
         #endif
         status = BTAP100readRegister(winst, P100_REG_SEQ0_MOD_FREQ, &modulationFrequency, 0);
         if (status != BTA_StatusOk) {
@@ -1635,8 +1621,8 @@ BTA_Status BTAP100setGlobalOffset(BTA_WrapperInst *winst, float globalOffset) {
             break;
         }
         #if DEVEL_DEBUG
-        printf("matching offset register is: 0x%X - %u \n", regAddr, regAddr);
-        printf("offset is in int: %i\n", globalOffset);
+        println("matching offset register is: 0x%X - %u ", regAddr, regAddr);
+        println("offset is in int: %i", globalOffset);
         #endif
         uint32_t offset = (int32_t)globalOffset;
         status = BTAP100writeRegister(winst, regAddr, &offset, 0);
@@ -1978,7 +1964,7 @@ static BTA_Status restoreZFactors(BTA_WrapperInst *winst, const uint8_t *filenam
             }
             free(*zFactors);
             *zFactors = 0;
-            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusInvalidParameter, "zFactors: End of file reached early %d", i);
+            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusInvalidParameter, "zFactors: End of file reached early %d", i);
             return BTA_StatusInvalidParameter;
         }
         if (str[0] == '#') {
@@ -1990,14 +1976,14 @@ static BTA_Status restoreZFactors(BTA_WrapperInst *winst, const uint8_t *filenam
             free(*zFactors);
             *zFactors = 0;
             BTAfclose(file);
-            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusRuntimeError, "zFactors: Parse error %d", i);
+            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "zFactors: Parse error %d", i);
             return BTA_StatusRuntimeError;
         }
         if (i >= P100_WIDTH*P100_HEIGHT) {
             BTAfclose(file);
             free(*zFactors);
             *zFactors = 0;
-            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusInvalidParameter, "zFactors: Too many values %d", i);
+            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusInvalidParameter, "zFactors: Too many values %d", i);
             return BTA_StatusInvalidParameter;
         }
         (*zFactors)[i++] = value;

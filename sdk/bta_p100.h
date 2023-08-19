@@ -57,7 +57,7 @@ typedef struct BTA_P100LibInst {
 
     //virtual register memory
     uint32_t imgProcConfig; //bit 3: 1..bilateral filter enabled
-    uint32_t filterBilateralConfig2; //window size
+    uint8_t filterBilateralConfig2; //window size
 
     uint32_t version;
 

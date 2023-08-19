@@ -15,12 +15,16 @@
 #include <bta_oshelper.h>
 #include "bta_grabbing.h"
 
+#if !defined PLAT_WINDOWS && !defined PLAT_LINUX && !defined PLAT_APPLE
+#   error "Please define PLAT_WINDOWS, PLAT_LINUX or PLAT_APPLE in your makefile/project"
+#endif
+
 #define BTA_UART_PREAMBLE_0                 0xef
 #define BTA_UART_PREAMBLE_1                 0xa1
 #define BTA_UART_PROTOCOL_VERSION           1
 
 
-#ifdef PLAT_LINUX
+#if defined PLAT_LINUX || defined PLAT_APPLE
     #define DWORD               unsigned long
     #define byte                unsigned char
 
@@ -39,43 +43,6 @@ typedef struct BTA_UartLibInst  {
     uint8_t uartTransmitterAddress;
     uint8_t uartReceiverAddress;
 } BTA_UartLibInst;
-
-
-typedef enum BTA_UartCommand {
-    BTA_UartCommandRead = 1,
-    BTA_UartCommandWrite = 2,
-    BTA_UartCommandStream = 3,
-    BTA_UartCommandResponse = 4,
-    BTA_UartCommandFlashUpdate = 5,
-} BTA_UartCommand;
-
-typedef enum BTA_UartFlashCommand {
-    BTA_UartFlashCommandInit = 0,
-    BTA_UartFlashCommandSetCrc = 1,
-    BTA_UartFlashCommandSetPacket = 2,
-    BTA_UartFlashCommandGetMaxPacketSize = 3,
-    BTA_UartFlashCommandFinalize = 4,
-} BTA_UartFlashCommand;
-
-
-typedef enum BTA_UartImgMode {
-    BTA_UartImgModeDistAmp = 0,
-    BTA_UartImgModeDist = 12,
-} BTA_UartImgMode;
-
-
-typedef enum BTA_UartRegAddr {
-    BTA_UartRegAddrIntegrationTime = 0x0005,
-    BTA_UartRegAddrDeviceType = 0x0006,
-    BTA_UartRegAddrFirmwareInfo = 0x0008,
-    BTA_UartRegAddrModulationFrequency = 0x0009,
-    BTA_UartRegAddrFramerate = 0x000A,
-    BTA_UartRegAddrSerialNrLowWord = 0x000C,
-    BTA_UartRegAddrSerialNrHighWord = 0x000D,
-    BTA_UartRegAddrCmdEnablePasswd = 0x0022,
-    BTA_UartRegAddrCmdExec = 0x0033,
-    BTA_UartRegAddrCmdExecResult = 0x0034
-} BTA_UartRegAddr;
 
 
 //void *BTAUARTdiscoveryRunFunction(BTA_DiscoveryInst *inst);

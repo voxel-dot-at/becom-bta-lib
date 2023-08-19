@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include <bta.h>
+#include <bta_helper.h>
 #include <mth_math.h>
 
 
@@ -372,7 +373,6 @@ BTA_Status BTA_CALLCONV BTAaverageChannels(BTA_Channel **channels, int channelsL
             break;
 
         case BTA_ChannelIdColor:
-        case BTA_ChannelIdGrayScale:
             // No averaging, just clone the first channel (todo?)
             BTAfreeChannel(result);
             status = BTAcloneChannel(channels[0], result);
@@ -454,3 +454,158 @@ BTA_Status BTA_CALLCONV BTAaverageChannels(BTA_Channel **channels, int channelsL
     free(sums);
     return BTA_StatusOk;
 }
+
+
+BTA_Status BTA_CALLCONV BTAcalcXYZ(BTA_Frame *frame, BTA_LensVectors **lensVectorsList, uint16_t lensVectorsListLen, BTA_ExtrinsicData **extrinsicDataList, uint16_t extrinsicDataListLen) {
+    if (!frame || !lensVectorsList) {
+        return BTA_StatusInvalidParameter;
+    }
+    for (int chInd = 0; chInd < frame->channelsLen; chInd++) {
+        BTA_Channel *channel = frame->channels[chInd];
+        if (channel->id != BTA_ChannelIdDistance || channel->xRes == 0 || channel->yRes == 0) {
+            continue;
+        }
+        for (int lvInd = 0; lvInd < lensVectorsListLen; lvInd++) {
+            BTA_LensVectors* lensVectors = lensVectorsList[lvInd];
+            if (lensVectors->lensIndex != channel->lensIndex || lensVectors->xRes != channel->xRes || lensVectors->yRes != channel->yRes) {
+                continue;
+            }
+            if (!lensVectors->vectorsX || !lensVectors->vectorsY || !lensVectors->vectorsZ) {
+                return BTA_StatusInvalidParameter;
+            }
+            float* rotTrlInv = 0;
+            if (extrinsicDataList) {
+                for (int edInd = 0; edInd < extrinsicDataListLen; edInd++) {
+                    if (extrinsicDataList[edInd]->rotTrlInv && extrinsicDataList[edInd]->lensIndex == channel->lensIndex) {
+                        rotTrlInv = extrinsicDataList[edInd]->rotTrlInv;
+                        break;
+                    }
+                }
+            }
+
+            int pxCount = channel->xRes * channel->yRes;
+            if (channel->dataFormat == BTA_DataFormatUInt16) {
+                uint16_t* data = (uint16_t*)channel->data;
+                int16_t* dataX = (int16_t*)malloc(pxCount * sizeof(int16_t));
+                int16_t* dataY = (int16_t*)malloc(pxCount * sizeof(int16_t));
+                int16_t* dataZ = (int16_t*)malloc(pxCount * sizeof(int16_t));
+                if (!dataX || !dataY || !dataZ) {
+                    //BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WARNING, BTA_StatusOutOfMemory, "BTAcalcXYZApply: out of memory");
+                    return BTA_StatusOutOfMemory;
+                }
+                int16_t* dataXp = dataX;
+                int16_t* dataYp = dataY;
+                int16_t* dataZp = dataZ;
+                float* vectorsX = lensVectors->vectorsX;
+                float* vectorsY = lensVectors->vectorsY;
+                float* vectorsZ = lensVectors->vectorsZ;
+                for (int xy = 0; xy < pxCount; xy++) {
+                    if (*data < 10) {
+                        // Invalid pixel map to respective range for invalidation values
+                        *dataXp++ = (int16_t)(*data * *vectorsX++ + 0.5f);
+                        *dataYp++ = (int16_t)(*data * *vectorsY++ + 0.5f);
+                        *dataZp++ = INT16_MIN + *data;
+                        vectorsZ++;
+                    }
+                    else {
+                        if (rotTrlInv) {
+                            float x = *data * *vectorsX++;
+                            float y = *data * *vectorsY++;
+                            float z = *data * *vectorsZ++;
+                            *dataXp++ = (int16_t)(rotTrlInv[0] * x + rotTrlInv[1] * y + rotTrlInv[2] * z + rotTrlInv[3] + .5f);
+                            *dataYp++ = (int16_t)(rotTrlInv[4] * x + rotTrlInv[5] * y + rotTrlInv[6] * z + rotTrlInv[7] + .5f);
+                            *dataZp++ = (int16_t)(rotTrlInv[8] * x + rotTrlInv[9] * y + rotTrlInv[10] * z + rotTrlInv[11] + .5f);
+                        }
+                        else {
+                            *dataXp++ = (int16_t)(*data * *vectorsX++ + 0.5f);
+                            *dataYp++ = (int16_t)(*data * *vectorsY++ + 0.5f);
+                            *dataZp++ = (int16_t)(*data * *vectorsZ++ + 0.5f);
+                        }
+                    }
+                    data++;
+                }
+                BTA_Status status = BTAinsertChannelIntoFrame2(frame, BTA_ChannelIdX, channel->xRes, channel->yRes, BTA_DataFormatSInt16, BTA_UnitMillimeter, channel->integrationTime, channel->modulationFrequency, (uint8_t*)dataX, pxCount * sizeof(int16_t),
+                                                               0, 0, channel->lensIndex, channel->flags, channel->sequenceCounter, channel->gain);
+                if (status != BTA_StatusOk) {
+                    free(dataX);
+                    dataX = 0;
+                    free(dataY);
+                    dataY = 0;
+                    free(dataZ);
+                    dataZ = 0;
+                    //BTAinfoEventHelper(winst->infoEventInst, 5, status, "BTAcalcXYZApply: Error adding channel X");
+                    return status;
+                }
+                status = BTAinsertChannelIntoFrame2(frame, BTA_ChannelIdY, channel->xRes, channel->yRes, BTA_DataFormatSInt16, BTA_UnitMillimeter, channel->integrationTime, channel->modulationFrequency, (uint8_t*)dataY, pxCount * sizeof(int16_t),
+                                                    0, 0, channel->lensIndex, channel->flags, channel->sequenceCounter, channel->gain);
+                if (status != BTA_StatusOk) {
+                    free(dataY);
+                    dataY = 0;
+                    free(dataZ);
+                    dataZ = 0;
+                    //BTAinfoEventHelper(winst->infoEventInst, 5, status, "BTAcalcXYZApply: Error adding channel Y");
+                    return status;
+                }
+                status = BTAinsertChannelIntoFrame2(frame, BTA_ChannelIdZ, channel->xRes, channel->yRes, BTA_DataFormatSInt16, BTA_UnitMillimeter, channel->integrationTime, channel->modulationFrequency, (uint8_t*)dataZ, pxCount * sizeof(int16_t),
+                                                    0, 0, channel->lensIndex, channel->flags, channel->sequenceCounter, channel->gain);
+                if (status != BTA_StatusOk) {
+                    free(dataZ);
+                    dataZ = 0;
+                    //BTAinfoEventHelper(winst->infoEventInst, 5, status, "BTAcalcXYZApply: Error adding channel Z");
+                    return status;
+                }
+                continue;
+            }
+            else {
+                return BTA_StatusNotSupported;
+            }
+        }
+    }
+    return BTA_StatusOk;
+}
+
+
+BTA_Status BTA_CALLCONV BTAcalcMonochromeFromAmplitude(BTA_Frame *frame) {
+    if (!frame) {
+        return BTA_StatusInvalidParameter;
+    }
+    for (int chInd = 0; chInd < frame->channelsLen; chInd++) {
+        BTA_Channel *channel = frame->channels[chInd];
+        if (channel->id != BTA_ChannelIdAmplitude || channel->xRes == 0 || channel->yRes == 0) {
+            continue;
+        }
+        if (channel->dataFormat == BTA_DataFormatUInt16) {
+            int pxCount = channel->xRes * channel->yRes;
+            uint16_t *dataAmp = (uint16_t *)channel->data;
+            uint8_t *dataMono = (uint8_t *)malloc(pxCount * sizeof(uint8_t));
+            if (!dataMono) {
+                return BTA_StatusOutOfMemory;
+            }
+            uint16_t ampMin = UINT16_MAX;
+            uint16_t ampMax = 0;
+            for (int xy = 0; xy < pxCount; xy++) {
+                ampMin = *dataAmp < ampMin ? *dataAmp : ampMin;
+                ampMax = *dataAmp > ampMax ? *dataAmp : ampMax;
+                dataAmp++;
+            }
+            dataAmp = (uint16_t *)channel->data;
+            uint8_t *data = dataMono;
+            for (int xy = 0; xy < pxCount; xy++) {
+                *data++ = (uint8_t)((*dataAmp++ - ampMin) * 255 / (ampMax - ampMin));
+            }
+            BTA_Status status = BTAinsertChannelIntoFrame2(frame, BTA_ChannelIdColor, channel->xRes, channel->yRes, BTA_DataFormatUInt8, BTA_UnitUnitLess, 0, 0, dataMono, pxCount * sizeof(uint8_t),
+                                                           0, 0, channel->lensIndex, channel->flags, channel->sequenceCounter, channel->gain);
+            if (status != BTA_StatusOk) {
+                free(dataMono);
+                return status;
+            }
+            continue;
+        }
+        else {
+            return BTA_StatusNotSupported;
+        }
+    }
+    return BTA_StatusOk;
+}
+
+

@@ -21,7 +21,7 @@
 
 #define BTA_FLASH_UPDATE_H_VER_MAJ 3
 #define BTA_FLASH_UPDATE_H_VER_MIN 3
-#define BTA_FLASH_UPDATE_H_VER_NON_FUNC 6
+#define BTA_FLASH_UPDATE_H_VER_NON_FUNC 11
 
 #include <stdint.h>
 
@@ -79,7 +79,7 @@ typedef enum BTA_FlashId {
 typedef struct BTA_FlashUpdateConfig {
     BTA_FlashTarget target;         ///< Type of update, indicating the target where to copy the data to
     BTA_FlashId flashId;            ///< Parameter to distinguish between different flash modules on the device
-    uint32_t address;               ///< Address within the specified memory
+    uint32_t address;               ///< Address within the specified memory. Special case: if target is BTA_FlashTargetGeometricModelParameters and if reading from flash this is used as lensIndex
     uint8_t *data;                  ///< Data to be transmitted and saved
     uint32_t dataLen;               ///< Size of data in bytes
 } BTA_FlashUpdateConfig;

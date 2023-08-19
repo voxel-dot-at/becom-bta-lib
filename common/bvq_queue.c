@@ -50,7 +50,10 @@ BTA_Status BTA_CALLCONV BVQinit(uint32_t queueLength, BTA_QueueMode queueMode, F
     if (!inst) {
         return BTA_StatusOutOfMemory;
     }
-    BTAinitSemaphore(&inst->semQueueCount, 0, 0);
+    BTA_Status status = BTAinitSemaphore(&inst->semQueueCount, 0, 0);
+    if (status != BTA_StatusOk) {
+        return status;
+    }
     inst->queuePos = 0;
     inst->queueCount = 0;
     inst->queueLength = queueLength;
@@ -222,7 +225,7 @@ BTA_Status BTA_CALLCONV BVQpeek(BVQ_QueueHandle handle, void **item, uint32_t ms
         // Peek is not allowed if the void pointer could be dropped at any time
         return BTA_StatusIllegalOperation;
     }
-    uint32_t endTime = BTAgetTickCount() + msecsTimeout;
+    uint64_t endTime = BTAgetTickCount64() + msecsTimeout;
     do {
         BTAlockMutex(inst->queueMutex);
         if (inst->queueCount) {
@@ -236,7 +239,7 @@ BTA_Status BTA_CALLCONV BVQpeek(BVQ_QueueHandle handle, void **item, uint32_t ms
         }
         BTAunlockMutex(inst->queueMutex);
         BTAmsleep(10);
-    } while (msecsTimeout == 0 || (uint32_t)BTAgetTickCount() <= endTime);
+    } while (msecsTimeout == 0 || (uint64_t)BTAgetTickCount64() <= endTime);
     *item = 0;
     return BTA_StatusTimeOut;
 }

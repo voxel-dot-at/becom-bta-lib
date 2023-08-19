@@ -2,28 +2,91 @@
 
 #include <string.h>
 #include <stdlib.h>
-#ifdef PLAT_WINDOWS
-#   include <winsock2.h>
-#   include <Ws2tcpip.h>
-#   include <iphlpapi.h>
-#elif defined PLAT_LINUX || defined PLAT_APPLE
-#   include <errno.h>
-#   include <netdb.h>
-#   include <netinet/in.h>
-#   include <ifaddrs.h>
-#endif
+#include <mth_math.h>
+#include <stdio.h>
+#include <bitconverter.h>
+#include <utils.h>
 
 
 int getLastSocketError() {
 #   ifdef PLAT_WINDOWS
     return WSAGetLastError();
-#   elif defined PLAT_LINUX || defined PLAT_APPLE
+#   else
     return errno;
 #   endif
 }
 
 
-static BTA_Status BTAlistLocalIpAddrs(uint32_t **ipAddrs, uint32_t **subnetMasks, uint32_t *ipAddrsLen) {
+#ifdef PLAT_WINDOWS
+static char errorMsg[456];
+#endif
+const char *errorToString(int err) {
+#   ifdef PLAT_WINDOWS
+    FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, NULL, err, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), errorMsg, sizeof(errorMsg), NULL);
+    UTILremoveChar(errorMsg, '\n');
+    return errorMsg;
+#   else
+    return strerror(MTHabs(err));
+#   endif
+}
+
+
+//uint32_t convertByteWiseToInt(uint8_t *ipAddr, uint8_t ipAddrLen) {
+//    uint32_t ipAddrL = 0;
+//    for (int i = 0; i < ipAddrLen; i++) {
+//        ipAddrL |= ipAddr[i] << (i * 8);
+//    }
+//    return ipAddrL;
+//}
+//
+//
+//void convertIntToByteWise(uint32_t ipAddrL, uint8_t *ipAddr, uint8_t ipAddrLen) {
+//    for (int i = 0; i < ipAddrLen; i++) {
+//        ipAddr[i] = (ipAddrL >> (i * 8)) & 0xff;
+//    }
+//}
+
+
+//void printAddrinfo(struct addrinfo *ai) {
+//    //printf("ai_family: %d\n", ai->ai_family);
+//    //printf("ai_socktype: %d\n", ai->ai_socktype);
+//    //printf("ai_protocol: %d\n", ai->ai_protocol);
+//    //printf("ai_addrlen: %d\n", ai->ai_addrlen);
+//    //printf("ai_canonname: %s\n", ai->ai_canonname);
+//    //if (ai->ai_family == AF_INET) {
+//    //    struct sockaddr_in *ipv4 = (struct sockaddr_in *)ai->ai_addr;
+//    //    printf("ai_addr: %s\n", inet_ntoa(ipv4->sin_addr));
+//    //}
+//    //else if (ai->ai_family == AF_INET6) {
+//    //    struct sockaddr_in6 *ipv6 = (struct sockaddr_in6 *)ai->ai_addr;
+//    //    printf("ai_addr: %s\n", inet_ntop(ai->ai_family, &ipv6->sin6_addr, NULL, 0));
+//    //}
+//    char host[NI_MAXHOST], port[NI_MAXSERV];
+//    int ret;
+//
+//    // Get the human-readable address and port
+//    ret = getnameinfo(ai->ai_addr, ai->ai_addrlen, host, NI_MAXHOST, port, NI_MAXSERV, NI_NUMERICHOST | NI_NUMERICSERV);
+//    if (ret != 0) {
+//        printf("getnameinfo: %s\n", gai_strerror(ret));
+//        return;
+//    }
+//
+//    // Print the address information
+//    printf("Family: %s, Socket Type: %s, Protocol: %s, Address: %s, Port: %s\n",
+//        ai->ai_family == AF_INET ? "IPv4" : "IPv6",
+//        ai->ai_socktype == SOCK_STREAM ? "TCP" : "UDP",
+//        ai->ai_protocol == IPPROTO_TCP ? "TCP" : "UDP", host, port);
+//    if (ai->ai_next) {
+//        ret = getnameinfo(ai->ai_next->ai_addr, ai->ai_next->ai_addrlen, host, NI_MAXHOST, port, NI_MAXSERV, NI_NUMERICHOST | NI_NUMERICSERV);
+//        printf("Next is %s:%s\n", host, port);
+//    }
+//    else {
+//        printf("There is no 'next'\n");
+//    }
+//}
+
+
+BTA_Status BTAlistLocalIpAddrs(uint32_t **ipAddrs, uint32_t **subnetMasks, uint32_t *ipAddrsLen) {
     if (!ipAddrsLen) {
         return BTA_StatusInvalidParameter;
     }
@@ -100,7 +163,7 @@ static BTA_Status BTAlistLocalIpAddrs(uint32_t **ipAddrs, uint32_t **subnetMasks
     }
     free(pAddresses);
     return BTA_StatusOk;
-#   elif defined PLAT_LINUX || defined PLAT_APPLE
+#   else
     struct ifaddrs *addresses, *address;
     int err = getifaddrs(&addresses);
     if (err == -1) {
@@ -110,8 +173,8 @@ static BTA_Status BTAlistLocalIpAddrs(uint32_t **ipAddrs, uint32_t **subnetMasks
     // count addresses
     *ipAddrsLen = 0;
     address = addresses;
-    while (address && address->ifa_addr) {
-        if (address->ifa_addr->sa_family == AF_INET) {
+    while (address) {
+        if (address->ifa_addr && address->ifa_addr->sa_family == AF_INET) {
             uint32_t addr = ((struct sockaddr_in *)(address->ifa_addr))->sin_addr.s_addr;
             if (addr != 0 && addr != 0x100007f) {
                 *ipAddrsLen = *ipAddrsLen + 1;
@@ -128,8 +191,8 @@ static BTA_Status BTAlistLocalIpAddrs(uint32_t **ipAddrs, uint32_t **subnetMasks
     // copy to result
     int i = 0;
     address = addresses;
-    while (address && address->ifa_addr) {
-        if (address->ifa_addr->sa_family == AF_INET) {
+    while (address) {
+        if (address->ifa_addr && address->ifa_addr->sa_family == AF_INET) {
             uint32_t addr = ((struct sockaddr_in *)(address->ifa_addr))->sin_addr.s_addr;
             uint32_t mask = ((struct sockaddr_in *)(address->ifa_netmask))->sin_addr.s_addr;
             if (addr != 0 && addr != 0x100007f) {
@@ -150,7 +213,7 @@ uint8_t BTAisLocalIpAddrOrMulticast(uint8_t *ipAddr, uint8_t ipAddrLen) {
     if (ipAddrLen != 4) {
         return 0;
     }
-    uint32_t ipAddrTemp = ipAddr[0] | (ipAddr[1] << 8) | (ipAddr[2] << 16) | (ipAddr[3] << 24);
+    uint32_t ipAddrTemp = BTAbitConverterToUInt32(ipAddr, 0);
     if ((ipAddrTemp & 0xe0) == 0xe0) {
         // This is a multicast address
         return 1;
@@ -159,7 +222,7 @@ uint8_t BTAisLocalIpAddrOrMulticast(uint8_t *ipAddr, uint8_t ipAddrLen) {
     uint32_t ipAddrsLen;
     BTA_Status status = BTAlistLocalIpAddrs(&ipAddrs, 0, &ipAddrsLen);
     if (status != BTA_StatusOk) {
-        return status;
+        return 0;
     }
     for (uint32_t i = 0; i < ipAddrsLen; i++) {
         if (ipAddrs[i] == ipAddrTemp) {
@@ -180,7 +243,7 @@ BTA_Status BTAgetMatchingLocalAddress(uint8_t *deviceIpAddr, uint8_t ipAddrLen, 
         // Set to zero so we can detect if a match was found in the loop
         *matchingLocalpAddr = 0;
     }
-    uint32_t deviceIpAddrL = deviceIpAddr[0] | (deviceIpAddr[1] << 8) | (deviceIpAddr[2] << 16) | (deviceIpAddr[3] << 24);
+    uint32_t deviceIpAddrL = BTAbitConverterToUInt32(deviceIpAddr, 0);
     uint32_t *ipAddrs, *subnetMasks;
     uint32_t ipAddrsLen;
     BTA_Status status = BTAlistLocalIpAddrs(&ipAddrs, &subnetMasks, &ipAddrsLen);
@@ -211,79 +274,17 @@ BTA_Status BTAgetMatchingLocalAddress(uint8_t *deviceIpAddr, uint8_t ipAddrLen, 
                     free(subnetMasks);
                     return BTA_StatusOutOfMemory;
                 }
-                (*matchingLocalpAddr)[0] =  ipAddrs[i] & 0xff;
-                (*matchingLocalpAddr)[1] = (ipAddrs[i] >> 8) & 0xff;
-                (*matchingLocalpAddr)[2] = (ipAddrs[i] >> 16) & 0xff;
-                (*matchingLocalpAddr)[3] = (ipAddrs[i] >> 24) & 0xff;
-            }
-            
+                BTAbitConverterFromUInt32(ipAddrs[i], *matchingLocalpAddr, 0);
+            }            
         }
     }
     free(ipAddrs);
     free(subnetMasks);
     if (matchingLocalpAddr && *matchingLocalpAddr) {
+        // We searched all interfaces and found exactly one match
         return BTA_StatusOk;
     }
     //BTAinfoEventHelper(infoEventInst, VERBOSE_CRITICAL, BTA_StatusRuntimeError, "UDP data auto config failed, unique local address not found");
     return BTA_StatusRuntimeError;
 }
 
-
-void BTAfreeNetworkBroadcastAddrs(uint8_t ***localIpAddrs, uint8_t ***networkBroadcastAddrs, uint32_t networkBroadcastAddrsLen) {
-    for (uint32_t i = 0; i < networkBroadcastAddrsLen; i++) {
-        free((*localIpAddrs)[i]);
-        (*localIpAddrs)[i] = 0;
-        free((*networkBroadcastAddrs)[i]);
-        (*networkBroadcastAddrs)[i] = 0;
-    }
-    free(*localIpAddrs);
-    *localIpAddrs = 0;
-    free(*networkBroadcastAddrs);
-    *networkBroadcastAddrs = 0;
-}
-
-
-BTA_Status BTAgetNetworkBroadcastAddrs(uint8_t ***localIpAddrs, uint8_t ***networkBroadcastAddrs, uint32_t *networkBroadcastAddrsLen) {
-    if (!localIpAddrs || !networkBroadcastAddrs || !networkBroadcastAddrsLen) {
-        return BTA_StatusInvalidParameter;
-    }
-    uint32_t *ipAddrs, *subnetMasks;
-    BTA_Status status = BTAlistLocalIpAddrs(&ipAddrs, &subnetMasks, networkBroadcastAddrsLen);
-    if (status != BTA_StatusOk) {
-        return status;
-    }
-    uint32_t len = *networkBroadcastAddrsLen;
-    if (len) {
-        uint8_t **resultA1 = *localIpAddrs = (uint8_t **)calloc(len, sizeof(uint8_t *));
-        uint8_t **resultB1 = *networkBroadcastAddrs = (uint8_t **)calloc(len, sizeof(uint8_t *));
-        if (!resultA1 || !resultB1) {
-            BTAfreeNetworkBroadcastAddrs(localIpAddrs, networkBroadcastAddrs, len);
-            free(ipAddrs);
-            free(subnetMasks);
-            return BTA_StatusOutOfMemory;
-        }
-        for (uint32_t i = 0; i < len; i++) {
-            uint8_t *resultA2 = resultA1[i] = (uint8_t *)malloc(4 * sizeof(uint8_t));
-            uint8_t *resultB2 = resultB1[i] = (uint8_t *)malloc(4 * sizeof(uint8_t));
-            if (!resultA2 || !resultB2) {
-                BTAfreeNetworkBroadcastAddrs(localIpAddrs, networkBroadcastAddrs, len);
-                free(ipAddrs);
-                free(subnetMasks);
-                return BTA_StatusOutOfMemory;
-            }
-            uint32_t ipAddr = ipAddrs[i];
-            resultA2[0] = ipAddr & 0xff;
-            resultA2[1] = (ipAddr >> 8) & 0xff;
-            resultA2[2] = (ipAddr >> 16) & 0xff;
-            resultA2[3] = (ipAddr >> 24) & 0xff;
-            uint32_t broadcast = ipAddrs[i] | ~subnetMasks[i];
-            resultB2[0] = broadcast & 0xff;
-            resultB2[1] = (broadcast >> 8) & 0xff;
-            resultB2[2] = (broadcast >> 16) & 0xff;
-            resultB2[3] = (broadcast >> 24) & 0xff;
-        }
-        free(ipAddrs);
-        free(subnetMasks);
-    }
-    return BTA_StatusOk;
-}

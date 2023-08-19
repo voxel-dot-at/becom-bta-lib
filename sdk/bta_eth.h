@@ -27,20 +27,15 @@
 #include "fifo.h"
 #include <semaphore.h>
 #if defined PLAT_LINUX
+// Shared memory streaming is only supported on-camera
 #include <sys/stat.h> // For mode constants
 #include <fcntl.h> // For O_* constants
 #include <sys/mman.h>
 #include <unistd.h>
-#else
-// not on linux, define dummies in order to satisfy compiler
-#define shm_open(a, b, c) (-1)
-#define shm_unlink(a) (-1)
-#define ftruncate(a, b, c) (-1)
-#define MAP_FAILED 0
-#define mmap(a, b, c, d, e, f) MAP_FAILED
-#define munmap(a, b) (-1)
-#define SEM_FAILED 0
-#define sem_open(a, b) SEM_FAILED
+#endif
+
+#if !defined PLAT_WINDOWS && !defined PLAT_LINUX && !defined PLAT_APPLE
+#   error "Please define PLAT_WINDOWS, PLAT_LINUX or PLAT_APPLE in your makefile/project"
 #endif
 
 #define BTA_ETH_IP_ADDR_VER_TO_LEN_LEN      7
@@ -66,6 +61,15 @@
 // prototypes
 
 
+typedef enum BTA_ConnectionState {
+    BTA_ConnectionStateDeactivated,
+    BTA_ConnectionStateWanted,
+    BTA_ConnectionStateFirstAttempt,
+    BTA_ConnectionStateReconnecting,
+    BTA_ConnectionStateConnected,
+    BTA_ConnectionStateClosed
+} BTA_ConnectionState;
+
 
 typedef struct BTA_EthLibInst {
     uint8_t closing;
@@ -74,6 +78,8 @@ typedef struct BTA_EthLibInst {
     SOCKET tcpControlSocket;
     SOCKET udpControlSocket;
     void *controlMutex;
+    void *semConnectionEstablishment;
+    BTA_KeepAliveInst *keepAliveInst;
 
     void *udpReadThread;
     void *parseFramesThread;
@@ -102,23 +108,12 @@ typedef struct BTA_EthLibInst {
     BCB_Handle packetsToParseQueue;
     BVQ_QueueHandle framesToParseQueue;
 
-    uint32_t keepAliveMsgTimestamp;
-
-    // Satus:
-    // 0: deactivated
-    // 1: activated, connection attempt will be made
-    // 2: tcp only: connection lost, reconnecting
-    // 3: udp only: connection lost, sending keepAlive messages waiting for a response
-    // 8: first connection attempt, requesting alive message
-    // 16: connected
-    // 255: disconnected, closing
-    uint8_t udpDataConnectionStatus;
-    uint8_t udpControlConnectionStatus;
-    uint8_t tcpControlConnectionStatus;
+    BTA_ConnectionState udpDataConnectionState;
+    BTA_ConnectionState udpControlConnectionState;
+    BTA_ConnectionState tcpControlConnectionState;
 
     // LibParams
 
-    float lpKeepAliveMsgInterval;
     uint8_t lpControlCrcEnabled;
 
     int lpDataStreamRetrReqMode;

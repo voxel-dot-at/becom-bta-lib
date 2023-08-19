@@ -12,10 +12,9 @@
 #include <timing_helper.h>
 #include <pthread_helper.h>
 #include "configuration.h"
+#include <uart_helper.h>
 
-#ifdef PLAT_WINDOWS
-
-#elif defined PLAT_LINUX
+#if defined PLAT_LINUX || defined PLAT_APPLE
     #include <netdb.h>
     #include <errno.h>
 #endif
@@ -82,14 +81,14 @@ BTA_Status BTAUARTopen(BTA_Config *config, BTA_WrapperInst *winst) {
         return BTA_StatusInvalidParameter;
     }
 
-    status = BTAserialOpen(config->uartPortName, config->uartBaudRate, config->uartDataBits, config->uartStopBits, config->uartParity, &inst->serialHandle);
+    status = UARTHLPserialOpenByName((const char *)config->uartPortName, config->uartBaudRate, config->uartDataBits, config->uartStopBits, config->uartParity, &inst->serialHandle);
     if (status != BTA_StatusOk) {
         BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, status, "BTAopen uart: Could not open serial port");
         BTAUARTclose(winst);
         return status;
     }
 
-    status = BTAcreateThread(&(inst->readFramesThread), &readFramesRunFunction, (void *)inst, 0);
+    status = BTAcreateThread(&(inst->readFramesThread), &readFramesRunFunction, (void *)inst);
     if (status != BTA_StatusOk) {
         BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, status, "BTAopen uart: Could not start readFramesThread");
         BTAUARTclose(winst);
@@ -102,7 +101,6 @@ BTA_Status BTAUARTopen(BTA_Config *config, BTA_WrapperInst *winst) {
 
 BTA_Status BTAUARTclose(BTA_WrapperInst *winst) {
     if (!winst) {
-        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusInvalidParameter, "BTAclose UART: winst missing!");
         return BTA_StatusInvalidParameter;
     }
     BTA_UartLibInst *inst = (BTA_UartLibInst *)winst->inst;
@@ -125,7 +123,7 @@ BTA_Status BTAUARTclose(BTA_WrapperInst *winst) {
         BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "BTAclose UART: Failed to close grabber");
     }
 
-    status = BTAserialClose(inst->serialHandle);
+    status = UARTHLPserialClose(inst->serialHandle);
     if (status != BTA_StatusOk) {
         BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "BTAclose UART: Failed to close serial handle");
     }
@@ -287,17 +285,17 @@ static BTA_Status readFrame(BTA_WrapperInst *winst, uint8_t **dataPtr, uint32_t 
     BTA_Status status;
     uint8_t preamble0 = 0;
     uint8_t preamble1 = 0;
-    uint32_t timeEnd = BTAgetTickCount() + timeout;
+    uint64_t timeEnd = BTAgetTickCount64() + timeout;
     while (!inst->closing && (preamble0 != BTA_UART_PREAMBLE_0 || preamble1 != BTA_UART_PREAMBLE_1)) {
         preamble0 = preamble1;
-        BTAserialRead(inst->serialHandle, &preamble1, 1, 0);
-        if (BTAgetTickCount() > timeEnd) {
+        UARTHLPserialRead(inst->serialHandle, &preamble1, 1);
+        if (BTAgetTickCount64() > timeEnd) {
             //BTAinfoEventHelper(winst->infoEventInst, IMPORTANCE_ERROR, BTA_StatusTimeOut, "ReadFrame: (preamble) %d", getLastError());
             return BTA_StatusTimeOut;
         }
     }
     uint8_t protocolVersion;
-    status = BTAserialRead(inst->serialHandle, &protocolVersion, 1, 0);
+    status = UARTHLPserialRead(inst->serialHandle, &protocolVersion, 1);
     if (status != BTA_StatusOk) {
         BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "ReadFrame: can't read (protocolVersion) %d", getLastError());
         return status;
@@ -312,7 +310,7 @@ static BTA_Status readFrame(BTA_WrapperInst *winst, uint8_t **dataPtr, uint32_t 
     data[2] = protocolVersion;
     switch (protocolVersion) {
         case 1: {
-            status = BTAserialRead(inst->serialHandle, &data[3], 6, 0);
+            status = UARTHLPserialRead(inst->serialHandle, &data[3], 6);
             if (status != BTA_StatusOk) {
                 free(data);
                 data = 0;
@@ -330,7 +328,6 @@ static BTA_Status readFrame(BTA_WrapperInst *winst, uint8_t **dataPtr, uint32_t 
                 // Not my concern, don't listen, do nothing
                 free(data);
                 data = 0;
-                BTAinfoEventHelper(winst->infoEventInst, VERBOSE_INFO, BTA_StatusInformation, "ReadFrame: transmitterAddress does not match %d", data[3]);
                 return BTA_StatusOk;
             }
             // TODO? check receiverAddress???
@@ -343,7 +340,7 @@ static BTA_Status readFrame(BTA_WrapperInst *winst, uint8_t **dataPtr, uint32_t 
                 temp = 0;
                 return BTA_StatusOutOfMemory;
             }
-            status = BTAserialRead(inst->serialHandle, &data[9], payloadLen + 2, 0);
+            status = UARTHLPserialRead(inst->serialHandle, &data[9], payloadLen + 2);
             if (status != BTA_StatusOk) {
                 free(data);
                 data = 0;
@@ -556,7 +553,7 @@ BTA_Status BTAUARTsetModulationFrequency(BTA_WrapperInst *winst, uint32_t modula
         return status;
     }
     uint32_t modFreq;
-    status = BTAgetNextBestModulationFrequency(deviceType, modulationFrequency, &modFreq, 0);
+    status = BTAgetNextBestModulationFrequency(winst, modulationFrequency, &modFreq, 0);
     if (status != BTA_StatusOk) {
         if (status == BTA_StatusNotSupported) {
             BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusNotSupported, "BTAsetModulationFrequency: Not supported for this deviceType: %d", deviceType);
@@ -595,23 +592,23 @@ BTA_Status BTAUARTwriteCurrentConfigToNvm(BTA_WrapperInst *winst) {
     }
     // wait until the device is ready again
     uint32_t result;
-    uint32_t endTime = BTAgetTickCount() + 20000;
+    uint64_t endTime = BTAgetTickCount64() + 20000;
     do {
         BTAmsleep(50);
         status = BTAUARTreadRegister(winst, BTA_UartRegAddrDeviceType, &result, 0);
-    } while (status != BTA_StatusOk && BTAgetTickCount() < endTime);
+    } while (status != BTA_StatusOk && BTAgetTickCount64() < endTime);
     if (status != BTA_StatusOk) {
         return status;
     }
     BTAmsleep(100);
-    endTime = BTAgetTickCount() + 7000;
+    endTime = BTAgetTickCount64() + 7000;
     do {
         BTAmsleep(150);
         status = BTAUARTreadRegister(winst, BTA_UartRegAddrCmdExecResult, &result, 0);
         if (status != BTA_StatusOk) {
             return status;
         }
-    } while (result == 0 && BTAgetTickCount() < endTime);
+    } while (result == 0 && BTAgetTickCount64() < endTime);
     if (result != 1) {
         BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "BTAwriteCurrentConfigToNvm() failed %d", result);
         return BTA_StatusRuntimeError;
@@ -637,23 +634,23 @@ BTA_Status BTAUARTrestoreDefaultConfig(BTA_WrapperInst *winst) {
     }
     // wait until the device is ready again
     uint32_t result;
-    uint32_t endTime = BTAgetTickCount() + 20000;
+    uint64_t endTime = BTAgetTickCount64() + 20000;
     do {
         BTAmsleep(500);
         status = BTAUARTreadRegister(winst, BTA_UartRegAddrDeviceType, &result, 0);
-    } while (status != BTA_StatusOk && BTAgetTickCount() < endTime);
+    } while (status != BTA_StatusOk && BTAgetTickCount64() < endTime);
     if (status != BTA_StatusOk) {
         return status;
     }
     BTAmsleep(100);
-    endTime = BTAgetTickCount() + 20000;
+    endTime = BTAgetTickCount64() + 20000;
     do {
         BTAmsleep(550);
         status = BTAUARTreadRegister(winst, BTA_UartRegAddrCmdExecResult, &result, 0);
         if (status != BTA_StatusOk) {
             return status;
         }
-    } while (result == 0 && BTAgetTickCount() < endTime);
+    } while (result == 0 && BTAgetTickCount64() < endTime);
     if (result != 1) {
         BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "BTArestoreDefaultConfig() failed %d", result);
         return BTA_StatusRuntimeError;
@@ -704,7 +701,7 @@ BTA_Status BTAUARTreadRegister(BTA_WrapperInst *winst, uint32_t address, uint32_
         return BTA_StatusIllegalOperation;
     }
     BTAlockMutex(inst->handleMutex);
-    status = BTAserialWrite(inst->serialHandle, sendBuffer, sendBufferLen, 0);
+    status = UARTHLPserialWrite(inst->serialHandle, sendBuffer, sendBufferLen);
     free(sendBuffer);
     sendBuffer = 0;
     if (status != BTA_StatusOk) {
@@ -712,7 +709,7 @@ BTA_Status BTAUARTreadRegister(BTA_WrapperInst *winst, uint32_t address, uint32_
         BTAunlockMutex(inst->handleMutex);
         return status;
     }
-    uint32_t endTime = BTAgetTickCount() + 3000;
+    uint64_t endTime = BTAgetTickCount64() + 3000;
     do {
         uint8_t *buffer;
         uint32_t bufferLen;
@@ -754,7 +751,7 @@ BTA_Status BTAUARTreadRegister(BTA_WrapperInst *winst, uint32_t address, uint32_
             free(buffer);
             buffer = 0;
         }
-    } while (BTAgetTickCount() < endTime);
+    } while (BTAgetTickCount64() < endTime);
     BTAunlockMutex(inst->handleMutex);
     BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "BTAreadRegister: timeout reading readRegister response");
     return BTA_StatusTimeOut;
@@ -803,7 +800,7 @@ BTA_Status BTAUARTwriteRegister(BTA_WrapperInst *winst, uint32_t address, uint32
         return BTA_StatusIllegalOperation;
     }
     BTAlockMutex(inst->handleMutex);
-    status = BTAserialWrite(inst->serialHandle, sendBuffer, sendBufferLen, 0);
+    status = UARTHLPserialWrite(inst->serialHandle, sendBuffer, sendBufferLen);
     free(sendBuffer);
     sendBuffer = 0;
     if (status != BTA_StatusOk) {
@@ -811,7 +808,7 @@ BTA_Status BTAUARTwriteRegister(BTA_WrapperInst *winst, uint32_t address, uint32
         BTAunlockMutex(inst->handleMutex);
         return status;
     }
-    uint32_t endTime = BTAgetTickCount() + 3000;
+    uint64_t endTime = BTAgetTickCount64() + 3000;
     do {
         uint8_t *buffer;
         uint32_t bufferLen;
@@ -881,7 +878,7 @@ BTA_Status BTAUARTwriteRegister(BTA_WrapperInst *winst, uint32_t address, uint32
         else {
             BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, status, "readFrame error");
         }
-    } while (BTAgetTickCount() < endTime);
+    } while (BTAgetTickCount64() < endTime);
     BTAunlockMutex(inst->handleMutex);
     BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusTimeOut, "BTAwriteRegister: timeout");
     return BTA_StatusTimeOut;
@@ -927,7 +924,7 @@ BTA_Status BTAUARTflashRead(BTA_WrapperInst *winst, BTA_FlashUpdateConfig *flash
 static int getLastError() {
 #ifdef PLAT_WINDOWS
     return GetLastError();
-#elif defined PLAT_LINUX
+#else
     return errno;
 #endif
 }

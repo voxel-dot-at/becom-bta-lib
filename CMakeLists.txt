@@ -4,12 +4,9 @@ message (STATUS "CMake version: " ${CMAKE_VERSION} )
 
 project( bta )
 
-include_directories ("${PROJECT_SOURCE_DIR}")
-
-
 set(bta_VERSION_MAJOR 3)
 set(bta_VERSION_MINOR 3)
-set(bta_VERSION_PATCH 6)
+set(bta_VERSION_PATCH 11)
 set(bta_VERSION_STRING ${bta_VERSION_MAJOR}.${bta_VERSION_MINOR}.${bta_VERSION_PATCH})
 
 file(GLOB HEADERS "inc/*.h" )
@@ -17,7 +14,7 @@ file(GLOB HEADERS "inc/*.h" )
 set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-include_directories ("${PROJECT_SOURCE_DIR}" "${PROJECT_SOURCE_DIR}/ktm_607")
+include_directories ("${PROJECT_SOURCE_DIR}" )
 
 # user selectable options:
 if(NOT MSVC)
@@ -110,10 +107,12 @@ set(namespace "bta")
 write_basic_package_version_file(
    "${version_config}" VERSION ${bta_VERSION_STRING} COMPATIBILITY SameMajorVersion
 )
+
 configure_package_config_file("cmake/btaConfig.cmake.in"
     "${project_config}"
     INSTALL_DESTINATION "${INSTALL_CMAKE_DIR}"
 )
+
 install(
     FILES "${project_config}" "${version_config}"
     DESTINATION "${INSTALL_CMAKE_DIR}"
@@ -245,5 +244,20 @@ if (APPLE)
   add_definitions( -DBTA_WO_USB -DBTA_WO_P100 )
 endif()
 
-# add_subdirectory (common) 
+#
+#
+#
+include_directories(
+        "${CMAKE_CURRENT_SOURCE_DIR}/inc"
+        "${CMAKE_CURRENT_SOURCE_DIR}/common"
+        "${CMAKE_CURRENT_SOURCE_DIR}/common/fastBf"
+        "${CMAKE_CURRENT_SOURCE_DIR}/common/lzma"
+        "${CMAKE_CURRENT_SOURCE_DIR}/sdk"
+	)
+
+#
+# source helper files first
+#
+add_subdirectory (common) 
+
 add_subdirectory (sdk) 

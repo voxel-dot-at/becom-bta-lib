@@ -24,19 +24,12 @@
 #include <stdint.h>
 // TODO: remove dependency!!!
 #include <bta_status.h>
-#include <bta_helper.h>
+#include <bta_frame.h>
+//#include <bta_helper.h>
 
+struct BTA_Frame;
 
-typedef struct BTA_JpgInst {
-    uint8_t enabled;
-} BTA_JpgInst;
-
-
-BTA_Status BTAjpgInit(BTA_WrapperInst *winst);
-BTA_Status BTAjpgClose(BTA_WrapperInst *winst);
-BTA_Status BTAjpgEnable(BTA_WrapperInst *winst, uint8_t enable);
-BTA_Status BTAjpgIsEnabled(BTA_WrapperInst *winst, uint8_t *enabled);
-BTA_Status BTAdecodeJpgToRgb24(BTA_WrapperInst *winst, uint8_t *dataIn, uint32_t dataInLen, uint8_t *dataOut, uint32_t dataOutLen);
+BTA_Status BTAjpegFrameToRgb24(BTA_Frame *frame);
 
 #endif
 

@@ -21,7 +21,7 @@
 
 #define BTA_DISCOVERY_H_VER_MAJ 3
 #define BTA_DISCOVERY_H_VER_MIN 3
-#define BTA_DISCOVERY_H_VER_NON_FUNC 6
+#define BTA_DISCOVERY_H_VER_NON_FUNC 11
 
 
 #include <stdint.h>
@@ -93,9 +93,9 @@ typedef struct BTA_DiscoveryConfig {
     uint8_t *broadcastIpAddr;           ///< The UDP broadcast IP address, null: 255.255.255.255
     uint8_t broadcastIpAddrLen;         ///< The length in bytes of broadcastIpAddr
     uint16_t broadcastPort;             ///< The UDP port to send the broadcast to, 0: 11003
-    uint8_t *callbackIpAddr;            ///< The UDP callback IP address, null: chosen automatically
+    uint8_t *callbackIpAddr;            ///< The UDP callback IP address, null: chosen automatically by os
     uint8_t callbackIpAddrLen;          ///< The length in bytes of callbackIpAddr
-    uint16_t callbackPort;              ///< The UDP port to listen for responses, 0: chosen automatically
+    uint16_t callbackPort;              ///< The UDP port to listen for responses, 0: chosen automatically by os
 
     uint8_t *uartPortName;              ///< The port name of the UART to use (ASCII coded)
     int32_t uartBaudRate;               ///< The UART baud rate
@@ -108,6 +108,9 @@ typedef struct BTA_DiscoveryConfig {
     FN_BTA_DeviceFoundEx deviceFoundEx; ///< Optional. The callback to be invoked when a device has been discovered
     FN_BTA_InfoEventEx2 infoEventEx2;   ///< Optional. The callback to be invoked when an error occurs
     void *userArg;                      ///< Optional. Set this pointer and it will be set as the third parameter in deviceFoundEx and infoEventEx2 callbacks
+
+    uint32_t millisInterval;            ///< 0: Send discovery message / query USB devices once (Eth), >0: Send message and query USB at given interval
+    uint8_t periodicReports;            ///< 0: Devices that are discovered again at 'millisInterval' are not reported via callback again, 1: duplicates are always reported
 } BTA_DiscoveryConfig;
 
 

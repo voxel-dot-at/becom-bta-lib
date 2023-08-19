@@ -34,7 +34,7 @@ float maxFilter(float inImg[], const int yRes, const int xRes, int windowSize) {
     int cols_new = n;
 
 #if DEBUG_OUTPUT
-    printf("-----------------padded array-------------------\n");
+    println("-----------------padded array-------------------");
 #endif
 
     //--------------------------padding the image-------------------------
@@ -68,7 +68,7 @@ float maxFilter(float inImg[], const int yRes, const int xRes, int windowSize) {
             index++;
         }
 #if DEBUG_OUTPUT
-        printf("\n");
+        println("");
 #endif
     }
     //-----------------------------------------------------------------
@@ -108,16 +108,16 @@ float maxFilter(float inImg[], const int yRes, const int xRes, int windowSize) {
         }
 
 #if DEBUG_OUTPUT        
-        printf("L: \n");
+        println("L: ");
         int z;
         for (z = 0; z < cols_new; z++) {
             printf("%f,", Lunderscore[z]);
         }
-        printf("\nR: \n");
+        println("\nR: ");
         for (z = 0; z < cols_new; z++) {
             printf("%f,", Runderscore[z]);
         }
-        printf("\n----------------------------------\n");
+        println("\n----------------------------------");
 #endif
 
         for (int kk = 1; kk <= n; kk++) {
@@ -141,17 +141,17 @@ float maxFilter(float inImg[], const int yRes, const int xRes, int windowSize) {
     }
 
 #if DEBUG_OUTPUT
-    printf("----------------after row scan----------\n");
+    println("----------------after row scan----------");
     for (int fu = 0; fu < rows_new*cols_new; fu++) {
         static int cnt = 1;
         printf("%f ", img_padded[fu]);
         if (cnt == cols_new) {
-            printf("\n");
+            println("");
             cnt = 1;
         }
         else cnt++;
     }
-    printf("------------------------------------------\n");
+    println("------------------------------------------");
 #endif
 
     //-------------------scan along column----------------------------------------------
@@ -173,15 +173,15 @@ float maxFilter(float inImg[], const int yRes, const int xRes, int windowSize) {
         }
 
 #if DEBUG_OUTPUT        
-        printf("L: \n");
+        println("L: ");
         for (int z = 0; z < cols_new; z++) {
             printf("%f,", Lunderscore[z]);
         }
-        printf("\nR: \n");
+        println("\nR: ");
         for (int z = 0; z < cols_new; z++) {
             printf("%f,", Runderscore[z]);
         }
-        printf("\n----------------------------------\n");
+        println("\n----------------------------------");
 #endif
 
         for (int kk = 1; kk <= m; kk++) {
@@ -203,8 +203,8 @@ float maxFilter(float inImg[], const int yRes, const int xRes, int windowSize) {
             float temp = MTHmax(r, l) - img_padded_original[(kk - 1)*cols_new + jj];
 
 #if DEBUG_OUTPUT
-            printf("index: %i \n", (kk - 1)*cols_new + jj);
-            printf("outer loop %i, inner loop %i, temp = %f \n", jj, kk, temp);
+            println("index: %i ", (kk - 1)*cols_new + jj);
+            println("outer loop %i, inner loop %i, temp = %f ", jj, kk, temp);
 #endif
 
             if (temp > result) {

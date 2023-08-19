@@ -39,7 +39,7 @@ int imfilter_sep(float inImg[], float filter[], float output[], int img_height, 
     float temp_result;
 
     #if DEBUG_OUTPUT
-        printf("-----------------padded array-------------------\n");
+        println("-----------------padded array-------------------");
     #endif
 
     //--------------------------padding the image on all sides with omnidir_pad elements-------------------------
@@ -75,7 +75,7 @@ int imfilter_sep(float inImg[], float filter[], float output[], int img_height, 
             index++;
         }
         #if DEBUG_OUTPUT
-        printf("\n");
+        println("");
         #endif
     }
 

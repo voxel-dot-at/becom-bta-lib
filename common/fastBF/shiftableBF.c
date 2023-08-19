@@ -42,7 +42,7 @@ int shiftableBF(float inImg[], float outImg[], const int yRes, const int xRes, i
     fspecial_gauss(windowSize, (float)sigmaS, gauss_filter);
 
 #if DEBUG_OUTPUT
-    printf("max filter result: %f \n", inputMax);
+    println("max filter result: %f ", inputMax);
 #endif
 
     float N = (float)ceil(0.405 * pow((inputMax / (float)sigmaR), 2));
@@ -71,10 +71,10 @@ int shiftableBF(float inImg[], float outImg[], const int yRes, const int xRes, i
     }
 
 #if DEBUG_OUTPUT
-    printf("N = %f \n", N);
-    printf("gamma = %f \n", gamma);
-    printf("twoN = %f \n", twoN);
-    printf("M = %f \n", M);
+    println("N = %f ", N);
+    println("gamma = %f ", gamma);
+    println("twoN = %f ", twoN);
+    println("M = %f ", M);
 #endif
 
     //-------------------------main filter--------------------------
@@ -120,7 +120,7 @@ int shiftableBF(float inImg[], float outImg[], const int yRes, const int xRes, i
         float coeff = (float)(binomial_coefficient((int)N, (int)k)) / twoN;
 
 #if DEBUG_OUTPUT
-        printf("coeff: %f \n", coeff);
+        println("coeff: %f ", coeff);
 #endif
 
         for (int cnt1 = 0; cnt1 < yRes*xRes; cnt1++) {
@@ -153,7 +153,7 @@ int shiftableBF(float inImg[], float outImg[], const int yRes, const int xRes, i
             printf("phi3: %f -- ", phi3[cnt2]);
             printf("phi4: %f -- ", phi4[cnt2]);
             printf("outImg1: %f -- ", outImg1[cnt2]);
-            printf("outImg2: %f \n", outImg2[cnt2]);
+            println("outImg2: %f ", outImg2[cnt2]);
 #endif
         }
 
@@ -199,7 +199,7 @@ int shiftableBFU16(float inImg[], uint16_t outImg[], const int yRes, const int x
     fspecial_gauss(windowSize, (float)sigmaS, gauss_filter);
 
 #if DEBUG_OUTPUT
-    printf("max filter result: %f \n", inputMax);
+    println("max filter result: %f ", inputMax);
 #endif
 
     float N = (float)ceil(0.405 * pow((inputMax / (float)sigmaR), 2));
@@ -228,10 +228,10 @@ int shiftableBFU16(float inImg[], uint16_t outImg[], const int yRes, const int x
     }
 
 #if DEBUG_OUTPUT
-    printf("N = %f \n", N);
-    printf("gamma = %f \n", gamma);
-    printf("twoN = %f \n", twoN);
-    printf("M = %f \n", M);
+    println("N = %f ", N);
+    println("gamma = %f ", gamma);
+    println("twoN = %f ", twoN);
+    println("M = %f ", M);
 #endif
 
     //-------------------------main filter--------------------------
@@ -277,7 +277,7 @@ int shiftableBFU16(float inImg[], uint16_t outImg[], const int yRes, const int x
         float coeff = (float)(binomial_coefficient((int)N, (int)k)) / twoN;
 
 #if DEBUG_OUTPUT
-        printf("coeff: %f \n", coeff);
+        println("coeff: %f ", coeff);
 #endif
 
         for (int cnt1 = 0; cnt1 < yRes*xRes; cnt1++) {
@@ -310,7 +310,7 @@ int shiftableBFU16(float inImg[], uint16_t outImg[], const int yRes, const int x
             printf("phi3: %f -- ", phi3[cnt2]);
             printf("phi4: %f -- ", phi4[cnt2]);
             printf("outImg1: %f -- ", outImg1[cnt2]);
-            printf("outImg2: %f \n", outImg2[cnt2]);
+            println("outImg2: %f ", outImg2[cnt2]);
 #endif
         }
 

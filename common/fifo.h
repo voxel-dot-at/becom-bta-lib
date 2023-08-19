@@ -1,5 +1,5 @@
-#ifndef FIFO_H
-#define FIFO_H
+#ifndef FIFO_H_INCLUDED
+#define FIFO_H_INCLUDED
 
 #include <pthread.h>
 #include <stdint.h>

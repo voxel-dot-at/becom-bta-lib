@@ -23,6 +23,10 @@
 #include <stdint.h>
 #include <bta_status.h>
 
+#if !defined PLAT_WINDOWS && !defined PLAT_LINUX && !defined PLAT_APPLE
+#   error "Please define PLAT_WINDOWS, PLAT_LINUX or PLAT_APPLE in your makefile/project"
+#endif
+
 typedef enum BTA_SeekOrigin {
     BTA_SeekOriginBeginning = SEEK_SET,
     BTA_SeekOriginCurrent = SEEK_CUR,
@@ -52,5 +56,8 @@ BTA_Status BTAfreadLine(void *file, char *line, uint32_t lineLen);
 BTA_Status BTAgetCwd(uint8_t *cwd, int cwdLen);
 
 BTA_Status BTAfwriteCsv(const char* filename, const char **headersX, const char **headersY, int *data, int xRes, int yRes);
+
+void BTAexec(const char *cmd, char *result);
+uint8_t BTAisUsbDevicePresent(uint16_t vendorId, uint16_t productId, int requiredSuccesses, int intervalMillis, int timeoutMillis);
 
 #endif

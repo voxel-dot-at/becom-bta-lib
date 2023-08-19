@@ -104,7 +104,7 @@ int open_device_serial(int *hndl, int serialCode, int serialNumber) {
 
         if (res != P100_OKAY) {
             #if DETAILED_DEBUG
-            printf("breaking, CNT is %i\n", cnt);
+            println("breaking, CNT is %i", cnt);
             #endif
             break;
         }
@@ -116,7 +116,7 @@ int open_device_serial(int *hndl, int serialCode, int serialNumber) {
         if (res < 0) {
             return P100_USB_ERROR;
         }
-        //printf("resetting USB device\n");
+        //println("resetting USB device");
         //###################################
         #endif
 
@@ -131,17 +131,17 @@ int open_device_serial(int *hndl, int serialCode, int serialNumber) {
         my_reg_res= getRegister(handles[cnt], reg_addr, &my_reg);
         if (my_reg_res == P100_OKAY) {
             #if DETAILED_DEBUG
-            printf("### serial found: %x \n", my_reg);
+            println("### serial found: %x ", my_reg);
             #endif
         }
         else {
-            //printf("error reading register\n");
+            //println("error reading register");
             return P100_READ_REG_ERROR;
         }
 
         if ((!serialCode || (uint32_t)serialCode == (my_reg >> 20)) && (!serialNumber || serialNumber == (int)(my_reg & 0xfffff))) {
             #if DETAILED_DEBUG
-            printf("matching p100 found! - serial %i - handle_internal_nr %i - handle_global_nr %i\n", serialNumber, cnt, handles[cnt]);
+            println("matching p100 found! - serial %i - handle_internal_nr %i - handle_global_nr %i", serialNumber, cnt, handles[cnt]);
             #endif
             *hndl = handles[cnt];
             found = 1;
@@ -151,7 +151,7 @@ int open_device_serial(int *hndl, int serialCode, int serialNumber) {
     }
 
     #if DETAILED_DEBUG
-    printf("CNT is %i \n", cnt);
+    println("CNT is %i ", cnt);
     #endif
 
     for (t = 0; t < MAX_NR_OF_DEVICES; t++) {
@@ -186,7 +186,7 @@ int open_device_any(int *hndl) {
     if (res < 0) {
         return P100_USB_ERROR;
     }
-    //printf("resetting USB device\n");
+    //println("resetting USB device");
     //###################################
     #endif
 
@@ -253,11 +253,11 @@ int p100_open(int vendorId, int productId, int device, int *hndl) {
 
             if (vendor_id == vendorId && product_id == productId) {
 #               if DETAILED_DEBUG
-                printf("VID %4x PID %4x\n", vendor_id, product_id);
+                println("VID %4x PID %4x", vendor_id, product_id);
 #               endif
                 if (deviceNumber++ < device) {
 #                   if DETAILED_DEBUG
-                    printf("skip\n");
+                    println("skip");
 #                   endif
                     continue;
                 }
@@ -265,7 +265,7 @@ int p100_open(int vendorId, int productId, int device, int *hndl) {
                 m_hnd = usb_open(dev);
                 if (m_hnd == 0) {
 #                   if DETAILED_DEBUG
-                    printf("usb_open error: %p\n", m_hnd);
+                    println("usb_open error: %p", m_hnd);
 #                   endif
                     continue;
                 }
@@ -273,7 +273,7 @@ int p100_open(int vendorId, int productId, int device, int *hndl) {
 
                 if (m_dev->descriptor.bNumConfigurations == 0) {
 #                   if DETAILED_DEBUG
-                    printf("m_dev->descriptor.bNumConfigurations == 0\n");
+                    println("m_dev->descriptor.bNumConfigurations == 0");
 #                   endif
                     continue;
                 }
@@ -281,24 +281,24 @@ int p100_open(int vendorId, int productId, int device, int *hndl) {
                 res = usb_set_configuration(m_hnd, m_dev->config[0].bConfigurationValue);
                 if (res < 0) {
 #                   if DETAILED_DEBUG
-                    printf("usb_set_configuration failed: %d\n", res);
+                    println("usb_set_configuration failed: %d", res);
 #                   endif
                     continue;
                 }
 
                 #if DETAILED_DEBUG
-                printf("--- available endpoints ---\n");
+                println("--- available endpoints ---");
                 for (i = 0; i < m_dev->config[0].interface[0].altsetting[0].bNumEndpoints; ++i)
                 {
-                    printf("endpoint address %i \n", (m_dev->config[0].interface[0].altsetting[0].endpoint[i].bEndpointAddress));
+                    println("endpoint address %i ", (m_dev->config[0].interface[0].altsetting[0].endpoint[i].bEndpointAddress));
                 }
-                printf("---------------------------\n");
+                println("---------------------------");
                 #endif
 
                 res = usb_claim_interface(m_hnd, m_dev->config[0].interface[0].altsetting[0].bInterfaceNumber);
                 if (res < 0) {
                     #if DETAILED_DEBUG
-                    printf("usb_claim_interface failed: %d\n", res);
+                    println("usb_claim_interface failed: %d", res);
                     #endif
                     continue;
                 }
@@ -306,7 +306,7 @@ int p100_open(int vendorId, int productId, int device, int *hndl) {
                 res = usb_set_altinterface(m_hnd, 0);
                 if (res < 0) {
                     #if DETAILED_DEBUG
-                    printf("usb_set_altinterface failed: %d\n", res);
+                    println("usb_set_altinterface failed: %d", res);
                     #endif
                     continue;
                 }
@@ -435,7 +435,7 @@ int p100_read(int hndl, unsigned char end, char *buf, unsigned size, int msec) {
 
     if (hndl < 0 || hndl >= MAX_NR_OF_DEVICES) {
 #       if USB_COMM_ERR_DEBUG
-            printf("%s: Invalid handle [%d] [%u]\n", __func__, hndl, __LINE__);
+            println("%s: Invalid handle [%d] [%u]", __func__, hndl, __LINE__);
 #       endif
         return P100_INVALID_HANDLE;
     }
@@ -443,7 +443,7 @@ int p100_read(int hndl, unsigned char end, char *buf, unsigned size, int msec) {
     created = device_container[hndl].created;
     if (created == FALSE) {
 #       if USB_COMM_ERR_DEBUG
-            printf("%s: Invalid handle [%d] [%u]\n", __func__, created, __LINE__);
+            println("%s: Invalid handle [%d] [%u]", __func__, created, __LINE__);
 #       endif
         return P100_INVALID_HANDLE;
     }
@@ -453,7 +453,7 @@ int p100_read(int hndl, unsigned char end, char *buf, unsigned size, int msec) {
     res = usb_bulk_read(m_hnd, end, buf, size, msec);
     if (res < 0) {
 #       if USB_COMM_ERR_DEBUG
-            printf("%s: Error from usb_bulk_read() [%d] [%u]\n", __func__, res, __LINE__);
+            println("%s: Error from usb_bulk_read() [%d] [%u]", __func__, res, __LINE__);
 #       endif
     }
     if ((unsigned)res != size) {
@@ -462,7 +462,7 @@ int p100_read(int hndl, unsigned char end, char *buf, unsigned size, int msec) {
 
     /*
       if (res < 0) {
-      printf("%s \n", usb_strerror());
+      println("%s ", usb_strerror());
       //return P100_USB_ERROR;
       }
     */
@@ -480,7 +480,7 @@ int p100_write(int hndl, unsigned char end, char *buf, unsigned size, int msec) 
 
     if (hndl < 0 || hndl >= MAX_NR_OF_DEVICES) {
 #       if USB_COMM_ERR_DEBUG
-            printf("%s: Invalid handle [%d] [%u]\n", __func__, hndl, __LINE__);
+            println("%s: Invalid handle [%d] [%u]", __func__, hndl, __LINE__);
 #       endif
         return P100_INVALID_HANDLE;
     }
@@ -488,7 +488,7 @@ int p100_write(int hndl, unsigned char end, char *buf, unsigned size, int msec) 
     created = device_container[hndl].created;
     if (created == FALSE) {
 #       if USB_COMM_ERR_DEBUG
-            printf("%s: Invalid handle [%d] [%u]\n", __func__, created, __LINE__);
+            println("%s: Invalid handle [%d] [%u]", __func__, created, __LINE__);
 #       endif
         return P100_INVALID_HANDLE;
     }
@@ -499,13 +499,13 @@ int p100_write(int hndl, unsigned char end, char *buf, unsigned size, int msec) 
     res = usb_bulk_write(m_hnd, end, buf, size, msec);
     if (res < 0) {
 #       if USB_COMM_ERR_DEBUG
-            printf("%s: Error from usb_bulk_write() [%d] [%u]\n", __func__, res, __LINE__);
+            println("%s: Error from usb_bulk_write() [%d] [%u]", __func__, res, __LINE__);
 #       endif
     }
 
     /*
       if (res < 0) {
-      printf("%s \n", usb_strerror());
+      println("%s ", usb_strerror());
       return P100_USB_ERROR;
       }
     */
@@ -524,7 +524,7 @@ int readFrame(int hndl, uint8_t *buf, size_t size) {
 
     if (hndl < 0 || hndl >= MAX_NR_OF_DEVICES) {
         #if USB_COMM_ERR_DEBUG
-            printf("%s: Invalid handle [%d] [%u]\n", __func__, hndl, __LINE__);
+            println("%s: Invalid handle [%d] [%u]", __func__, hndl, __LINE__);
         #endif
         return P100_INVALID_HANDLE;
     }
@@ -532,7 +532,7 @@ int readFrame(int hndl, uint8_t *buf, size_t size) {
     created = device_container[hndl].created;
     if (created == FALSE || m_hnd == NULL) {
         #if USB_COMM_ERR_DEBUG
-            printf("%s: Invalid handle [%d] [%u]\n", __func__, created, __LINE__);
+            println("%s: Invalid handle [%d] [%u]", __func__, created, __LINE__);
         #endif
         return P100_INVALID_HANDLE;
     }
@@ -544,7 +544,7 @@ int readFrame(int hndl, uint8_t *buf, size_t size) {
     memset_res = memset(spartan6_header, 0, sizeof(spartan6_header));
     if (memset_res == NULL) {
         #if USB_COMM_ERR_DEBUG
-            printf("%s: Memset error [%p] [%u]\n", __func__, memset_res, __LINE__);
+            println("%s: Memset error [%p] [%u]", __func__, memset_res, __LINE__);
         #endif
         return P100_MEMORY_ERROR;
     }
@@ -552,22 +552,22 @@ int readFrame(int hndl, uint8_t *buf, size_t size) {
     spartan6_header[HEADER_OFFSET_FLAGS] = PMD_SPARTAN6_FLAG_RECEIVE_FRAME;
 
     #if DETAILED_DEBUG
-        printf("--- Header ---\n");
+        println("--- Header ---");
         for (unsigned int debug_i = 0; debug_i < sizeof(spartan6_header); debug_i++) {
-        printf("%i\n",spartan6_header[debug_i]);
+        println("%i",spartan6_header[debug_i]);
         }
-        printf("--------------\n");
+        println("--------------");
     #endif
 
     BTAlockMutex((device_container[hndl].usbMutex));
     res = p100_write(hndl, SPARTAN6_USB_ENDPOINT_WRITE, (char *) spartan6_header, sizeof(spartan6_header), SPARTAN6_USB_WRITE_TIMEOUT);
     #if DETAILED_DEBUG
-        printf("p100_write result: %i \n", res);
+        println("p100_write result: %i ", res);
     #endif
     if (res < 0) {
         BTAunlockMutex((device_container[hndl].usbMutex));
         #if USB_COMM_ERR_DEBUG
-            printf("%s: Error from p100_write() [%d] [%u]\n", __func__, res, __LINE__);
+            println("%s: Error from p100_write() [%d] [%u]", __func__, res, __LINE__);
         #endif
         return P100_USB_ERROR;
     }
@@ -577,24 +577,24 @@ int readFrame(int hndl, uint8_t *buf, size_t size) {
     if (rcv_num_bytes < 0) {
         BTAunlockMutex((device_container[hndl].usbMutex));
         #if USB_COMM_ERR_DEBUG
-            printf("%s: Error from p100_read() [%d] [%u]\n", __func__, rcv_num_bytes, __LINE__);
+            println("%s: Error from p100_read() [%d] [%u]", __func__, rcv_num_bytes, __LINE__);
         #endif
         return P100_USB_ERROR;
     }
     #if DETAILED_DEBUG
-        printf("p100_read result: %i \n", rcv_num_bytes);
+        println("p100_read result: %i ", rcv_num_bytes);
         for (int debug_j=0; debug_j < rcv_num_bytes; debug_j++) {
-            printf("buffer %d: %d \n", debug_j, (unsigned char) rcv_buffer[debug_j]);
+            println("buffer %d: %d ", debug_j, (unsigned char) rcv_buffer[debug_j]);
         }
     #endif
 
     if (rcv_buffer[ACK_ERROR_CODE_OFFSET] != ACK_NO_ERROR) {
         #if DETAILED_DEBUG
-            printf("Acknowledge error\n");
+            println("Acknowledge error");
         #endif
         BTAunlockMutex((device_container[hndl].usbMutex));
         #if USB_COMM_ERR_DEBUG
-            printf("%s: Ack error [%d] [%u]\n", __func__, rcv_buffer[ACK_ERROR_CODE_OFFSET], __LINE__);
+            println("%s: Ack error [%d] [%u]", __func__, rcv_buffer[ACK_ERROR_CODE_OFFSET], __LINE__);
         #endif
         return P100_ACK_ERROR;
     }
@@ -612,7 +612,7 @@ int readFrame(int hndl, uint8_t *buf, size_t size) {
 
     if (size != pos) {
         #if DETAILED_DEBUG
-            printf("Could not capture whole frame !\n");
+            println("Could not capture whole frame !");
         #endif
         return P100_GET_DATA_ERROR;
     }
@@ -637,7 +637,7 @@ int getRegister(int hndl, unsigned int reg_addr, unsigned int *ret_val) {
 
     if (hndl < 0 || hndl >= MAX_NR_OF_DEVICES) {
 #if USB_COMM_ERR_DEBUG
-        printf("%s: Invalid handle [%d] [%u]\n", __func__, hndl, __LINE__);
+        println("%s: Invalid handle [%d] [%u]", __func__, hndl, __LINE__);
 #endif
         return P100_INVALID_HANDLE;
     }
@@ -645,48 +645,48 @@ int getRegister(int hndl, unsigned int reg_addr, unsigned int *ret_val) {
     created = device_container[hndl].created;
     if ((created == FALSE) || m_hnd == NULL) {
 #if USB_COMM_ERR_DEBUG
-        printf("%s: Invalid handle [%d] [%u]\n", __func__, created, __LINE__);
+        println("%s: Invalid handle [%d] [%u]", __func__, created, __LINE__);
 #endif
         return P100_INVALID_HANDLE;
     }
 
     if (reg_addr > 0xFF) {
 #if USB_COMM_ERR_DEBUG
-        printf("%s: Invalid handle [%d] [%u]\n", __func__, reg_addr, __LINE__);
+        println("%s: Invalid handle [%d] [%u]", __func__, reg_addr, __LINE__);
 #endif
         return P100_INVALID_VALUE;
     }
 
     memset_res = memset(spartan6_header, 0, sizeof(spartan6_header));
     if (memset_res == NULL) {
-        //printf("memset error!\n");
+        //println("memset error!");
 #if USB_COMM_ERR_DEBUG
-        printf("%s: Invalid handle [%p] [%u]\n", __func__, memset_res, __LINE__);
+        println("%s: Invalid handle [%p] [%u]", __func__, memset_res, __LINE__);
 #endif
         return P100_MEMORY_ERROR;
     }
     spartan6_header[0] = 8; //actual header size
     spartan6_header[HEADER_OFFSET_FLAGS] = PMD_SPARTAN6_FLAG_REQUIRE_ACKNOWLEDGE;
     spartan6_header[HEADER_OFFSET_NR_WORDS] = 1;
-    spartan6_header[HEADER_OFFSET_ADDR_OFFSET] = reg_addr;
+    spartan6_header[HEADER_OFFSET_ADDR_OFFSET] = (unsigned char)reg_addr;
 
 #if DETAILED_DEBUG
-    printf("--- Header ---\n");
+    println("--- Header ---");
     for (unsigned int debug_i = 0; debug_i < sizeof(spartan6_header); debug_i++) {
-        printf("%i\n",spartan6_header[debug_i]);
+        println("%i",spartan6_header[debug_i]);
     }
-    printf("--------------\n");
+    println("--------------");
 #endif
 
     BTAlockMutex((device_container[hndl].usbMutex));
     res = p100_write(hndl, SPARTAN6_USB_ENDPOINT_WRITE, (char *) spartan6_header, sizeof(spartan6_header), SPARTAN6_USB_WRITE_TIMEOUT);
 #if DETAILED_DEBUG
-    printf("p100_write result: %i \n", res);
+    println("p100_write result: %i ", res);
 #endif
     if (res < 0) {
         BTAunlockMutex((device_container[hndl].usbMutex));
 #if USB_COMM_ERR_DEBUG
-        printf("%s: Error from p100_write() [%d] [%u]\n", __func__, res, __LINE__);
+        println("%s: Error from p100_write() [%d] [%u]", __func__, res, __LINE__);
 #endif
         return P100_USB_ERROR;
     }
@@ -694,25 +694,25 @@ int getRegister(int hndl, unsigned int reg_addr, unsigned int *ret_val) {
     rcv_buffer_size = spartan6_header[HEADER_OFFSET_NR_WORDS] * 4;
 
 #if DETAILED_DEBUG
-    printf("buffer size: %i \n", rcv_buffer_size);
+    println("buffer size: %i ", rcv_buffer_size);
 #endif
 
     rcv_buffer = (char *)malloc(rcv_buffer_size);
     if (rcv_buffer == NULL) {
-        //printf("malloc error! \n");
+        //println("malloc error! ");
         BTAunlockMutex((device_container[hndl].usbMutex));
 #if USB_COMM_ERR_DEBUG
-        printf("%s: Malloc error [%p] [%u]\n", __func__, rcv_buffer, __LINE__);
+        println("%s: Malloc error [%p] [%u]", __func__, rcv_buffer, __LINE__);
 #endif
         return P100_MEMORY_ERROR;
     }
 
     memset_res = memset(rcv_buffer, 0, rcv_buffer_size);
     if (memset_res == NULL) {
-        //printf("memset error!\n");
+        //println("memset error!");
         BTAunlockMutex((device_container[hndl].usbMutex));
 #if USB_COMM_ERR_DEBUG
-        printf("%s: Memset error [%p] [%u]\n", __func__, memset_res, __LINE__);
+        println("%s: Memset error [%p] [%u]", __func__, memset_res, __LINE__);
 #endif
         return P100_MEMORY_ERROR;
     }
@@ -723,15 +723,15 @@ int getRegister(int hndl, unsigned int reg_addr, unsigned int *ret_val) {
         if (rcv_num_bytes < 0) {
             BTAunlockMutex((device_container[hndl].usbMutex));
 #if USB_COMM_ERR_DEBUG
-            printf("%s: Error from p100_read() [%d] [%u]\n", __func__, rcv_num_bytes, __LINE__);
+            println("%s: Error from p100_read() [%d] [%u]", __func__, rcv_num_bytes, __LINE__);
 #endif
             return P100_USB_ERROR;
         }
 
 #if DETAILED_DEBUG
-        printf("p100_read result: %i \n", rcv_num_bytes);
+        println("p100_read result: %i ", rcv_num_bytes);
         for (int debug_i=0; debug_i < rcv_num_bytes; debug_i++) {
-            printf("buffer %d: %d \n",debug_i, (unsigned char) rcv_buffer[debug_i]);
+            println("buffer %d: %d ",debug_i, (unsigned char) rcv_buffer[debug_i]);
         }
 #endif
 
@@ -740,7 +740,7 @@ int getRegister(int hndl, unsigned int reg_addr, unsigned int *ret_val) {
         if (h == 0) {
             if (rcv_buffer[ACK_ERROR_CODE_OFFSET] != ACK_NO_ERROR) {
 #if DETAILED_DEBUG
-                printf("Acknowledge error\n");
+                println("Acknowledge error");
 #endif
 
                 switch(rcv_buffer[ACK_ERROR_CODE_OFFSET]){
@@ -771,7 +771,7 @@ int getRegister(int hndl, unsigned int reg_addr, unsigned int *ret_val) {
 
     if(ack_error != 0){
 #if USB_COMM_ERR_DEBUG
-        printf("%s: Ack error [%d] [%u]\n", __func__, ack_error, __LINE__);
+        println("%s: Ack error [%d] [%u]", __func__, ack_error, __LINE__);
 #endif
         return ack_error;
     }
@@ -817,17 +817,17 @@ int setRegister(int hndl, const unsigned int addr, const unsigned int val) {
 
     memset_res = memset(spartan6_header, 0, sizeof(spartan6_header));
     if (memset_res == NULL) {
-        //printf("memset error!\n");
+        //println("memset error!");
         return P100_MEMORY_ERROR;
     }
     spartan6_header[0] = HEADER_SIZE + 4;
     spartan6_header[HEADER_OFFSET_FLAGS] = (PMD_SPARTAN6_FLAG_REQUIRE_ACKNOWLEDGE | PMD_SPARTAN6_FLAG_WRITE_DATA);
     spartan6_header[HEADER_OFFSET_NR_WORDS] = 1;
-    spartan6_header[HEADER_OFFSET_ADDR_OFFSET] = addr;
+    spartan6_header[HEADER_OFFSET_ADDR_OFFSET] = (unsigned char)addr;
 
     memcpy_res = memcpy(header_new, spartan6_header, HEADER_SIZE);
     if (memcpy_res == NULL) {
-        //printf("memcpy error!\n");
+        //println("memcpy error!");
         return P100_MEMORY_ERROR;
     }
 
@@ -837,18 +837,18 @@ int setRegister(int hndl, const unsigned int addr, const unsigned int val) {
     header_new[sizeof(header_new)-1] = (unsigned char)(val);
 
     #if DETAILED_DEBUG
-    printf("--- Header ---\n");
+    println("--- Header ---");
     for (unsigned int debug_i = 0; debug_i < sizeof(header_new); debug_i++) {
-        printf("%i\n", header_new[debug_i]);
+        println("%i", header_new[debug_i]);
     }
-    printf("--------------\n");
+    println("--------------");
     #endif
 
     BTAlockMutex((device_container[hndl].usbMutex));
 
     res = p100_write(hndl, SPARTAN6_USB_ENDPOINT_WRITE, (char *) header_new, sizeof(header_new), SPARTAN6_USB_WRITE_TIMEOUT);
     #if DETAILED_DEBUG
-    printf("p100_write result: %i \n", res);
+    println("p100_write result: %i ", res);
     #endif
     if (res < 0) {
         BTAunlockMutex((device_container[hndl].usbMutex));
@@ -859,19 +859,19 @@ int setRegister(int hndl, const unsigned int addr, const unsigned int val) {
     rcv_buffer_size = spartan6_header[HEADER_OFFSET_NR_WORDS] * 4;
 
     #if DETAILED_DEBUG
-    printf("buffer size: %i \n", rcv_buffer_size);
+    println("buffer size: %i ", rcv_buffer_size);
     #endif
 
     rcv_buffer = (char *)malloc(rcv_buffer_size);
     if (rcv_buffer == NULL) {
-        //printf("malloc error! \n");
+        //println("malloc error! ");
         BTAunlockMutex((device_container[hndl].usbMutex));
         return P100_MEMORY_ERROR;
     }
 
     memset_res = memset(rcv_buffer, 0, rcv_buffer_size);
     if (memset_res == NULL) {
-        //printf("memset error!\n");
+        //println("memset error!");
         BTAunlockMutex((device_container[hndl].usbMutex));
         return P100_MEMORY_ERROR;
     }
@@ -885,10 +885,10 @@ int setRegister(int hndl, const unsigned int addr, const unsigned int val) {
         }
 
         #if DETAILED_DEBUG
-        printf("p100_read result: %i \n", rcv_num_bytes);
+        println("p100_read result: %i ", rcv_num_bytes);
 
         for (int debug_j=0; debug_j < rcv_num_bytes; debug_j++) {
-            printf("buffer %d: %d \n",debug_j, (unsigned char) rcv_buffer[debug_j]);
+            println("buffer %d: %d ",debug_j, (unsigned char) rcv_buffer[debug_j]);
         }
         #endif
 
@@ -896,7 +896,7 @@ int setRegister(int hndl, const unsigned int addr, const unsigned int val) {
         if (h == 0) {
             if (rcv_buffer[ACK_ERROR_CODE_OFFSET] != ACK_NO_ERROR) {
                 #if DETAILED_DEBUG
-                printf("Acknowledge error\n");
+                println("Acknowledge error");
                 #endif
 
                 switch(rcv_buffer[ACK_ERROR_CODE_OFFSET]){
@@ -970,7 +970,7 @@ int calcDistances(int hndl, uint8_t *raw_data, int raw_data_size, float *dist_da
 
     if (dist_data_size < P100_WIDTH * P100_HEIGHT * (int)sizeof(float)) {
         #if DETAILED_DEBUG
-        printf("array for float dist data too small \n");
+        println("array for float dist data too small ");
         #endif
         return P100_CALC_DATA_ERROR;
     }
@@ -991,7 +991,7 @@ int calcDistances(int hndl, uint8_t *raw_data, int raw_data_size, float *dist_da
     }
     else {
         #if DETAILED_DEBUG
-            printf("container number not implemented \n");
+            println("container number not implemented ");
         #endif
         return P100_CALC_DATA_ERROR;
     }
@@ -1002,9 +1002,9 @@ int calcDistances(int hndl, uint8_t *raw_data, int raw_data_size, float *dist_da
         if (temp == IMG_HEADER_DIST_VALUES) {
             container = g;
             found_container = 1;
-            //printf("container %u has distance data \n", container);
+            //println("container %u has distance data ", container);
             if (container_nr) {
-                *container_nr = container;
+                *container_nr = (unsigned char)container;
             }
             break;
         }
@@ -1012,7 +1012,7 @@ int calcDistances(int hndl, uint8_t *raw_data, int raw_data_size, float *dist_da
 
     if (!found_container) {
         #if DETAILED_DEBUG
-        printf("distance data container not found\n");
+        println("distance data container not found");
         #endif
         return P100_CALC_DATA_ERROR;
     }
@@ -1067,7 +1067,7 @@ int calcDistances(int hndl, uint8_t *raw_data, int raw_data_size, float *dist_da
     //-------- Bilateral Filter -----------
     if (bilateralEnabled) {
         #if DETAILED_DEBUG
-        printf("calcDistances: bilateral filter applied\n");
+        println("calcDistances: bilateral filter applied");
         #endif
 
         dist_data_cpy = (float *)malloc(dist_data_size);
@@ -1107,7 +1107,7 @@ int calcAmplitudes(uint8_t *raw_data, int32_t raw_data_size, float *amp_data, in
 
     if (amp_data_size < P100_WIDTH*P100_HEIGHT*(int)sizeof(float)) {
         #if DETAILED_DEBUG
-        printf("array for float amplitude data too small \n");
+        println("array for float amplitude data too small ");
         #endif
         return P100_CALC_DATA_ERROR;
     }
@@ -1128,7 +1128,7 @@ int calcAmplitudes(uint8_t *raw_data, int32_t raw_data_size, float *amp_data, in
     }
     else {
         #if DETAILED_DEBUG
-            printf("container number not implemented \n");
+            println("container number not implemented ");
         #endif
         return P100_CALC_DATA_ERROR;
     }
@@ -1138,9 +1138,9 @@ int calcAmplitudes(uint8_t *raw_data, int32_t raw_data_size, float *amp_data, in
         if (temp == IMG_HEADER_AMP_VALUES) {
             container = g;
             found_container = 1;
-            //printf("container %u has amplitude data \n", container);
+            //println("container %u has amplitude data ", container);
             if (container_nr != NULL) {
-                *container_nr = container;
+                *container_nr = (unsigned char)container;
             }
             break;
         }
@@ -1148,7 +1148,7 @@ int calcAmplitudes(uint8_t *raw_data, int32_t raw_data_size, float *amp_data, in
 
     if (!found_container) {
         #if DETAILED_DEBUG
-        printf("amplitude data container not found\n");
+        println("amplitude data container not found");
         #endif
         return P100_CALC_DATA_ERROR;
     }
@@ -1185,7 +1185,6 @@ int calcAmplitudes(uint8_t *raw_data, int32_t raw_data_size, float *amp_data, in
 
 
 int calcFlags(uint8_t *raw_data, int raw_data_size, unsigned int *flag_data, int flag_data_size, unsigned int flags, unsigned char *container_nr) {
-
     unsigned int container = 0;
     unsigned int found_container = 0;
     unsigned int total_nr_of_containers = 0;
@@ -1205,7 +1204,7 @@ int calcFlags(uint8_t *raw_data, int raw_data_size, unsigned int *flag_data, int
 
     if (flag_data_size < (P100_WIDTH*P100_HEIGHT*(int)sizeof(unsigned int)) ) {
         #if DETAILED_DEBUG
-        printf("array for unsigned int flag data too small \n");
+        println("array for unsigned int flag data too small ");
         #endif
         return P100_CALC_DATA_ERROR;
     }
@@ -1226,7 +1225,7 @@ int calcFlags(uint8_t *raw_data, int raw_data_size, unsigned int *flag_data, int
     }
     else {
         #if DETAILED_DEBUG
-            printf("container number not implemented \n");
+            println("container number not implemented ");
         #endif
         return P100_CALC_DATA_ERROR;
     }
@@ -1237,9 +1236,9 @@ int calcFlags(uint8_t *raw_data, int raw_data_size, unsigned int *flag_data, int
         if (temp == IMG_HEADER_FLAG_VALUES) {
             container = g;
             found_container = 1;
-            //printf("container %u has flag data \n", container);
+            //println("container %u has flag data ", container);
             if(container_nr != NULL){
-                *container_nr = container;
+                *container_nr = (unsigned char)container;
         }
             break;
         }
@@ -1247,7 +1246,7 @@ int calcFlags(uint8_t *raw_data, int raw_data_size, unsigned int *flag_data, int
 
     if (!found_container) {
         #if DETAILED_DEBUG
-        printf("flag data container not found\n");
+        println("flag data container not found");
         #endif
         return P100_CALC_DATA_ERROR;
     }
@@ -1296,7 +1295,7 @@ int calc_phases(uint8_t *raw_data, int raw_data_size, uint16_t *phase_data, int 
     unsigned int i = 0;
     if (data_size < (P100_WIDTH*P100_HEIGHT*(int)sizeof(uint16_t)) ) {
         #if DETAILED_DEBUG
-        printf("array for phase data too small \n");
+        println("array for phase data too small ");
         #endif
         return P100_CALC_DATA_ERROR;
     }
@@ -1350,7 +1349,7 @@ int calc_intensities(uint8_t *raw_data, int raw_data_size, uint16_t *intensities
 
     if (intensities_size < (P100_WIDTH*P100_HEIGHT*(int)sizeof(uint16_t))) {
         #if DETAILED_DEBUG
-        printf("array for intensity data too small \n");
+        println("array for intensity data too small ");
         #endif
         return P100_CALC_DATA_ERROR;
     }
@@ -1400,15 +1399,15 @@ int set3DCalibArrays(int hndl, float *dx, float *dy, float *dz) {
     device_container[hndl].dx_values = dx;
     device_container[hndl].dy_values = dy;
     device_container[hndl].dz_values = dz;
-    /*printf("----------- Calib data test output --------------\n");
+    /*println("----------- Calib data test output --------------");
     int cnt;
     for(cnt = 0; cnt <= P100_WIDTH*P100_HEIGHT; cnt++){
-        printf("--- %u ---\n", cnt);
-        printf("calib values default x-y-z: %f|%f|%f\n", dx_values_default[cnt], dy_values_default[cnt], dz_values_default[cnt]);
-        printf("calib values custom x-y-z:  %f|%f|%f\n", device_container[hndl].dx_values[cnt], device_container[hndl].dy_values[cnt], device_container[hndl].dz_values[cnt]);
-        printf("--------------\n");
+        println("--- %u ---", cnt);
+        println("calib values default x-y-z: %f|%f|%f", dx_values_default[cnt], dy_values_default[cnt], dz_values_default[cnt]);
+        println("calib values custom x-y-z:  %f|%f|%f", device_container[hndl].dx_values[cnt], device_container[hndl].dy_values[cnt], device_container[hndl].dz_values[cnt]);
+        println("--------------");
     }
-    printf("-------------------------------------------------\n");*/
+    println("-------------------------------------------------");*/
     return P100_OKAY;
 }
 
@@ -1553,13 +1552,13 @@ int firmwareUpdate(int hndl, unsigned char *firmware_data, unsigned int firmware
     //############################### LOAD FIRMWARE ################################
     memset_res = memset(spartan6_header, 0, sizeof(spartan6_header));
     if (memset_res == NULL) {
-        //printf("memset error!\n");
+        //println("memset error!");
         return P100_MEMORY_ERROR;
     }
 
     size = firmware_data_size + sizeof(spartan6_header);
     #if DETAILED_DEBUG
-    printf("size: %u \n", size);
+    println("size: %u ", size);
     #endif
 
     //size
@@ -1575,11 +1574,11 @@ int firmwareUpdate(int hndl, unsigned char *firmware_data, unsigned int firmware
     spartan6_header[HEADER_SIZE + 3] = CMD_FIRMWARE; //see DigiCamConnectionWrapper::writeFirmware()
 
     #if DETAILED_DEBUG
-    printf("--- Header ---\n");
+    println("--- Header ---");
     for (unsigned int debug_i = 0; debug_i < sizeof(spartan6_header); debug_i++) {
-        printf("%i\n", spartan6_header[debug_i]);
+        println("%i", spartan6_header[debug_i]);
     }
-    printf("--------------\n");
+    println("--------------");
     #endif
 
     //switch endianness
@@ -1601,7 +1600,7 @@ int firmwareUpdate(int hndl, unsigned char *firmware_data, unsigned int firmware
     //------------------------------------------------------------------
     res = p100_write(hndl, SPARTAN6_USB_ENDPOINT_WRITE, (char *) spartan6_header, sizeof(spartan6_header), SPARTAN6_USB_WRITE_TIMEOUT);
     #if DETAILED_DEBUG
-    printf("p100_write result: %i \n", res);
+    println("p100_write result: %i ", res);
     #endif
     if (res < 0) {
         BTAunlockMutex((device_container[hndl].usbMutex));
@@ -1610,7 +1609,7 @@ int firmwareUpdate(int hndl, unsigned char *firmware_data, unsigned int firmware
 
     res = p100_write(hndl, SPARTAN6_USB_ENDPOINT_WRITE, (char *) firmware_data_swendian, firmware_data_size, SPARTAN6_USB_FIRMWARE_TIMEOUT);
     #if DETAILED_DEBUG
-    printf("p100_write result: %i \n", res);
+    println("p100_write result: %i ", res);
     #endif
     if (res < 0) {
         BTAunlockMutex((device_container[hndl].usbMutex));
@@ -1620,9 +1619,9 @@ int firmwareUpdate(int hndl, unsigned char *firmware_data, unsigned int firmware
     rcv_num_bytes = p100_read(hndl, SPARTAN6_USB_ENDPOINT_READ, rcv_buffer, 4, SPARTAN6_USB_FIRMWARE_TIMEOUT);
 
     #if DETAILED_DEBUG
-    printf("p100_read result: %i \n", rcv_num_bytes);
+    println("p100_read result: %i ", rcv_num_bytes);
     for (int debug_j=0; debug_j < rcv_num_bytes; debug_j++) {
-        printf("buffer %d: %d \n",debug_j, (unsigned char) rcv_buffer[debug_j]);
+        println("buffer %d: %d ",debug_j, (unsigned char) rcv_buffer[debug_j]);
     }
     #endif
 
@@ -1633,7 +1632,7 @@ int firmwareUpdate(int hndl, unsigned char *firmware_data, unsigned int firmware
 
     if (rcv_buffer[ACK_ERROR_CODE_OFFSET] != ACK_NO_ERROR) {
         #if DETAILED_DEBUG
-        printf("Acknowledge error\n");
+        println("Acknowledge error");
         #endif
         BTAunlockMutex((device_container[hndl].usbMutex));
         return P100_ACK_ERROR;
@@ -1742,7 +1741,7 @@ int p100WriteToFlash(int hndl, uint8_t *dataBuffer, uint32_t dataBufferLen, uint
     //------------------------------------------------------------------
     int result = p100_write(hndl, SPARTAN6_USB_ENDPOINT_WRITE, (char *)spartan6Header, sizeof(spartan6Header), SPARTAN6_USB_WRITE_TIMEOUT);
     #if DETAILED_DEBUG
-        printf("p100_write result: %i \n", result);
+        println("p100_write result: %i ", result);
     #endif
     if (result < 0) {
         free(dataToFlash);
@@ -1755,7 +1754,7 @@ int p100WriteToFlash(int hndl, uint8_t *dataBuffer, uint32_t dataBufferLen, uint
     free(dataToFlash);
     dataToFlash = 0;
     #if DETAILED_DEBUG
-        printf("p100_write result: %i \n", result);
+        println("p100_write result: %i ", result);
     #endif
     if (result < 0) {
         BTAunlockMutex((device_container[hndl].usbMutex));
@@ -1765,9 +1764,9 @@ int p100WriteToFlash(int hndl, uint8_t *dataBuffer, uint32_t dataBufferLen, uint
     char rcvBuffer[4];
     int bytesReceivedCount = p100_read(hndl, SPARTAN6_USB_ENDPOINT_READ, rcvBuffer, 4, SPARTAN6_USB_READ_TIMEOUT);
     #if DETAILED_DEBUG
-        printf("p100_read result: %i \n", bytesReceivedCount);
+        println("p100_read result: %i ", bytesReceivedCount);
         for (int debug_j = 0; debug_j < bytesReceivedCount; debug_j++) {
-            printf("buffer %d: %d \n", debug_j, (unsigned char)rcvBuffer[debug_j]);
+            println("buffer %d: %d ", debug_j, (unsigned char)rcvBuffer[debug_j]);
         }
     #endif
 
@@ -1778,7 +1777,7 @@ int p100WriteToFlash(int hndl, uint8_t *dataBuffer, uint32_t dataBufferLen, uint
 
     if (rcvBuffer[ACK_ERROR_CODE_OFFSET] != ACK_NO_ERROR) {
         #if DETAILED_DEBUG
-            printf("Acknowledge error\n");
+            println("Acknowledge error");
         #endif
         BTAunlockMutex((device_container[hndl].usbMutex));
         return P100_ACK_ERROR;
@@ -1961,16 +1960,16 @@ static int flash_command(int hndl, uint8_t address, uint32_t command){
     spartan6_header[8] = (unsigned char)(command >> 24);
 
     #if DETAILED_DEBUG
-    printf("--- Header ---\n");
+    println("--- Header ---");
     for (unsigned int debug_i = 0; debug_i < sizeof(spartan6_header); debug_i++) {
-        printf("%i\n", spartan6_header[debug_i]);
+        println("%i", spartan6_header[debug_i]);
     }
-    printf("--------------\n");
+    println("--------------");
     #endif
 
     res = p100_write (hndl, SPARTAN6_USB_ENDPOINT_WRITE, (char *) spartan6_header, sizeof(spartan6_header), SPARTAN6_USB_WRITE_TIMEOUT);
     #if DETAILED_DEBUG
-    printf("p100_write result: %i \n", res);
+    println("p100_write result: %i ", res);
     #endif
     if (res < 0) {
         return P100_USB_ERROR;
@@ -1978,9 +1977,9 @@ static int flash_command(int hndl, uint8_t address, uint32_t command){
 
     rcv_num_bytes = p100_read (hndl, SPARTAN6_USB_ENDPOINT_READ, rcv_buffer, 4, SPARTAN6_USB_FIRMWARE_TIMEOUT);
     #if DETAILED_DEBUG
-    printf("p100_read result: %i \n", rcv_num_bytes);
+    println("p100_read result: %i ", rcv_num_bytes);
     for (int debug_j=0; debug_j < rcv_num_bytes; debug_j++) {
-        printf("buffer %d: %d \n",debug_j, (unsigned char) rcv_buffer[debug_j]);
+        println("buffer %d: %d ",debug_j, (unsigned char) rcv_buffer[debug_j]);
     }
     #endif
 
@@ -1990,7 +1989,7 @@ static int flash_command(int hndl, uint8_t address, uint32_t command){
 
     if (rcv_buffer[ACK_ERROR_CODE_OFFSET] != ACK_NO_ERROR) {
         #if DETAILED_DEBUG
-        printf("Acknowledge error\n");
+        println("Acknowledge error");
         #endif
         return P100_ACK_ERROR;
     }

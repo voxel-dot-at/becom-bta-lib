@@ -5,11 +5,9 @@
 
 #ifdef PLAT_WINDOWS
 #   include "libusb.h"
-#elif defined PLAT_LINUX
+#else
 #   include "libusb-1.0/libusb.h"
 #   include <time.h>
-#else
-#   error "no platform defined"
 #endif
 
 
@@ -17,6 +15,10 @@
 #include <bta_helper.h>
 #include <bta_discovery_helper.h>
 #include <bta_oshelper.h>
+
+#if !defined PLAT_WINDOWS && !defined PLAT_LINUX && !defined PLAT_APPLE
+#   error "Please define PLAT_WINDOWS, PLAT_LINUX or PLAT_APPLE in your makefile/project"
+#endif
 
 
 #define BTA_USB_VID                  0x2398
@@ -39,11 +41,12 @@ typedef struct BTA_UsbLibInst {
 
     void *dataMutex;
     void *controlMutex;
+    void *semConnectionEstablishment;
 
     void *readFramesThread;
     void *connectionMonitorThread;
 
-    uint32_t keepAliveMsgTimestamp;
+    uint64_t keepAliveMsgTimestamp;
 
     uint8_t lpControlCrcEnabled;
     float lpKeepAliveMsgInterval;

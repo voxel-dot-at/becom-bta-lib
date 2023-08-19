@@ -17,6 +17,10 @@
 typedef void usb_dev_handle;
 #endif
 
+#if !defined PLAT_WINDOWS && !defined PLAT_LINUX && !defined PLAT_APPLE
+#   error "Please define PLAT_WINDOWS, PLAT_LINUX or PLAT_APPLE in your makefile/project"
+#endif
+
 
 #define DETAILED_DEBUG                      0
 #define DEVEL_DEBUG                         0
@@ -24,7 +28,7 @@ typedef void usb_dev_handle;
 
 
 
-// Regmap------------------------------------------------------------------------------------------
+// Regmap
 #define P100_REG_SERIAL                 0x01
 #define P100_REG_RELEASE                0x02
 #define P100_REG_RAW_DATA_SIZE          0x03
@@ -74,7 +78,7 @@ typedef void usb_dev_handle;
 #define P100_REG_CALC_MODE_DOUT2_DATA1      26
 #define P100_REG_CALC_MODE_DOUT3_DATA0      27
 #define P100_REG_CALC_MODE_DOUT3_DATA1      28
-// Regmap------------------------------------------------------------------------------------------
+// Regmap
 
 
 #include "cal_dxyz.h"

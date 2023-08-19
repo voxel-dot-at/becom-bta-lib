@@ -26,23 +26,15 @@
 
 #include "fifo.h"
 #include <semaphore.h>
-#if defined PLAT_LINUX
+#if defined PLAT_LINUX || defined PLAT_APPLE
 #include <sys/stat.h> // For mode constants
 #include <fcntl.h> // For O_* constants
 #include <sys/mman.h>
 #include <unistd.h>
-#else
-// not on linux, define dummies in order to satisfy compiler
-//#define shm_open(a, b, c) (-1)
-//#define shm_unlink(a) (-1)
-//#define ftruncate(a, b, c) (-1)
-//#define MAP_FAILED 0
-//#define mmap(a, b, c, d, e, f) MAP_FAILED
-//#define close(a) (-1)
-//#define sem_unlink(a) (-1)
-//#define munmap(a, b) (-1)
-//#define SEM_FAILED 0
-//#define sem_open(a, b) SEM_FAILED
+#endif
+
+#if !defined PLAT_WINDOWS && !defined PLAT_LINUX && !defined PLAT_APPLE
+#   error "Please define PLAT_WINDOWS, PLAT_LINUX or PLAT_APPLE in your makefile/project"
 #endif
 
 
@@ -51,6 +43,13 @@ struct BTA_CalcXYZInst;
 struct BTA_JpgInst;
 struct BVQ_QueueInst;
 
+
+
+typedef struct BTA_KeepAliveInst {
+    uint64_t timeToProbe;
+    uint64_t interval;
+    uint8_t failcount;
+} BTA_KeepAliveInst;
 
 
 typedef struct BTA_InfoEventInst {
@@ -116,8 +115,6 @@ typedef struct BTA_WrapperInst {
 
 
     // LibParams
-    uint16_t lpTestPatternEnabled;
-
     float lpDataStreamReadFailedCount;
     float lpDataStreamBytesReceivedCount;
     float lpDataStreamPacketsReceivedCount;
@@ -130,13 +127,18 @@ typedef struct BTA_WrapperInst {
     float lpAllowIncompleteFrames;
 
     uint32_t timeStampLast;
-    uint16_t frameCounterLast;
+    uint32_t frameCounterLast;
     BVQ_QueueHandle lpDataStreamFramesParsedPerSecFrametimes;
-    uint32_t lpDataStreamFramesParsedPerSecUpdated;
+    uint64_t lpDataStreamFramesParsedPerSecUpdated;
 
     uint8_t lpPauseCaptureThread;
 
     uint8_t lpBilateralFilterWindow;
+    uint8_t lpCalcXyzEnabled;
+    float lpCalcXyzOffset;
+    uint8_t lpColorFromTofEnabled;
+    uint8_t lpJpgDecodeEnabled;
+    uint8_t lpUndistortRgbEnabled;
 
     uint32_t lpDebugFlags01;
     float lpDebugValue01;
@@ -157,13 +159,16 @@ typedef struct BTA_WrapperInst {
 typedef struct BTA_FrameToParse {
     uint64_t timestamp;             ///< BTAinitFrameToParse sets it and BTAparseFrame resets it. This way we distinguish between initialized or not.
     uint16_t frameCounter;          ///< this is the only way to distinguish between frames
-    uint32_t frameLen;              ///< length of the frame
+    uint32_t frameSize;             ///< length of the frame to be parsed
+    uint32_t frameLen;              ///< length of the allocated buffer frame
     uint8_t *frame;                 ///< storage for a frame. packets are memcpied directly to this buffer
     uint16_t packetCountGot;        ///< counter for keeping track if the frame is complete
     uint16_t packetCountNda;        ///< counter for keeping track if the frame is complete
     uint16_t packetCountTotal;      ///< number of packets for the complete frame
-    uint32_t *packetStartAddr;      ///< to remember the packet's position
-    uint16_t *packetSize;           ///< to remember the packet's size (if == 0 then the packet is missing if == UINT16_MAX then the packet cannot be requested to be resent)
+    uint16_t packetStartAddrsLen;   ///< Size of allocated buffer packetStartAddrs
+    uint32_t *packetStartAddrs;     ///< to remember the packet's position
+    uint16_t packetSizesLen;        ///< Size of allocated buffer packetSizes
+    uint16_t *packetSizes;          ///< to remember the packet's size (if == 0 then the packet is missing if == UINT16_MAX then the packet cannot be requested to be resent)
     //uint16_t packetCounterLast;     ///< to remember which packet was received last. Gaps provoke retransmission requests
     uint64_t timeLastPacket;        ///< to remember when we last received a packet
     uint64_t retryTime;             ///< the time when a retransmission request is done earliest
@@ -392,6 +397,7 @@ typedef struct BTA_LenscalibHeader {
 #define BTA_ETH_FRAME_DATA_HEADER_SIZE      64
 
 
+void BHLPzeroLogTimestamp();
 void BTAinfoEventHelper(BTA_InfoEventInst *infoEventInst, uint8_t importance, BTA_Status status, const char *msg, ...);
 
 int BTAgetBytesPerPixelSum(BTA_EthImgMode imgMode);
@@ -401,7 +407,7 @@ BTA_Status BTAdeserializeFrameV2(BTA_Frame **frame, uint8_t *frameSerialized, ui
 BTA_Status BTAdeserializeFrameV3(BTA_Frame **frame, uint8_t *frameSerialized, uint32_t *frameSerializedLen);
 BTA_Status BTAdeserializeFrameV4(BTA_Frame **frame, uint8_t *frameSerialized, uint32_t *frameSerializedLen);
 
-void BTAgetFlashCommand(BTA_FlashTarget flashTarget, BTA_FlashId flashId, BTA_EthCommand *cmd, BTA_EthSubCommand *subCmd);
+void BTAgetFlashCommand(BTA_FlashUpdateConfig *flashUpdateConfig, BTA_EthCommand *cmd, BTA_EthSubCommand *subCmd);
 BTA_Status BTAhandleFileUpdateStatus(uint32_t fileUpdateStatus, FN_BTA_ProgressReport progressReport, BTA_InfoEventInst *infoEventInst, uint8_t *finished);
 
 
@@ -416,13 +422,11 @@ BTA_Status BTAtoByteStream(BTA_EthCommand cmd, BTA_EthSubCommand subCmd, uint32_
 BTA_Status BTAparseControlHeader(uint8_t *request, uint8_t *data, uint32_t *payloadLength, uint32_t *flags, uint32_t *dataCrc32, uint8_t *parseError, BTA_InfoEventInst *infoEventInst);
 BTA_Status BTAparseFrame(BTA_WrapperInst *winst, BTA_FrameToParse *frameToParse, BTA_Frame **framePtr);
 
-void BTApostprocess(BTA_WrapperInst *winst, BTA_Frame *frame);
-void BTAgrab(BTA_WrapperInst *winst, BTA_Frame *frame);
-void BTAcallbackEnqueue(BTA_WrapperInst *winst, BTA_Frame *frame);
-
 BTA_Status BTAparsePostprocessGrabCallbackEnqueue(BTA_WrapperInst *winst, BTA_FrameToParse *frameToParse);
 /*      @brief  Function that handles the image processing queue and consumes the frame, respectively frees it  */
 void BTApostprocessGrabCallbackEnqueue(BTA_WrapperInst *winst, BTA_Frame *frame);
+
+BTA_Status BTAparseLenscalib(uint8_t* data, uint32_t dataLen, BTA_LensVectors** calcXYZVectors, BTA_InfoEventInst *infoEventInst);
 
 
 int initShm(uint32_t shmKeyNum, uint32_t shmSize, int32_t *shmFd, uint8_t **bufShmBase, sem_t **semFullWrite, sem_t **semFullRead, sem_t **semEmptyWrite, sem_t **semEmptyRead, fifo_t **fifoFull, fifo_t **fifoEmpty, uint8_t **bufDataBase, BTA_InfoEventInst *infoEventInst);

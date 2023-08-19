@@ -34,12 +34,11 @@ static BTA_Status transmit(BTA_UsbLibInst *inst, uint8_t *data, uint32_t length,
 static BTA_Status receive(BTA_UsbLibInst *inst, uint8_t *data, uint32_t *length, uint32_t timeout, BTA_InfoEventInst *infoEventInst);
 
 
-static const uint32_t timeoutDefault = 4000;
-static const uint32_t timeoutHuge = 120000;
-static const uint32_t timeoutBigger = 30000;
-//static const uint32_t timeoutBig = 15000;
-//static const uint32_t timeoutSmall = 1000;
 static const uint32_t timeoutTiny = 250;
+static const uint32_t timeoutDefault = 4000;
+static const uint32_t timeoutDouble = 2 * timeoutDefault;
+static const uint32_t timeoutBig = 30000;
+static const uint32_t timeoutHuge = 120000;
 
 
 
@@ -82,8 +81,15 @@ BTA_Status BTAUSBopen(BTA_Config *config, BTA_WrapperInst *winst) {
         return status;
     }
 
+    status = BTAinitSemaphore(&inst->semConnectionEstablishment, 0, 0);
+    if (status != BTA_StatusOk) {
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, status, "BTAopen USB: Cannot not init semaphore!");
+        BTAUSBclose(winst);
+        return status;
+    }
+
     // Start connection monitor thread
-    status = BTAcreateThread(&(inst->connectionMonitorThread), &connectionMonitorRunFunction, (void *)winst, 0);
+    status = BTAcreateThread(&(inst->connectionMonitorThread), &connectionMonitorRunFunction, (void *)winst);
     if (status != BTA_StatusOk) {
         BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, status, "BTAopen USB: Could not start connectionMonitorThread");
         BTAUSBclose(winst);
@@ -91,24 +97,18 @@ BTA_Status BTAUSBopen(BTA_Config *config, BTA_WrapperInst *winst) {
     }
 
     // Wait for connections to establish
-    uint32_t endTime = BTAgetTickCount() + 4000;
-    while (1) {
-        BTAmsleep(250);
-        // lock one mutex when reading usbHandle
-        BTAlockMutex(inst->controlMutex);
-        uint8_t ok = inst->usbHandle > 0;
-        BTAunlockMutex(inst->controlMutex);
-        if (ok) {
-            break;
-        }
-        if (BTAgetTickCount() > endTime) {
-            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusDeviceUnreachable, "BTAopen USB: timeout connecting to the device, see log");
-            BTAUSBclose(winst);
-            return BTA_StatusDeviceUnreachable;
-        }
+    BTAwaitSemaphore(inst->semConnectionEstablishment);
+    // lock one mutex when reading usbHandle
+    BTAlockMutex(inst->controlMutex);
+    uint8_t ok = inst->usbHandle > 0;
+    BTAunlockMutex(inst->controlMutex);
+    if (!ok) {
+        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusDeviceUnreachable, "BTAopen USB: timeout connecting to the device, see log");
+        BTAUSBclose(winst);
+        return BTA_StatusDeviceUnreachable;
     }
 
-    status = BTAcreateThread(&(inst->readFramesThread), &readFramesRunFunction, (void *)winst, 0);
+    status = BTAcreateThread(&(inst->readFramesThread), &readFramesRunFunction, (void *)winst);
     if (status != BTA_StatusOk) {
         BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, status, "BTAopen USB: Could not start readFramesThread");
         BTAUSBclose(winst);
@@ -121,7 +121,6 @@ BTA_Status BTAUSBopen(BTA_Config *config, BTA_WrapperInst *winst) {
 
 BTA_Status BTAUSBclose(BTA_WrapperInst *winst) {
     if (!winst) {
-        BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusInvalidParameter, "BTAclose USB: winst missing!");
         return BTA_StatusInvalidParameter;
     }
     BTA_UsbLibInst *inst = (BTA_UsbLibInst *)winst->inst;
@@ -173,6 +172,7 @@ static void *connectionMonitorRunFunction(void *handle) {
         return 0;
     }
 
+    uint8_t firstCycle = 1;
     uint8_t keepAliveFails = 0;
     while (!inst->closing) {
 
@@ -198,7 +198,7 @@ static void *connectionMonitorRunFunction(void *handle) {
                     libusb_device *dev = devs[i];
 
                     struct libusb_device_descriptor desc;
-                    int err = libusb_get_device_descriptor(dev, &desc);
+                    err = libusb_get_device_descriptor(dev, &desc);
                     if (err < 0 || desc.idVendor != BTA_USB_VID || desc.idProduct != BTA_USB_PID) {
                         continue;
                     }
@@ -290,11 +290,11 @@ static void *connectionMonitorRunFunction(void *handle) {
                                             inst->usbHandle = usbHandle;
                                             inst->interfaceNumber = interfaceNumber;
                                             BTAunlockMutex(inst->dataMutex);
-                                            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_CRITICAL, BTA_StatusInformation, "USB: Connection established");
+                                            BTAinfoEventHelper(winst->infoEventInst, VERBOSE_INFO, BTA_StatusInformation, "USB: Connection established");
                                             break;
                                         }
 
-                                        int err = libusb_release_interface(usbHandle, interfaceNumber);
+                                        err = libusb_release_interface(usbHandle, interfaceNumber);
                                         if (err < 0) {
                                             BTAinfoEventHelper(winst->infoEventInst, VERBOSE_WARNING, BTA_StatusWarning, "USB: Failed to release usb handle, error: %s", libusb_error_name(err));
                                         }
@@ -316,7 +316,7 @@ static void *connectionMonitorRunFunction(void *handle) {
         }
 
         // Keep-alive message
-        if (inst->lpKeepAliveMsgInterval > 0 && BTAgetTickCount() > inst->keepAliveMsgTimestamp) {
+        if (inst->lpKeepAliveMsgInterval > 0 && BTAgetTickCount64() > inst->keepAliveMsgTimestamp) {
             BTAlockMutex(inst->controlMutex);
             if (inst->usbHandle) {
                 BTA_Status status = sendKeepAliveMsg(winst);
@@ -348,7 +348,16 @@ static void *connectionMonitorRunFunction(void *handle) {
             }
         }
 
+        if (firstCycle) {
+            BTApostSemaphore(inst->semConnectionEstablishment);
+            firstCycle = 0;
+        }
+
         BTAmsleep(250);
+    }
+    if (firstCycle) {
+        BTApostSemaphore(inst->semConnectionEstablishment);
+        firstCycle = 0;
     }
 
 
@@ -574,13 +583,13 @@ static BTA_Status sendKeepAliveMsg(BTA_WrapperInst *winst) {
     if (status != BTA_StatusOk) {
         return status;
     }
-    status = transmit(inst, sendBuffer, sendBufferLen, timeoutDefault, winst->infoEventInst);
+    status = transmit(inst, sendBuffer, sendBufferLen, timeoutDouble, winst->infoEventInst);
     if (status != BTA_StatusOk) {
         free(sendBuffer);
         sendBuffer = 0;
         return status;
     }
-    status = receiveControlResponse(inst, sendBuffer, 0, 0, timeoutDefault, 0, winst->infoEventInst);
+    status = receiveControlResponse(inst, sendBuffer, 0, 0, timeoutDouble, 0, winst->infoEventInst);
     free(sendBuffer);
     sendBuffer = 0;
     return status;
@@ -749,7 +758,7 @@ static void *readFramesRunFunction(void *handle) {
             }
             frameToParse->timestamp = (bufferStart[12] << 24) | (bufferStart[13] << 16) | (bufferStart[14] << 8) | bufferStart[15];
             frameToParse->frameCounter = (bufferStart[16] << 8) | bufferStart[17];
-            frameToParse->frameLen = BTA_ETH_FRAME_DATA_HEADER_SIZE + dataLen;
+            frameToParse->frameSize = BTA_ETH_FRAME_DATA_HEADER_SIZE + dataLen;
             frameToParse->frame = bufferStart;
             BTAparsePostprocessGrabCallbackEnqueue(winst, frameToParse);
             free(frameToParse);
@@ -820,7 +829,7 @@ static void *readFramesRunFunction(void *handle) {
             }
             frameToParse->timestamp = timestamp;
             frameToParse->frameCounter = frameCounter;
-            frameToParse->frameLen = headerLength + dataLen;
+            frameToParse->frameSize = headerLength + dataLen;
             frameToParse->frame = bufferStart;
             BTAparsePostprocessGrabCallbackEnqueue(winst, frameToParse);
             free(frameToParse);
@@ -978,11 +987,11 @@ BTA_Status BTAUSBwriteCurrentConfigToNvm(BTA_WrapperInst *winst) {
     }
     // wait until the device is ready again and poll result
     BTAmsleep(1000);
-    uint32_t endTime = BTAgetTickCount() + timeoutBigger;
+    uint64_t endTime = BTAgetTickCount64() + timeoutBig;
     do {
         BTAmsleep(500);
         uint32_t result = 0;
-        status = readRegister(winst, 0x0034, &result, 0, timeoutBigger);
+        status = readRegister(winst, 0x0034, &result, 0, timeoutBig);
         if (status == BTA_StatusOk) {
             if (result != 1) {
                 BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "BTAwriteCurrentConfigToNvm() failed, the device said %d", result);
@@ -990,7 +999,7 @@ BTA_Status BTAUSBwriteCurrentConfigToNvm(BTA_WrapperInst *winst) {
             }
             return BTA_StatusOk;
         }
-    } while (BTAgetTickCount() < endTime);
+    } while (BTAgetTickCount64() < endTime);
     return BTA_StatusTimeOut;
 }
 
@@ -1014,11 +1023,11 @@ BTA_Status BTAUSBrestoreDefaultConfig(BTA_WrapperInst *winst) {
     }
     // wait until the device is ready again and poll result
     BTAmsleep(1000);
-    uint32_t endTime = BTAgetTickCount() + timeoutBigger;
+    uint64_t endTime = BTAgetTickCount64() + timeoutBig;
     do {
         BTAmsleep(500);
         uint32_t result = 0;
-        status = readRegister(winst, 0x0034, &result, 0, timeoutBigger);
+        status = readRegister(winst, 0x0034, &result, 0, timeoutBig);
         if (status == BTA_StatusOk) {
             if (result != 1) {
                 BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "BTArestoreDefaultConfig() failed, the device said %d", result);
@@ -1026,7 +1035,7 @@ BTA_Status BTAUSBrestoreDefaultConfig(BTA_WrapperInst *winst) {
             }
             return BTA_StatusOk;
         }
-    } while (BTAgetTickCount() < endTime);
+    } while (BTAgetTickCount64() < endTime);
     return BTA_StatusTimeOut;
 }
 
@@ -1235,7 +1244,7 @@ BTA_Status BTAUSBflashUpdate(BTA_WrapperInst *winst, BTA_FlashUpdateConfig *flas
 
     BTA_EthCommand cmd = BTA_EthCommandNone;
     BTA_EthSubCommand subCmd = BTA_EthSubCommandNone;
-    BTAgetFlashCommand(flashUpdateConfig->target, flashUpdateConfig->flashId, &cmd, &subCmd);
+    BTAgetFlashCommand(flashUpdateConfig, &cmd, &subCmd);
     if (cmd == BTA_EthCommandNone) {
         if (progressReport) (*progressReport)(BTA_StatusInvalidParameter, 0);
         BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusInvalidParameter, "BTAflashUpdate: FlashTarget %d or FlashId %d not supported", flashUpdateConfig->target, flashUpdateConfig->flashId);
@@ -1293,10 +1302,10 @@ BTA_Status BTAUSBflashUpdate(BTA_WrapperInst *winst, BTA_FlashUpdateConfig *flas
     // flash cmd successfully sent, now poll status
     BTAinfoEventHelper(winst->infoEventInst, VERBOSE_INFO, BTA_StatusInformation, "BTAflashUpdate: File transfer finished");
 
-    uint32_t timeEnd = BTAgetTickCount() + 5 * 60 * 1000; // 5 minutes timeout
+    uint64_t timeEnd = BTAgetTickCount64() + 5 * 60 * 1000; // 5 minutes timeout
     while (1) {
         BTAmsleep(1000);
-        if (BTAgetTickCount() > timeEnd) {
+        if (BTAgetTickCount64() > timeEnd) {
             if (progressReport) (*progressReport)(BTA_StatusTimeOut, 80);
             BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusTimeOut, "BTAflashUpdate: Timeout");
             return BTA_StatusTimeOut;
@@ -1327,7 +1336,7 @@ BTA_Status BTAUSBflashRead(BTA_WrapperInst *winst, BTA_FlashUpdateConfig *flashU
 
     BTA_EthCommand cmd = BTA_EthCommandNone;
     BTA_EthSubCommand subCmd = BTA_EthSubCommandNone;
-    BTAgetFlashCommand(flashUpdateConfig->target, flashUpdateConfig->flashId, &cmd, &subCmd);
+    BTAgetFlashCommand(flashUpdateConfig, &cmd, &subCmd);
     if (cmd == BTA_EthCommandNone) {
         if (progressReport) (*progressReport)(BTA_StatusInvalidParameter, 0);
         if (!quiet) BTAinfoEventHelper(winst->infoEventInst, VERBOSE_ERROR, BTA_StatusInvalidParameter, "BTAflashRead: FlashTarget %d or FlashId %d not supported", flashUpdateConfig->target, flashUpdateConfig->flashId);
@@ -1345,7 +1354,7 @@ BTA_Status BTAUSBflashRead(BTA_WrapperInst *winst, BTA_FlashUpdateConfig *flashU
     }
 
     BTAlockMutex(inst->controlMutex);
-    status = transmit(inst, sendBuffer, sendBufferLen, timeoutDefault, winst->infoEventInst);
+    status = transmit(inst, sendBuffer, sendBufferLen, timeoutDouble, winst->infoEventInst);
     if (status != BTA_StatusOk) {
         free(sendBuffer);
         sendBuffer = 0;
@@ -1405,7 +1414,7 @@ static void *doDiscovery(void *handle) {
         for (int i = 0; i < cnt && devs[i]; i++) {
             libusb_device *dev = devs[i];
             struct libusb_device_descriptor desc;
-            int err = libusb_get_device_descriptor(dev, &desc);
+            err = libusb_get_device_descriptor(dev, &desc);
             if (err < 0 || desc.idVendor != BTA_USB_VID || desc.idProduct != BTA_USB_PID) {
                 continue;
             }
@@ -1431,7 +1440,7 @@ static void *doDiscovery(void *handle) {
                                 if (winstTemp) {
                                     winstTemp->getDeviceInfo = BTAUSBgetDeviceInfo;
                                     BTA_UsbLibInst *instTemp = (BTA_UsbLibInst *)calloc(1, sizeof(BTA_UsbLibInst));
-                                    if (inst) {
+                                    if (instTemp) {
                                         instTemp->usbHandle = usbHandle;
                                         instTemp->interfaceNumber = interfaceNumber;
                                         winstTemp->inst = instTemp;
@@ -1450,14 +1459,17 @@ static void *doDiscovery(void *handle) {
                                                 BTAfreeDeviceInfo(deviceInfo);
                                             }
                                         }
+                                        else {
+                                            BTAinfoEventHelper(inst->infoEventInst, VERBOSE_WARNING, status, "Discovery: BTAgetDeviceInfo failed!");
+                                        }
                                         free(instTemp);
                                     }
                                     free(winstTemp);
                                 }
 
-                                int err = libusb_release_interface(usbHandle, interfaceNumber);
+                                err = libusb_release_interface(usbHandle, interfaceNumber);
                                 if (err < 0) {
-                                    BTAinfoEventHelper(inst->infoEventInst, VERBOSE_WARNING, BTA_StatusWarning, "USB: Failed to release usb handle, error: %s", libusb_error_name(err));
+                                    BTAinfoEventHelper(inst->infoEventInst, VERBOSE_WARNING, BTA_StatusWarning, "Discovery: Failed to release usb handle, error: %s", libusb_error_name(err));
                                 }
                             }
                         }
@@ -1476,23 +1488,15 @@ static void *doDiscovery(void *handle) {
 void *BTAUSBdiscoveryRunFunction(BTA_DiscoveryInst *inst) {
     while (!inst->abortDiscovery) {
 
-        //void *thread;
-        //BTA_Status status = BTAcreateThread(&thread, &doDiscovery, (void *)inst, 0);
-        //if (status != BTA_StatusOk) {
-        //    BTAinfoEventHelper(inst->infoEventInst, VERBOSE_CRITICAL, status, "Discovery: Could not start discoverThread");
-        //}
-        //BTAmsleep(100);
-        //status = BTAjoinThread(thread);
-        //if (status != BTA_StatusOk) {
-        //    BTAinfoEventHelper(inst->infoEventInst, VERBOSE_ERROR, status, "Discovery: Failed to join discoverThread");
-        //}     
         doDiscovery(inst);
 
-        // wait 3 seconds, then discover again
-        for (int i = 0; i < 30; i++) {
-            if (inst->abortDiscovery) {
-                break;
-            }
+        if (!inst->millisInterval) {
+            // Only discover once. We are finished here
+            return 0;
+        }
+
+        // Wait given interval, then loop
+        for (uint32_t i = 0; i < inst->millisInterval / 10 && !inst->abortDiscovery; i++) {
             BTAmsleep(100);
         }
     }
@@ -1597,14 +1601,14 @@ static BTA_Status receive(BTA_UsbLibInst *inst, uint8_t *data, uint32_t *length,
             libusb_close(inst->usbHandle);
             inst->usbHandle = 0;
             BTAunlockMutex(inst->dataMutex);
-            BTAinfoEventHelper(infoEventInst, VERBOSE_CRITICAL, BTA_StatusWarning, "USB: Connection lost!");
+            BTAinfoEventHelper(infoEventInst, VERBOSE_WARNING, BTA_StatusWarning, "USB: Connection lost!");
             return BTA_StatusDeviceUnreachable;
         }
         bytesReadTotal += bytesRead;
     }
     *length = bytesReadTotal;
     if (inst->lpKeepAliveMsgInterval > 0) {
-        inst->keepAliveMsgTimestamp = BTAgetTickCount() + (int)(1000 * inst->lpKeepAliveMsgInterval);
+        inst->keepAliveMsgTimestamp = BTAgetTickCount64() + (int)(1000 * inst->lpKeepAliveMsgInterval);
     }
     return BTA_StatusOk;
 }
@@ -1635,42 +1639,12 @@ static BTA_Status transmit(BTA_UsbLibInst *inst, uint8_t *data, uint32_t length,
             libusb_close(inst->usbHandle);
             inst->usbHandle = 0;
             BTAunlockMutex(inst->dataMutex);
-            BTAinfoEventHelper(infoEventInst, VERBOSE_CRITICAL, BTA_StatusWarning, "USB: Connection lost!");
+            BTAinfoEventHelper(infoEventInst, VERBOSE_WARNING, BTA_StatusWarning, "USB: Connection lost!");
             return BTA_StatusDeviceUnreachable;
         }
         bytesWrittenTotal += bytesWritten;
     }
     return BTA_StatusOk;
-}
-
-
-// This does not update in real time. Not trustworthy!
-uint8_t BTAisUsbDevicePresent(uint16_t vendorId, uint16_t productId) {
-    libusb_context *context;
-    int err = libusb_init(&context);
-    if (err < 0) {
-        //BTAinfoEventHelper(infoEventInst, VERBOSE_CRITICAL, BTA_StatusRuntimeError, "BTAopen USB: cannot init usb library (%s)", libusb_error_name(err));
-        return 0;
-    }
-    libusb_device **devs;
-    ssize_t cnt = libusb_get_device_list(context, &devs);
-    if (cnt > 0) {
-        libusb_device *dev;
-        int i = 0;
-        while ((dev = devs[i++])) {
-            struct libusb_device_descriptor desc;
-            err = libusb_get_device_descriptor(dev, &desc);
-            if (err < 0 || desc.idVendor != vendorId || desc.idProduct != productId) {
-                libusb_free_device_list(devs, 1);
-                return 1;
-            }
-        }
-    }
-    else if (cnt >= 0) {
-        libusb_free_device_list(devs, 1);
-    }
-    libusb_exit(context);
-    return 0;
 }
 
 #endif

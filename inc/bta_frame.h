@@ -21,7 +21,7 @@
 
 #define BTA_FRAME_H_VER_MAJ 3
 #define BTA_FRAME_H_VER_MIN 3
-#define BTA_FRAME_H_VER_NON_FUNC 6
+#define BTA_FRAME_H_VER_NON_FUNC 11
 
 #include "bta_status.h"
 #include <stdint.h>
@@ -42,7 +42,7 @@ typedef enum BTA_FrameMode {
     BTA_FrameModeRawPhases,              ///< Raw phase data untouched as delivered by the sensor
     BTA_FrameModeIntensities,            ///< Intensity (Ambient light)
     BTA_FrameModeDistColor,              ///< Distance, RGB data
-	BTA_FrameModeDistAmpBalance,         ///< Distance, Amplitude, Balance (see camera user manual)
+    BTA_FrameModeDistAmpBalance,         ///< Distance, Amplitude, Balance (see camera user manual)
     BTA_FrameModeXYZColor,               ///< X, Y, Z coordinates, RGB data overlay (see camera user manual)
     BTA_FrameModeDist,                   ///< Distance
     BTA_FrameModeDistConfExt,            ///< Distance, Confidence (Different image processing behaviour, consult camera software manual)
@@ -97,7 +97,6 @@ typedef enum BTA_ChannelId {
     BTA_ChannelIdTest =         0x800,
     BTA_ChannelIdColor =       0x1000,
     BTA_ChannelIdRawDist =     0x4000,   // Unfiltered unitless distance values (full unumbiguous range) scaled to full range of corresponding BTA_DataFormat (former BTA_ChannelIdPhase)
-    BTA_ChannelIdGrayScale =   0x8000,   // Same as color, but no special dataFormats and color encodings
     BTA_ChannelIdBalance =    0x10000,
     BTA_ChannelIdStdDev =     0x20000,
 
@@ -113,7 +112,8 @@ typedef enum BTA_ChannelId {
     BTA_ChannelIdCustom10 = 0xa000000,
 } BTA_ChannelId;
 
-#define BTA_ChannelIdPhase BTA_ChannelIdRawDist   // deprecated because confusing naming
+#define BTA_ChannelIdGrayScale BTA_ChannelIdColor       // Deprecated, same as BTA_ChannelIdColor
+#define BTA_ChannelIdPhase BTA_ChannelIdRawDist         // deprecated because confusing naming
 
 
 ///     @brief Enumerator with data formats which allows the parsing of the data in BTA_Channel.
@@ -177,6 +177,23 @@ typedef struct BTA_Metadata {
 } BTA_Metadata;
 
 
+typedef struct BTA_ChannelFilter {
+    uint8_t filterByChannelId;          ///< >0: 'id' is a valid filter for ChannelId
+    BTA_ChannelId id;
+    uint8_t filterByResolution;         ///< >0: 'xRes' and 'yRes' are valid filters. 1: resolution must match exactly
+    uint16_t xRes;
+    uint16_t yRes;
+    uint8_t filterByDataFormat;         ///< >0: 'dataFormat' is a valid filter
+    BTA_DataFormat dataFormat;
+    uint8_t filterByLensIndex;          ///< >0: 'lensIndex' is a valid filter
+    uint8_t lensIndex;
+    uint32_t filterByFlagsMask;         ///< >0: 'flags' is a valid filter, mask is used to determine relevant bits
+    uint32_t flags;
+    uint8_t filterBySequenceCounter;    ///< >0: 'sequenceCounter' is a valid filter. 1: sequenceCounter must match exactly
+    uint8_t sequenceCounter;
+} BTA_ChannelFilter;
+
+
 ///     @brief BTA_Channel holds a two-dimensional array of data  (A part of BTA_Frame)
 typedef struct BTA_Channel {
     BTA_ChannelId id;                   ///< Type of data in this channel
@@ -190,11 +207,10 @@ typedef struct BTA_Channel {
     uint32_t dataLen;                   ///< Length of the channel data in bytes (= xRes*yRes*bytesPerPixel)
     BTA_Metadata **metadata;            ///< List of pointers to additional generic data
     uint32_t metadataLen;               ///< The number of BTA_Metadata pointers stored in metadata
-	uint8_t lensIndex;				    ///< The index defining the sensor and lens the data originates from
+	uint8_t lensIndex;                  ///< The index defining the sensor and lens the data originates from
 	uint32_t flags;                     ///< More information on the channel content
     uint8_t sequenceCounter;            ///< If multiple sequences were captured, they can be distinguished by the sequence counter
     float gain;                         ///< The magnitude of amplification the sensor produces
-    //uint8_t channelDataIsShared;        ///<
 } BTA_Channel;
 
 

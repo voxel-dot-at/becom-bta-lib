@@ -42,8 +42,8 @@ void fspecial_gauss(int windowSize, float sigmaS, float *filter_array) {
     }
 
     #if DEBUG_PRINT
-    printf("\n");
-    printf("Sum: %f \n\n", sum);
+    println("");
+    println("Sum: %f \n", sum);
     #endif
 
     //if (sum != 0) {
@@ -56,7 +56,7 @@ void fspecial_gauss(int windowSize, float sigmaS, float *filter_array) {
                 #endif
             }
             #if DEBUG_PRINT
-            printf("\n");
+            println("");
             #endif
         }
     }

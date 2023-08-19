@@ -21,18 +21,12 @@
 
 #define BTA_VER_MAJ 3
 #define BTA_VER_MIN 3
-#define BTA_VER_NON_FUNC 6
+#define BTA_VER_NON_FUNC 11
 
-#if (defined(WIN32) || defined(WIN64)) && !defined(PLAT_WINDOWS) && !defined(PLAT_LINUX) && !defined(PLAT_APPLE)
-#   define PLAT_WINDOWS
-#endif
-#if defined(linux) && !defined(PLAT_WINDOWS) && !defined(PLAT_LINUX) && !defined(PLAT_APPLE)
-#   define PLAT_LINUX
-#endif
-#if defined(__APPLE__) && !defined(PLAT_WINDOWS) && !defined(PLAT_LINUX) && !defined(PLAT_APPLE)
-#   define PLAT_APPLE
-#endif
 
+#if !defined PLAT_WINDOWS && !defined PLAT_LINUX && !defined PLAT_APPLE
+#   error "Please define PLAT_WINDOWS, PLAT_LINUX or PLAT_APPLE in your makefile/project"
+#endif
 
 
 #ifdef PLAT_WINDOWS
@@ -42,13 +36,11 @@
 #   else
 #       define DLLEXPORT __declspec(dllimport)
 #   endif
-#elif defined PLAT_LINUX || defined PLAT_APPLE
+#else
     //must be empty
 #   define DLLEXPORT
     //must be empty
 #   define BTA_CALLCONV
-#else
-#   error "Please define PLAT_WINDOWS, PLAT_LINUX or PLAT_APPLE in your makefile/project"
 #endif
 
 
@@ -145,9 +137,7 @@ typedef void (BTA_CALLCONV *FN_BTA_FrameArrivedEx2)(BTA_Handle handle, BTA_Frame
 #define BTA_CONFIG_STRUCT_STRIDE 8
 #ifdef PLAT_WINDOWS
 #define BTA_PRAGMA_ALIGN __declspec(align(BTA_CONFIG_STRUCT_STRIDE))
-#elif defined PLAT_LINUX
-#define BTA_PRAGMA_ALIGN __attribute__((aligned(BTA_CONFIG_STRUCT_STRIDE)))
-#elif defined PLAT_APPLE
+#else
 #define BTA_PRAGMA_ALIGN __attribute__((aligned(BTA_CONFIG_STRUCT_STRIDE)))
 #endif
 
@@ -175,7 +165,7 @@ typedef struct BTA_Config {
     BTA_PRAGMA_ALIGN uint8_t uartTransmitterAddress;        ///< The source address for UART communications
     BTA_PRAGMA_ALIGN uint8_t uartReceiverAddress;           ///< The target address for UART communications
 
-    BTA_PRAGMA_ALIGN BTA_DeviceType deviceType;             ///< The device type, when not left 0 implies the type of connection to use (Ethernet, USB, UART, Bltstream, ...)
+    BTA_PRAGMA_ALIGN BTA_DeviceType deviceType;             ///< The device type, when not left 0 implies the type of connection to use (BTA_DeviceTypeAny, BTA_DeviceTypeEthernet, BTA_DeviceTypeUsb, BTA_DeviceTypeBltstream)
     BTA_PRAGMA_ALIGN uint8_t *pon;                          ///< Product Order Number of device to be opened (0 == not specified) (ASCII coded)
     BTA_PRAGMA_ALIGN uint32_t serialNumber;                 ///< Serial number of device to be opened (0 == not specified)
 
@@ -199,8 +189,8 @@ typedef struct BTA_Config {
 
     BTA_PRAGMA_ALIGN uint16_t averageWindowLength;          ///< No longer supported
 
-    BTA_PRAGMA_ALIGN uint8_t *bltstreamFilename;            ///< Only for BtaStreamLib: Specify the file (containing the stream) to read from (ASCII coded)
-    BTA_PRAGMA_ALIGN uint8_t *infoEventFilename;            ///< All infoEvents are appended to this file
+    BTA_PRAGMA_ALIGN uint8_t *bltstreamFilename;            ///< Only for BTA_DeviceTypeBltstream: Specify the file (containing the stream) to read from (ASCII coded)
+    BTA_PRAGMA_ALIGN uint8_t *infoEventFilename;            ///< All infoEvents are appended to this file. Be careful with this feature as it opens and closes and the file with each infoEvent
 
     BTA_PRAGMA_ALIGN uint8_t udpDataAutoConfig;             ///< 1: BTAopen automatically configures the device to stream to the correct destination
     BTA_PRAGMA_ALIGN uint8_t shmDataEnabled;                ///< 1: frames are retrieved via the shared memory interface
@@ -311,6 +301,13 @@ DLLEXPORT BTA_Status BTA_CALLCONV BTAgetDeviceInfo(BTA_Handle handle, BTA_Device
 ///     @brief For freeing the device information structure
 ///     @param deviceInfo Pointer to structure to be freed
 DLLEXPORT BTA_Status BTA_CALLCONV BTAfreeDeviceInfo(BTA_DeviceInfo *deviceInfo);
+
+
+
+///     @brief  For querying the device type.
+///     @param  handle Handle of the device to be used
+///     @param  deviceType Preallocated pointer to hold the deviceType on return
+DLLEXPORT BTA_Status BTA_CALLCONV BTAgetDeviceType(BTA_Handle handle, BTA_DeviceType *deviceType);
 
 
 
@@ -494,6 +491,17 @@ DLLEXPORT BTA_Status BTA_CALLCONV BTAgetColors(BTA_Frame *frame, void **colorBuf
 
 
 
+///     @brief  Convenience function for extracting a specific channel from a provided frame.
+///             The channel pointers are extracted, but data is not copied; free the frame as usual and the channels returned 
+///     @param  frame The frame from which to extract the channel
+///     @param  filter Pointer to the struct containing the filter information to be used to select the result channel(s)
+///     @param  channels Pointer to a preallocated array of pointers to BTA_Channels. Contains channelsLen valid channel pointers on return
+///     @param  channelsLen Pointer to the length of the preallocated array channels. Number of found channels on return.
+///     @return Please refer to bta_status.h
+DLLEXPORT BTA_Status BTA_CALLCONV BTAgetChannels(BTA_Frame *frame, BTA_ChannelFilter *filter, BTA_Channel **channels, int *channlesLen);
+
+
+
 ///     @brief  Facilitates setting the integration time for the default capture sequence(s)
 ///     @param  handle Handle of the device to be used
 ///     @param  integrationTime The desired integration time in [us]
@@ -610,8 +618,15 @@ DLLEXPORT BTA_Status BTA_CALLCONV BTAwriteCurrentConfigToNvm(BTA_Handle handle);
 DLLEXPORT BTA_Status BTA_CALLCONV BTArestoreDefaultConfig(BTA_Handle handle);
 
 
+///     @brief  A convenience function to convert a device type into a string
+///     @param deviceType The BTA_DeviceType to be converted into a string
+///     @return Returns a constant char* that is not allocated and doesn't need to be free'd
+DLLEXPORT const char *BTA_CALLCONV BTAdeviceTypeToString(BTA_DeviceType deviceType);
 
-///     @brief  A convenience function to convert a BTA_Status into a string
+
+
+///     @brief Obsolete, use BTAstatusToString2!!
+///            A convenience function to convert a BTA_Status into a string
 ///     @param status The BTA_Status to be converted into a string
 ///     @param statusString A buffer allocated by the caller to contain the result on return
 ///     @param statusStringLen The length of the preallocated buffer in statusString
@@ -626,6 +641,18 @@ DLLEXPORT BTA_Status BTA_CALLCONV BTAstatusToString(BTA_Status status, char* sta
 DLLEXPORT const char* BTA_CALLCONV BTAstatusToString2(BTA_Status status);
 
 
+///     @brief  A convenience function to convert a BTA_Unit into a string
+///     @param unit The BTA_Unit to be converted into a string
+///     @return Returns a constant char* that is not allocated and doesn't need to be free'd
+DLLEXPORT const char *BTA_CALLCONV BTAunitToString(BTA_Unit unit);
+
+
+///     @brief  A convenience function to convert a BTA_ChannelId into a string
+///     @param id The BTA_ChannelId to be converted into a string
+///     @return Returns a constant char* that is not allocated and doesn't need to be free'd
+DLLEXPORT const char *BTA_CALLCONV BTAchannelIdToString(BTA_ChannelId id);
+
+
 ///     @brief  A convenience function to convert a BTA_LibParam into a string
 ///     @param libParam The BTA_LibParam to be converted into a string
 ///     @return Returns a constant char* that is not allocated and doesn't need to be free'd
@@ -636,6 +663,18 @@ DLLEXPORT const char* BTA_CALLCONV BTAlibParamToString(BTA_LibParam libParam);
 ///     @param frameMode The BTA_FrameMode to be converted into a string
 ///     @return Returns a constant char* that is not allocated and doesn't need to be free'd
 DLLEXPORT const char* BTA_CALLCONV BTAframeModeToString(BTA_FrameMode frameMode);
+
+
+///     @brief  A convenience function to convert a BTA_DataFormat into a string
+///     @param dataFormat The BTA_DataFormat to be converted into a string
+///     @return Returns a constant char* that is not allocated and doesn't need to be free'd
+DLLEXPORT const char *BTA_CALLCONV BTAdataFormatToString(BTA_DataFormat dataFormat);
+
+
+///     @brief  A convenience function to convert a BTA_ChannelSelection into a string
+///     @param channelSelection The BTA_ChannelSelection to be converted into a string
+///     @return Returns a constant char* that is not allocated and doesn't need to be free'd
+DLLEXPORT const char *BTA_CALLCONV BTAchannelSelectionToString(BTA_ChannelSelection channelSelection);
 
 #ifdef __cplusplus
 }

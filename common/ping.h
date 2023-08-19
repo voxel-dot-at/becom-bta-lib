@@ -3,6 +3,6 @@
 
 #include <stdint.h>
 
-int ping(uint8_t *ipAddr, uint8_t ipAddrLen, int requiredSuccesses, int msecsTimeout);
+uint8_t ping(uint8_t *ipAddr, uint8_t ipAddrLen, int requiredSuccesses, int intervalMillis, int timeoutMillis);
 
 #endif

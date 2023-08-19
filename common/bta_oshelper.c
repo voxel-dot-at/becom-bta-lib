@@ -3,22 +3,29 @@
 #include <assert.h>
 
 #include "bta_oshelper.h"
+#include "timing_helper.h"
 
 #include <stdio.h>
 #ifdef PLAT_WINDOWS
-    #include <Windows.h>
-    #include <io.h>
-    #include <fcntl.h>
-    #include <share.h>
-    #include <sys\stat.h>
-    #include <direct.h>
-    #define GetCurrentDir _getcwd
-#elif defined PLAT_LINUX || defined PLAT_APPLE
-    #   include <sys/ioctl.h>
-    #   include <unistd.h>
-    #   include <time.h>
-    #   include <unistd.h>
-    #define GetCurrentDir (void)!getcwd
+#   include <Windows.h>
+#   include <io.h>
+#   include <fcntl.h>
+#   include <share.h>
+#   include <sys\stat.h>
+#   include <direct.h>
+#   define GetCurrentDir _getcwd
+#   include <memory>
+#   include <stdexcept>
+#   include <iostream>
+#else
+#   include <sys/ioctl.h>
+#   include <unistd.h>
+#   include <time.h>
+#   include <unistd.h>
+#   define GetCurrentDir (void)!getcwd
+#   include <stdio.h>
+#   define _popen popen
+#   define _pclose pclose
 #endif
 
 
@@ -43,13 +50,16 @@ BTA_Status BTAfLargeOpen(const char* filename, const char *mode, void **file) {
         else if (!strcmp(mode, "ab")) {
             openFlag = _O_WRONLY | O_CREAT | _O_APPEND | _O_BINARY;
         }
+        else {
+            return BTA_StatusInvalidParameter;
+        }
 
         errno_t err = _sopen_s((int *)file, filename, openFlag, _SH_DENYNO, _S_IREAD | _S_IWRITE);
         if (err) {
             return BTA_StatusRuntimeError;
         }
         return BTA_StatusOk;
-    #elif defined PLAT_LINUX || defined PLAT_APPLE
+    #else
         return BTAfopen(filename, mode, file);
     #endif
 }
@@ -65,7 +75,7 @@ BTA_Status BTAfLargeClose(void *file) {
             return BTA_StatusRuntimeError;
         }
         return BTA_StatusOk;
-    #elif defined PLAT_LINUX ||	defined	PLAT_APPLE
+    #else
         return BTAfclose(file);
     #endif
 }
@@ -82,7 +92,7 @@ BTA_Status BTAfLargeTell(void *file, uint64_t *position) {
             return BTA_StatusRuntimeError;
         }
         *position = pos;
-    #elif defined PLAT_LINUX ||	defined	PLAT_APPLE
+    #else
         *position = ftell((FILE *)file);
         if (*position < 0) {
             *position = 0;
@@ -108,7 +118,7 @@ BTA_Status BTAfLargeSeek(void *file, int64_t offset, BTA_SeekOrigin origin, uint
         if (position) {
             *position = pos;
         }
-    #elif defined PLAT_LINUX ||	defined	PLAT_APPLE
+    #else
         int err = fseek((FILE *)file, offset, origin);
         if (err < 0) {
             return BTA_StatusRuntimeError;
@@ -141,7 +151,7 @@ BTA_Status BTAfLargeRead(void *file, void *buffer, uint32_t bytesToReadCount, ui
             return BTA_StatusOutOfMemory;
         }
         return BTA_StatusOk;
-    #elif defined PLAT_LINUX ||	defined	PLAT_APPLE
+    #else
         return BTAfread(file, buffer, bytesToReadCount, bytesReadCount);
     #endif
 }
@@ -162,11 +172,11 @@ BTA_Status BTAfLargeWrite(void *file, void *buffer, uint32_t bufferLen, uint32_t
         if (bytesWrittenCount) {
             *bytesWrittenCount = count;
         }
-        if (bufferLen != count) {
+        if (bufferLen != (uint32_t)count) {
             return BTA_StatusOutOfMemory;
         }
         return BTA_StatusOk;
-    #elif defined PLAT_LINUX ||	defined	PLAT_APPLE
+    #else
         return BTAfwrite(file, buffer, bufferLen, bytesWrittenCount);
     #endif
 }
@@ -224,7 +234,7 @@ BTA_Status BTAfopen(const char* filename, const char *mode, void **file) {
             return BTA_StatusRuntimeError;
         }
         return BTA_StatusOk;
-    #elif defined PLAT_LINUX ||	defined	PLAT_APPLE
+    #else
         *file = fopen(filename, mode);
         if (!*file) {
             return BTA_StatusUnknown;
@@ -381,4 +391,86 @@ BTA_Status BTAfwriteCsv(const char* filename, const char **headersX, const char 
     }
     BTAfclose(file);
     return BTA_StatusOk;
+}
+
+
+void BTAexec(const char *cmd, char *result) {
+    const int bufferSize = 128;
+    char buffer[bufferSize];
+    *result = 0;
+    FILE *pipe = _popen(cmd, "r");
+    if (!pipe) {
+        return;
+    }
+    while (fgets(buffer, sizeof buffer, pipe)) {
+        sprintf(result + strlen(result), "%s", buffer);
+    }
+    _pclose(pipe);
+}
+
+
+uint8_t BTAisUsbDevicePresent(uint16_t vendorId, uint16_t productId, int requiredSuccesses, int intervalMillis, int timeoutMillis) {
+    // This does not update in real time. Not trustworthy!
+    //libusb_context *context;
+    //int err = libusb_init(&context);
+    //if (err < 0) {
+    //    //BTAinfoEventHelper(infoEventInst, VERBOSE_CRITICAL, BTA_StatusRuntimeError, "BTAopen USB: cannot init usb library (%s)", libusb_error_name(err));
+    //    return 0;
+    //}
+    //libusb_device **devs;
+    //ssize_t cnt = libusb_get_device_list(context, &devs);
+    //if (cnt > 0) {
+    //    libusb_device *dev;
+    //    int i = 0;
+    //    while ((dev = devs[i++])) {
+    //        struct libusb_device_descriptor desc;
+    //        err = libusb_get_device_descriptor(dev, &desc);
+    //        if (err < 0 || desc.idVendor != vendorId || desc.idProduct != productId) {
+    //            libusb_free_device_list(devs, 1);
+    //            return 1;
+    //        }
+    //    }
+    //}
+    //else if (cnt >= 0) {
+    //    libusb_free_device_list(devs, 1);
+    //}
+    //libusb_exit(context);
+    //return 0;
+
+
+    char cmdBuf[500];
+    char resultBuf[500];
+#   if defined PLAT_WINDOWS
+    sprintf(cmdBuf, "pnputil /enum-devices /connected /class USB | findstr \"VID_%04x&PID_%04x\"", vendorId, productId);
+    sprintf(resultBuf, "VID_%04x&PID_%04x", vendorId, productId);
+#   else
+    sprintf(cmdBuf, "lsusb | grep 'ID %04x:%04x'", vendorId, productId);
+    sprintf(resultBuf, "ID %04x:%04x", vendorId, productId);
+#   endif
+
+    uint64_t timeEnd = BTAgetTickCount64() + timeoutMillis;
+    uint64_t timeToProbe = BTAgetTickCount64();
+    int successes = 0;
+    char output[1024];
+    while (1) {
+        uint64_t ticks = BTAgetTickCount64();
+        if (ticks < timeToProbe) {
+            BTAmsleep((uint32_t)(timeToProbe - ticks));
+        }
+        timeToProbe += intervalMillis;
+        BTAexec(cmdBuf, output);
+        if (strlen(output) && strstr(output, resultBuf)) {
+            successes++;
+        }
+        else {
+            successes = 0;
+        }
+        if (successes == requiredSuccesses) {
+            return 1;
+        }
+        if (BTAgetTickCount64() > timeEnd) {
+            return 0;
+        }
+    }
+    return 0;
 }
