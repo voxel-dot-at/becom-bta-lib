@@ -1,8 +1,42 @@
-cmake_minimum_required(VERSION 3.0 FATAL_ERROR)
+cmake_minimum_required(VERSION 3.10 FATAL_ERROR)
 
 message (STATUS "CMake version: " ${CMAKE_VERSION} )
 
 project( bta )
+
+SET(CMAKE_COLOR_MAKEFILE ON)
+SET(CMAKE_VERBOSE_MAKEFILE OFF)
+
+#Including local extra cmake modules
+list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
+
+#Function for generation of export macros for libraries
+include(GenerateExportHeader) #(toffy_export.h - TOFFY_EXPORT)
+# Include module with fuction 'write_basic_package_version_file' for ToffyConfig.cmake
+include(CMakePackageConfigHelpers)
+
+################################################################################
+#Version stuff
+################################################################################
+
+# Make a version file containing the current version from git.
+include(GetGitRevisionDescription)
+git_describe(VERSION --tag --long)
+
+##parse the version information into pieces.
+string(REGEX REPLACE "^v([0-9]+)\\..*" "\\1" PROJECT_VERSION_MAJOR "${VERSION}")
+string(REGEX REPLACE "^v[0-9]+\\.([0-9]+).*" "\\1" PROJECT_VERSION_MINOR "${VERSION}")
+string(REGEX REPLACE "^v[0-9]+\\.[0-9]+\\.([0-9]+).*" "\\1" PROJECT_VERSION_PATCH "${VERSION}")
+string(REGEX REPLACE "^v[0-9]+\\.[0-9]+\\.[0-9]+(.*)" "\\1" PROJECT_VERSION_TWEAK "${VERSION}")
+set(PROJECT_VERSION "${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR}.${PROJECT_VERSION_PATCH}")
+set(PROJECT_DESCRIPTION "Toffy 3D computer vision framework")
+
+set(PROJECT_VERSION_FULL "${PROJECT_VERSION}${PROJECT_VERSION_TWEAK}")
+
+message (STATUS "version: " ${VERSION} )
+message (STATUS ${PROJECT_NAME}" version: " ${PROJECT_VERSION_FULL} )
+
+
 
 set(bta_VERSION_MAJOR 3)
 set(bta_VERSION_MINOR 3)
