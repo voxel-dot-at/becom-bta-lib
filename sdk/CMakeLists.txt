@@ -18,24 +18,25 @@ endif()
 message(" usb sources: " ${USB_SRC} )
 
 add_library(bta SHARED
-  bta.c
-  bta_discovery_helper.c
-  bta_eth.c
-  bta_frame_queueing.c
-  bta_grabbing.c
-  bta_helper.c
-  bta_p100.c
-  bta_p100_helper.c
-  bta_processing.c
-  bta_serialization.c
-  bta_stream.c
-  bta_uart.c
-  bta_uart_helper.c
-  bta_usb.c
-  $<TARGET_OBJECTS:bltapi_fastBf>
-  $<TARGET_OBJECTS:bltapi_lzma>
-  $<TARGET_OBJECTS:bltapi_common>
-  )
+    bta.c
+    bta_discovery_helper.c
+    bta_eth.c
+    bta_frame_queueing.c
+    bta_grabbing.c
+    bta_helper.c
+    bta_p100.c
+    bta_p100_helper.c
+    bta_processing.c
+    bta_serialization.c
+    bta_stream.c
+    bta_uart.c
+    bta_uart_helper.c
+    bta_usb.c
+    ${USB_SRC}
+    $<TARGET_OBJECTS:bltapi_fastBf>
+    $<TARGET_OBJECTS:bltapi_lzma>
+    $<TARGET_OBJECTS:bltapi_common>
+    )
 
 target_link_libraries( bta ${LIBS} ${LIBUSB_LIBRARIES})
 
