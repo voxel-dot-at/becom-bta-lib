@@ -24,7 +24,7 @@ get_filename_component(_@PROJECT_NAME@_rootdir ${CMAKE_CURRENT_LIST_DIR}/../../.
 set(@PROJECT_NAME@_INSTALL_PREFIX ${_@PROJECT_NAME@_rootdir})
 set(@PROJECT_NAME@_INCLUDE_DIRS   ${_@PROJECT_NAME@_rootdir}/include ${_@PROJECT_NAME@_rootdir}/include/bta)
 set(@PROJECT_NAME@_LIBRARY_DIR    ${_@PROJECT_NAME@_rootdir}/lib)
-set(@PROJECT_NAME@_LIBRARIES      -L${@PROJECT_NAME@_LIBRARY_DIR} -lxml2 -lbta)
+set(@PROJECT_NAME@_LIBRARIES      -L${@PROJECT_NAME@_LIBRARY_DIR} -lxml2 -lbta -lrt)
 set(@PROJECT_NAME@_LIBRARY      bta)
 
 
