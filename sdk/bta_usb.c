@@ -1405,7 +1405,7 @@ static void *doDiscovery(void *handle) {
     libusb_context *context;
     int err = libusb_init(&context);
     if (err < 0) {
-        BTAinfoEventHelper(inst->infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "Discovery: cannot init usb library, error: %d", libusb_error_name(err));
+        BTAinfoEventHelper(inst->infoEventInst, VERBOSE_ERROR, BTA_StatusRuntimeError, "Discovery: cannot init usb library, error: %s", libusb_error_name(err));
         return 0;
     }
     libusb_device **devs = 0;
