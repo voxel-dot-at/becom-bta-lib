@@ -221,7 +221,7 @@ static void *grabRunFunction(void *handle) {
                     BTAfLargeClose(file);
                     return 0;
                 }
-                BTAinfoEventHelper(inst->infoEventInst, VERBOSE_DEBUG, BTA_StatusInformation, "Grabbing: compressed bltframe %d : %d = %f%% in %dms", dstLen, frameSerializedLen, (float)dstLen / frameSerializedLen * 100.0f, timeEnd - timeStart);
+                BTAinfoEventHelper(inst->infoEventInst, VERBOSE_DEBUG, BTA_StatusInformation, "Grabbing: compressed bltframe %d : %d = %f%% in %lums", dstLen, frameSerializedLen, (float)dstLen / frameSerializedLen * 100.0f, timeEnd - timeStart);
                 frameSerialized = frameSerializedCompressed;
                 frameSerializedLen = dstLen;
             }
